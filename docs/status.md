@@ -78,6 +78,8 @@ This document tracks the current state of the monacc compiler and userland tools
 - Basic inlining: `static inline` functions with single `return expr;` body are inlined at call sites
 - Trivial main inlining: `main() { return N; }` is inlined directly into `_start`
 - Skip codegen for `(void)param;` cast-to-void statements
+- Direct register loading: syscall and function call arguments that are constants are loaded directly into target registers (avoids push/pop sequences)
+- Optimized conditional branches: comparison expressions in `if`/`while`/`for` conditions emit `cmp` + direct conditional jump (e.g., `jne`) instead of `setcc` + `test` + `jz`
 
 ### Self-hosting Status
 
@@ -208,7 +210,7 @@ All 70 tools compile and link successfully with monacc.
 ### Test Suite
 
 `make test` runs:
-1. **Example programs** (28 tests) — compiler correctness
+1. **Example programs** (29 tests) — compiler correctness
 2. **Tool smoke tests** — basic functionality
 3. **Tool integration tests** — realistic usage
 4. **Tool realworld tests** — recipe-style scenarios
@@ -217,7 +219,7 @@ All 70 tools compile and link successfully with monacc.
 
 | Suite | Status |
 |-------|--------|
-| Compiler examples | ✅ 28/28 pass |
+| Compiler examples | ✅ 29/29 pass |
 | Tool tests | ✅ All pass |
 | Self-hosting | ✅ monacc-self builds and runs examples |
 

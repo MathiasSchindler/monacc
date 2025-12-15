@@ -69,6 +69,8 @@ Both components share a common design philosophy: syscall-only, minimal dependen
    - Dead static function elimination (uncalled `static` functions not emitted)
    - Basic inlining for `static inline` functions with trivial bodies
    - Size-focused: skip no-op constructs, inline trivial `main()`
+   - Direct register loading for syscall/function call arguments (avoids push/pop)
+   - Optimized conditional branches (comparison → direct jump, no setcc+test)
 
 ### Language Subset
 

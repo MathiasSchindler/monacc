@@ -87,6 +87,7 @@ void str_appendf(Str *s, const char *fmt, ...) {
 static void str_appendf_i64(Str *s, const char *fmt, long long v);
 static void str_appendf_u64(Str *s, const char *fmt, unsigned long long v);
 static void str_appendf_s(Str *s, const char *fmt, const char *v);
+static void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1);
 static void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0);
 static void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0);
 
@@ -174,6 +175,38 @@ static void str_appendf_s(Str *s, const char *fmt, const char *v) {
     if (used != 1) die("SELFHOST: expected exactly one string conversion");
 }
 
+static void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1) {
+    int state = 0;
+    for (const char *p = fmt; p && *p; ) {
+        if (*p != '%') {
+            const char *q = p;
+            while (*q && *q != '%') q++;
+            str_append_bytes(s, p, (size_t)(q - p));
+            p = q;
+            continue;
+        }
+        if (p[1] == '%') {
+            str_append_bytes(s, "%", 1);
+            p += 2;
+            continue;
+        }
+        if (state == 0 && p[1] == 's') {
+            str_append_cstr(s, s0);
+            state = 1;
+            p += 2;
+            continue;
+        }
+        if (state == 1 && p[1] == 's') {
+            str_append_cstr(s, s1);
+            state = 2;
+            p += 2;
+            continue;
+        }
+        die("SELFHOST: unsupported multi-arg format");
+    }
+    if (state != 2) die("SELFHOST: expected %s then %s");
+}
+
 static void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0) {
     int state = 0;
     for (const char *p = fmt; p && *p; ) {
@@ -238,6 +271,38 @@ static void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned lon
     if (state != 2) die("SELFHOST: expected %s then %u");
 }
 
+static void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0) {
+    int state = 0;
+    for (const char *p = fmt; p && *p; ) {
+        if (*p != '%') {
+            const char *q = p;
+            while (*q && *q != '%') q++;
+            str_append_bytes(s, p, (size_t)(q - p));
+            p = q;
+            continue;
+        }
+        if (p[1] == '%') {
+            str_append_bytes(s, "%", 1);
+            p += 2;
+            continue;
+        }
+        if (state == 0 && p[1] == 'd') {
+            str_append_i64_dec(s, i0);
+            state = 1;
+            p += 2;
+            continue;
+        }
+        if (state == 1 && p[1] == 's') {
+            str_append_cstr(s, s0);
+            state = 2;
+            p += 2;
+            continue;
+        }
+        die("SELFHOST: unsupported multi-arg format");
+    }
+    if (state != 2) die("SELFHOST: expected %d then %s");
+}
+
 #else
 
 __attribute__((format(printf, 2, 3)))
@@ -279,8 +344,10 @@ void str_appendf(Str *s, const char *fmt, ...) {
 __attribute__((unused)) static void str_appendf_i64(Str *s, const char *fmt, long long v) { str_appendf(s, fmt, v); }
 __attribute__((unused)) static void str_appendf_u64(Str *s, const char *fmt, unsigned long long v) { str_appendf(s, fmt, v); }
 __attribute__((unused)) static void str_appendf_s(Str *s, const char *fmt, const char *v) { str_appendf(s, fmt, v); }
+__attribute__((unused)) static void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1) { str_appendf(s, fmt, s0, s1); }
 __attribute__((unused)) static void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0) { str_appendf(s, fmt, s0, i0); }
 __attribute__((unused)) static void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0) { str_appendf(s, fmt, s0, u0); }
+__attribute__((unused)) static void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0) { str_appendf(s, fmt, i0, s0); }
 
 #endif
 
@@ -486,6 +553,38 @@ static int expr_is_syscall_builtin(const Expr *e) {
     return 1;
 }
 
+// Check if an expression is "simple" - a constant or string literal that can be
+// loaded directly into any register without side effects or clobbering other regs.
+static int expr_is_simple_const(const Expr *e) {
+    if (!e) return 0;
+    if (e->kind == EXPR_NUM) return 1;
+    if (e->kind == EXPR_STR) return 1;
+    return 0;
+}
+
+// Emit code to load a simple constant expression directly into a specific register.
+// Returns 1 if successful, 0 if the expression is not simple.
+static int cg_expr_to_reg(CG *cg, const Expr *e, const char *reg64, const char *reg32) {
+    if (!e) return 0;
+    if (e->kind == EXPR_NUM) {
+        if (e->num == 0) {
+            // xor reg32, reg32 is smaller than mov $0, reg
+            str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
+        } else if (e->num > 0 && e->num <= 0x7fffffffLL) {
+            // Use 32-bit mov which zero-extends
+            str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg32);
+        } else {
+            str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg64);
+        }
+        return 1;
+    }
+    if (e->kind == EXPR_STR) {
+        str_appendf_is(&cg->out, "  lea .LC%d(%%rip), %s\n", (long long)e->str_id, reg64);
+        return 1;
+    }
+    return 0;
+}
+
 static int u64_pow2_shift(unsigned long long v) {
     if (v == 0) return -1;
     if ((v & (v - 1ULL)) != 0ULL) return -1;
@@ -495,6 +594,22 @@ static int u64_pow2_shift(unsigned long long v) {
         sh++;
     }
     return sh;
+}
+
+// Check if expression is a comparison that can directly control a jump.
+static int expr_is_comparison(const Expr *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static int expr_contains_nonsyscall_call(const Expr *e) {
@@ -945,17 +1060,42 @@ static void cg_expr(CG *cg, const Expr *e) {
                 if (e->nargs != n + 1) {
                     die("syscall%d expects %d args", n, n + 1);
                 }
-                // Evaluate args left-to-right and push.
+                // Linux x86_64 syscall regs: rax=n, rdi,rsi,rdx,r10,r8,r9.
+                static const char *sreg64[7] = {"%rax", "%rdi", "%rsi", "%rdx", "%r10", "%r8", "%r9"};
+                static const char *sreg32[7] = {"%eax", "%edi", "%esi", "%edx", "%r10d", "%r8d", "%r9d"};
+
+                // Count how many args need the push/pop path (complex expressions).
+                int need_stack = 0;
                 for (int i = 0; i < e->nargs; i++) {
-                    cg_expr(cg, e->args[i]);
-                    str_appendf(&cg->out, "  push %%rax\n");
+                    if (!expr_is_simple_const(e->args[i])) need_stack++;
                 }
-                // Pop into syscall regs right-to-left.
-                // Linux x86_64: rax=n, rdi,rsi,rdx,r10,r8,r9.
-                static const char *sreg[7] = {"%rax", "%rdi", "%rsi", "%rdx", "%r10", "%r8", "%r9"};
-                for (int i = e->nargs - 1; i >= 0; i--) {
-                    str_appendf(&cg->out, "  pop %%rcx\n");
-                    str_appendf_s(&cg->out, "  mov %%rcx, %s\n", sreg[i]);
+
+                if (need_stack == 0) {
+                    // All args are simple constants - load directly into target regs.
+                    for (int i = 0; i < e->nargs; i++) {
+                        (void)cg_expr_to_reg(cg, e->args[i], sreg64[i], sreg32[i]);
+                    }
+                } else {
+                    // Mixed: evaluate complex args first (push), then load simple ones directly.
+                    // Push complex args left-to-right.
+                    for (int i = 0; i < e->nargs; i++) {
+                        if (!expr_is_simple_const(e->args[i])) {
+                            cg_expr(cg, e->args[i]);
+                            str_appendf(&cg->out, "  push %%rax\n");
+                        }
+                    }
+                    // Pop complex args into regs right-to-left.
+                    for (int i = e->nargs - 1; i >= 0; i--) {
+                        if (!expr_is_simple_const(e->args[i])) {
+                            str_appendf_s(&cg->out, "  pop %s\n", sreg64[i]);
+                        }
+                    }
+                    // Load simple const args directly.
+                    for (int i = 0; i < e->nargs; i++) {
+                        if (expr_is_simple_const(e->args[i])) {
+                            (void)cg_expr_to_reg(cg, e->args[i], sreg64[i], sreg32[i]);
+                        }
+                    }
                 }
                 str_appendf(&cg->out, "  syscall\n");
                 return;
@@ -1024,6 +1164,7 @@ static void cg_expr(CG *cg, const Expr *e) {
             }
 
             static const char *areg[6] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+            static const char *areg32[6] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
             CallArgInfo ai[64];
             if (e->nargs > (int)(sizeof(ai) / sizeof(ai[0]))) {
                 die("too many call args");
@@ -1079,17 +1220,27 @@ static void cg_expr(CG *cg, const Expr *e) {
                 }
             }
 
-            // Evaluate reg args left-to-right and push temporarily.
+            // Evaluate reg args: push complex ones, load simple ones directly at the end.
             for (int i = 0; i < e->nargs; i++) {
                 if (ai[i].kind != CALLARG_REG) continue;
-                cg_expr(cg, e->args[i]);
-                str_appendf(&cg->out, "  push %%rax\n");
+                if (!expr_is_simple_const(e->args[i])) {
+                    cg_expr(cg, e->args[i]);
+                    str_appendf(&cg->out, "  push %%rax\n");
+                }
             }
-            // Pop into registers right-to-left.
+            // Pop complex args into registers right-to-left.
             for (int i = e->nargs - 1; i >= 0; i--) {
                 if (ai[i].kind != CALLARG_REG) continue;
-                str_appendf(&cg->out, "  pop %%rax\n");
-                str_appendf_s(&cg->out, "  mov %%rax, %s\n", areg[ai[i].reg]);
+                if (!expr_is_simple_const(e->args[i])) {
+                    str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
+                }
+            }
+            // Load simple const args directly into target registers.
+            for (int i = 0; i < e->nargs; i++) {
+                if (ai[i].kind != CALLARG_REG) continue;
+                if (expr_is_simple_const(e->args[i])) {
+                    (void)cg_expr_to_reg(cg, e->args[i], areg[ai[i].reg], areg32[ai[i].reg]);
+                }
             }
 
             str_appendf(&cg->out, "  xor %%eax, %%eax\n");
@@ -1964,6 +2115,82 @@ static void cg_expr(CG *cg, const Expr *e) {
     die("internal: unhandled expr kind");
 }
 
+// Emit a conditional branch for a comparison expression.
+// If jump_on_false, jump to label when condition is false; otherwise jump when true.
+// Returns 1 if handled (optimized path), 0 if caller should use cg_expr + test.
+static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
+    if (!e) return 0;
+
+    // Handle comparison expressions directly.
+    if (expr_is_comparison(e)) {
+        int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
+                           (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+
+        // Check for constant RHS - common case like "x >= 0" or "x < 0"
+        if (e->rhs && e->rhs->kind == EXPR_NUM) {
+            long long imm = e->rhs->num;
+            cg_expr(cg, e->lhs);
+            if (imm == 0) {
+                str_appendf(&cg->out, "  test %%rax, %%rax\n");
+            } else if (imm >= -2147483648LL && imm <= 2147483647LL) {
+                str_appendf_i64(&cg->out, "  cmp $%d, %%rax\n", imm);
+            } else {
+                return 0; // Fall back to generic path
+            }
+
+            // Determine jump condition
+            const char *jcc = "je";
+            if (jump_on_false) {
+                // Jump when condition is FALSE
+                if (e->kind == EXPR_EQ) jcc = "jne";
+                else if (e->kind == EXPR_NE) jcc = "je";
+                else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+            } else {
+                // Jump when condition is TRUE
+                if (e->kind == EXPR_EQ) jcc = "je";
+                else if (e->kind == EXPR_NE) jcc = "jne";
+                else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+            }
+            str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+            return 1;
+        }
+
+        // General case: evaluate both sides
+        cg_expr(cg, e->lhs);
+        str_appendf(&cg->out, "  push %%rax\n");
+        cg_expr(cg, e->rhs);
+        str_appendf(&cg->out, "  pop %%rcx\n");
+        str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
+
+        const char *jcc = "je";
+        if (jump_on_false) {
+            if (e->kind == EXPR_EQ) jcc = "jne";
+            else if (e->kind == EXPR_NE) jcc = "je";
+            else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+            else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+            else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+            else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+        } else {
+            if (e->kind == EXPR_EQ) jcc = "je";
+            else if (e->kind == EXPR_NE) jcc = "jne";
+            else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+            else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+            else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+            else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+        }
+        str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+        return 1;
+    }
+
+    return 0; // Not handled - use generic path
+}
+
 static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw);
 
 static void cg_stmt_list(CG *cg, const Stmt *first, int ret_label, const SwitchCtx *sw) {
@@ -2029,13 +2256,13 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             if (cg->loop_sp <= 0) {
                 die("break not within loop");
             }
-            str_appendf_i64(&cg->out, "  jmp .Lbreak%d\n", cg->break_label[cg->loop_sp - 1]);
+            str_appendf_i64(&cg->out, "  jmp .L%d\n", cg->break_label[cg->loop_sp - 1]);
             return;
         case STMT_CONTINUE:
             if (cg->loop_sp <= 0) {
                 die("continue not within loop");
             }
-            str_appendf_i64(&cg->out, "  jmp .Lcont%d\n", cg->cont_label[cg->loop_sp - 1]);
+            str_appendf_i64(&cg->out, "  jmp .L%d\n", cg->cont_label[cg->loop_sp - 1]);
             return;
         case STMT_EXPR:
             // Skip codegen for (void)var - these are explicit discards that need no code.
@@ -2063,19 +2290,23 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
         case STMT_IF: {
             int l_else = new_label(cg);
             int l_end = new_label(cg);
-            cg_expr(cg, s->if_cond);
-            str_appendf(&cg->out, "  test %%rax, %%rax\n");
+            int target = s->if_else ? l_else : l_end;
+            // Try optimized comparison branch (jump on false)
+            if (!cg_cond_branch(cg, s->if_cond, target, 1)) {
+                // Fall back to generic path
+                cg_expr(cg, s->if_cond);
+                str_appendf(&cg->out, "  test %%rax, %%rax\n");
+                str_appendf_i64(&cg->out, "  jz .L%d\n", target);
+            }
             if (s->if_else) {
-                str_appendf_i64(&cg->out, "  jz .Lelse%d\n", l_else);
                 cg_stmt(cg, s->if_then, ret_label, sw);
-                str_appendf_i64(&cg->out, "  jmp .Lend%d\n", l_end);
-                str_appendf_i64(&cg->out, ".Lelse%d:\n", l_else);
+                str_appendf_i64(&cg->out, "  jmp .L%d\n", l_end);
+                str_appendf_i64(&cg->out, ".L%d:\n", l_else);
                 cg_stmt(cg, s->if_else, ret_label, sw);
-                str_appendf_i64(&cg->out, ".Lend%d:\n", l_end);
+                str_appendf_i64(&cg->out, ".L%d:\n", l_end);
             } else {
-                str_appendf_i64(&cg->out, "  jz .Lend%d\n", l_end);
                 cg_stmt(cg, s->if_then, ret_label, sw);
-                str_appendf_i64(&cg->out, ".Lend%d:\n", l_end);
+                str_appendf_i64(&cg->out, ".L%d:\n", l_end);
             }
             return;
         }
@@ -2089,13 +2320,16 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             cg->cont_label[cg->loop_sp] = l_cont;
             cg->loop_sp++;
 
-            str_appendf_i64(&cg->out, ".Lcont%d:\n", l_cont);
-            cg_expr(cg, s->while_cond);
-            str_appendf(&cg->out, "  test %%rax, %%rax\n");
-            str_appendf_i64(&cg->out, "  jz .Lbreak%d\n", l_break);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_cont);
+            // Try optimized comparison branch (jump on false -> break)
+            if (!cg_cond_branch(cg, s->while_cond, l_break, 1)) {
+                cg_expr(cg, s->while_cond);
+                str_appendf(&cg->out, "  test %%rax, %%rax\n");
+                str_appendf_i64(&cg->out, "  jz .L%d\n", l_break);
+            }
             cg_stmt(cg, s->while_body, ret_label, sw);
-            str_appendf_i64(&cg->out, "  jmp .Lcont%d\n", l_cont);
-            str_appendf_i64(&cg->out, ".Lbreak%d:\n", l_break);
+            str_appendf_i64(&cg->out, "  jmp .L%d\n", l_cont);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_break);
 
             cg->loop_sp--;
             return;
@@ -2112,18 +2346,21 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             cg->loop_sp++;
 
             if (s->for_init) cg_stmt(cg, s->for_init, ret_label, sw);
-            str_appendf_i64(&cg->out, ".Lfor%d:\n", l_begin);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_begin);
             if (s->for_cond) {
-                cg_expr(cg, s->for_cond);
-                str_appendf(&cg->out, "  test %%rax, %%rax\n");
-                str_appendf_i64(&cg->out, "  jz .Lbreak%d\n", l_break);
+                // Try optimized comparison branch
+                if (!cg_cond_branch(cg, s->for_cond, l_break, 1)) {
+                    cg_expr(cg, s->for_cond);
+                    str_appendf(&cg->out, "  test %%rax, %%rax\n");
+                    str_appendf_i64(&cg->out, "  jz .L%d\n", l_break);
+                }
             }
             cg_stmt(cg, s->for_body, ret_label, sw);
 
-            str_appendf_i64(&cg->out, ".Lcont%d:\n", l_cont);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_cont);
             if (s->for_inc) cg_expr(cg, s->for_inc);
-            str_appendf_i64(&cg->out, "  jmp .Lfor%d\n", l_begin);
-            str_appendf_i64(&cg->out, ".Lbreak%d:\n", l_break);
+            str_appendf_i64(&cg->out, "  jmp .L%d\n", l_begin);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_break);
 
             cg->loop_sp--;
             return;
@@ -2154,18 +2391,18 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             // Dispatch: compare against each case and jump to its label.
             for (int i = 0; i < ctx.ncases; i++) {
                 str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", ctx.case_values[i]);
-                str_appendf_i64(&cg->out, "  je .Lcase%d\n", ctx.case_labels[i]);
+                str_appendf_i64(&cg->out, "  je .L%d\n", ctx.case_labels[i]);
             }
             if (ctx.default_node) {
-                str_appendf_i64(&cg->out, "  jmp .Ldefault%d\n", ctx.default_label);
+                str_appendf_i64(&cg->out, "  jmp .L%d\n", ctx.default_label);
             } else {
-                str_appendf_i64(&cg->out, "  jmp .Lbreak%d\n", l_break);
+                str_appendf_i64(&cg->out, "  jmp .L%d\n", l_break);
             }
 
             // Emit body with active switch context so case/default nodes become labels.
             cg_stmt(cg, s->switch_body, ret_label, &ctx);
 
-            str_appendf_i64(&cg->out, ".Lbreak%d:\n", l_break);
+            str_appendf_i64(&cg->out, ".L%d:\n", l_break);
 
             cg->loop_sp--;
             return;
@@ -2174,7 +2411,7 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             if (!sw) die("case not within switch");
             int l = switch_case_label_for(sw, s);
             if (l < 0) die("internal: missing case label");
-            str_appendf_i64(&cg->out, ".Lcase%d:\n", l);
+            str_appendf_i64(&cg->out, ".L%d:\n", l);
             return;
         }
         case STMT_DEFAULT:
@@ -2184,7 +2421,7 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                 // This can happen if we accidentally passed the wrong switch context down.
                 die("internal: default label mismatch");
             }
-            str_appendf_i64(&cg->out, ".Ldefault%d:\n", sw->default_label);
+            str_appendf_i64(&cg->out, ".L%d:\n", sw->default_label);
             return;
         default:
             break;

@@ -52,6 +52,7 @@ COMPILER_SRC := \
 	compiler/monacc_sys.c \
 	compiler/monacc_ast.c \
 	compiler/monacc_parse.c \
+	compiler/monacc_str.c \
 	compiler/monacc_codegen.c \
 	compiler/monacc_pp.c \
 	compiler/monacc_main.c \
@@ -69,7 +70,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	typedef_multi enum enum_constexpr struct_array fnptr_member ternary \
 	cast cast_void logical bitwise_or_xor hex_macro call7 struct_copy \
 	array_constexpr prefix_incdec compound_literal postinc_member_array sret_cond \
-	unsigned_divmod_pow2
+	unsigned_divmod_pow2 const_index
 
 # Default goal: build everything
 .DEFAULT_GOAL := all

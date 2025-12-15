@@ -450,8 +450,18 @@ void expect(Parser *p, TokenKind k, const char *what);
 void expect_ident(Parser *p, const char **out_start, size_t *out_len);
 
 void str_reserve(Str *s, size_t add);
+void str_append_bytes(Str *s, const char *buf, size_t n);
+#ifndef SELFHOST
 __attribute__((format(printf, 2, 3)))
+#endif
 void str_appendf(Str *s, const char *fmt, ...);
+void str_appendf_i64(Str *s, const char *fmt, long long v);
+void str_appendf_u64(Str *s, const char *fmt, unsigned long long v);
+void str_appendf_s(Str *s, const char *fmt, const char *v);
+void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1);
+void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0);
+void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0);
+void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0);
 
 void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out);
 

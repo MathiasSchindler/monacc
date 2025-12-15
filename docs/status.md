@@ -17,6 +17,16 @@ This document tracks the current state of the monacc compiler and userland tools
 ### Codebase Shape
 
 - Multi-file compiler under `compiler/monacc_*.c` with shared header `compiler/monacc.h`
+  - `monacc_main.c` — entry point and argument handling
+  - `monacc_front.c` — tokenizer and lexer
+  - `monacc_pp.c` — preprocessor
+  - `monacc_parse.c` — parser (~2,500 lines)
+  - `monacc_ast.c` — AST node creation
+  - `monacc_codegen.c` — code generation (~2,300 lines)
+  - `monacc_str.c` — string builder utilities (~350 lines)
+  - `monacc_elfobj.c` — ELF object emission (experimental)
+  - `monacc_fmt.c` — formatting helpers
+  - `monacc_sys.c` — syscall wrappers
 - Entry: custom `_start` (Linux x86_64) in `core/mc_start.c`
 - Build flags: `-nostartfiles -Wl,-e,_start -fno-stack-protector`
 

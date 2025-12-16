@@ -258,11 +258,14 @@ static int starts_with(const char *p, const char *end, const char *lit) {
     return mc_memcmp(p, lit, n) == 0;
 }
 
-static ObjSection *get_or_add_section(AsmState *st, const char *name, mc_usize name_len, uint64_t sh_flags) {
+static ObjSection *get_or_add_section(AsmState *st, const char *name, mc_usize name_len, uint32_t sh_type, uint64_t sh_flags) {
     for (int i = 0; i < st->nsecs; i++) {
         ObjSection *s = st->secs[i];
         if (mc_strlen(s->name) == name_len && mc_memcmp(s->name, name, name_len) == 0) {
-            // Keep the first flags we saw; they should match.
+            // Keep the first flags/type we saw; they should match.
+            // But allow later directives to fill in missing defaults.
+            if (s->sh_flags == 0 && sh_flags != 0) s->sh_flags = sh_flags;
+            if (s->sh_type == SHT_PROGBITS && sh_type == SHT_NOBITS) s->sh_type = sh_type;
             return s;
         }
     }
@@ -278,7 +281,7 @@ static ObjSection *get_or_add_section(AsmState *st, const char *name, mc_usize n
     if (!s) die("oom");
     mc_memset(s, 0, sizeof(*s));
     s->name = xstrdup_n(name, name_len);
-    s->sh_type = SHT_PROGBITS;
+    s->sh_type = sh_type;
     s->sh_flags = sh_flags;
     s->sh_addralign = 1;
     s->sh_entsize = 0;
@@ -287,6 +290,45 @@ static ObjSection *get_or_add_section(AsmState *st, const char *name, mc_usize n
     s->data.cap = 0;
     st->secs[st->nsecs++] = s;
     return s;
+}
+
+static int starts_with_span(const char *p, const char *end, const char *lit) {
+    mc_usize n = mc_strlen(lit);
+    if ((mc_usize)(end - p) < n) return 0;
+    return mc_memcmp(p, lit, n) == 0;
+}
+
+static void default_section_attrs(const char *name, const char *name_end, uint32_t *out_type, uint64_t *out_flags) {
+    uint32_t ty = SHT_PROGBITS;
+    uint64_t fl = 0;
+
+    if (starts_with_span(name, name_end, ".text")) {
+        fl = SHF_ALLOC | SHF_EXECINSTR;
+        ty = SHT_PROGBITS;
+    } else if (starts_with_span(name, name_end, ".rodata")) {
+        fl = SHF_ALLOC;
+        ty = SHT_PROGBITS;
+    } else if (starts_with_span(name, name_end, ".data")) {
+        fl = SHF_ALLOC | SHF_WRITE;
+        ty = SHT_PROGBITS;
+    } else if (starts_with_span(name, name_end, ".bss")) {
+        fl = SHF_ALLOC | SHF_WRITE;
+        ty = SHT_NOBITS;
+    }
+
+    *out_type = ty;
+    *out_flags = fl;
+}
+
+static void sec_put_u8_maybe_nobits(ObjSection *sec, unsigned int v) {
+    sec->data.len++;
+    if (sec->sh_type != SHT_NOBITS) {
+        bin_put_u8(&sec->data, v);
+    }
+}
+
+static void sec_put_zeros_maybe_nobits(ObjSection *sec, uint64_t n) {
+    while (n--) sec_put_u8_maybe_nobits(sec, 0);
 }
 
 static ObjSym *find_sym(AsmState *st, const char *name, mc_usize name_len) {
@@ -1215,27 +1257,53 @@ static void encode_imul_imm(Str *s, long long imm, const Reg *src, const Reg *ds
 // ===== Assembler driver (parses our limited assembly dialect) =====
 
 static void parse_section_directive(AsmState *st, const char *p, const char *end) {
-    // .section NAME,"flags",@progbits
+    // .section NAME[,"flags"][,@progbits|@nobits]
     p += mc_strlen(".section");
     p = skip_ws(p, end);
     const char *name = p;
     while (p < end && *p != ',' && !is_space(*p)) p++;
     const char *name_end = p;
 
+    uint32_t sh_type = SHT_PROGBITS;
     uint64_t flags = 0;
-    while (p < end && *p != '"') p++;
-    if (p < end && *p == '"') {
+    default_section_attrs(name, name_end, &sh_type, &flags);
+
+    p = skip_ws(p, end);
+    if (p < end && *p == ',') {
         p++;
-        while (p < end && *p != '"') {
-            if (*p == 'a') flags |= SHF_ALLOC;
-            else if (*p == 'x') flags |= SHF_EXECINSTR;
-            else if (*p == 'w') flags |= SHF_WRITE;
+        p = skip_ws(p, end);
+        if (p < end && *p == '"') {
+            flags = 0;
             p++;
+            while (p < end && *p != '"') {
+                if (*p == 'a') flags |= SHF_ALLOC;
+                else if (*p == 'x') flags |= SHF_EXECINSTR;
+                else if (*p == 'w') flags |= SHF_WRITE;
+                p++;
+            }
+            if (p < end && *p == '"') p++;
+        }
+        p = skip_ws(p, end);
+        if (p < end && *p == ',') {
+            p++;
+            p = skip_ws(p, end);
+            if (p < end && *p == '@') {
+                p++;
+                const char *ty = p;
+                while (p < end && !is_space(*p) && *p != ',') p++;
+                const char *ty_end = p;
+                mc_usize ty_len = span_len(ty, ty_end);
+                if (ty_len == mc_strlen("progbits") && mc_memcmp(ty, "progbits", ty_len) == 0) {
+                    sh_type = SHT_PROGBITS;
+                } else if (ty_len == mc_strlen("nobits") && mc_memcmp(ty, "nobits", ty_len) == 0) {
+                    sh_type = SHT_NOBITS;
+                }
+            }
         }
     }
 
     ObjSection *sec;
-    sec = get_or_add_section(st, name, span_len(name, name_end), flags);
+    sec = get_or_add_section(st, name, span_len(name, name_end), sh_type, flags);
     st->cur = sec;
 }
 
@@ -1273,6 +1341,7 @@ static void define_label(AsmState *st, const char *p, const char *end) {
 
 static void parse_byte_directive(AsmState *st, const char *p, const char *end) {
     if (!st->cur) die("asm: .byte outside section");
+    if (st->cur->sh_type == SHT_NOBITS) die("asm: .byte in @nobits section");
     p += mc_strlen(".byte");
     for (;;) {
         p = skip_ws(p, end);
@@ -1299,7 +1368,7 @@ static void parse_align_directive(AsmState *st, const char *p, const char *end) 
 
     uint64_t off = (uint64_t)st->cur->data.len;
     uint64_t pad = (align - (off % align)) % align;
-    while (pad--) bin_put_u8(&st->cur->data, 0);
+    sec_put_zeros_maybe_nobits(st->cur, pad);
 }
 
 static void parse_zero_directive(AsmState *st, const char *p, const char *end) {
@@ -1308,7 +1377,7 @@ static void parse_zero_directive(AsmState *st, const char *p, const char *end) {
     p = skip_ws(p, end);
     long long n = 0;
     if (!parse_int64(p, end, &n) || n < 0) die("asm: bad .zero");
-    while (n--) bin_put_u8(&st->cur->data, 0);
+    sec_put_zeros_maybe_nobits(st->cur, (uint64_t)n);
 }
 
 static void parse_operands_top(const char *p, const char *end,
@@ -1390,6 +1459,27 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     if (mn >= sizeof(mnem)) die("asm: mnemonic too long");
     mc_memcpy(mnem, m0, mn);
     mnem[mn] = 0;
+
+    // Accept common AT&T size-suffixed mnemonics used by inline asm (e.g. `andq`,
+    // `movq`, `retq`). monacc's own codegen generally emits unsuffixed mnemonics,
+    // but the `core/mc_start.c` inline asm uses `andq`.
+    if (mn >= 2) {
+        char suf = mnem[mn - 1];
+        if (suf == 'b' || suf == 'w' || suf == 'l' || suf == 'q') {
+            // Only normalize a small whitelist to avoid breaking e.g. `movzb`/`movswq`.
+            mnem[mn - 1] = 0;
+            if (!mc_strcmp(mnem, "mov") || !mc_strcmp(mnem, "add") || !mc_strcmp(mnem, "sub") ||
+                !mc_strcmp(mnem, "and") || !mc_strcmp(mnem, "or") || !mc_strcmp(mnem, "xor") ||
+                !mc_strcmp(mnem, "cmp") || !mc_strcmp(mnem, "test") || !mc_strcmp(mnem, "lea") ||
+                !mc_strcmp(mnem, "push") || !mc_strcmp(mnem, "pop") || !mc_strcmp(mnem, "call") ||
+                !mc_strcmp(mnem, "ret") || !mc_strcmp(mnem, "jmp")) {
+                // keep stripped
+            } else {
+                // restore if it's not a known suffix form
+                mnem[mn - 1] = suf;
+            }
+        }
+    }
 
     const char *op_a = NULL, *op_ae = NULL;
     const char *op_b = NULL, *op_be = NULL;
@@ -1629,26 +1719,71 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     if (!mc_strcmp(mnem, "movzb")) {
         // movzbl src8, dst32
         if (b.kind != OP_REG) die("asm: movzb dst");
+        if (a.kind == OP_MEM && a.mem.riprel && a.mem.sym) {
+            Operand aa = a;
+            aa.mem.disp = 0;
+            encode_movzx(&st->cur->data, 0, &aa, &b.reg);
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
         encode_movzx(&st->cur->data, 0, &a, &b.reg);
         return;
     }
     if (!mc_strcmp(mnem, "movzw")) {
         if (b.kind != OP_REG) die("asm: movzw dst");
+        if (a.kind == OP_MEM && a.mem.riprel && a.mem.sym) {
+            Operand aa = a;
+            aa.mem.disp = 0;
+            encode_movzx(&st->cur->data, 1, &aa, &b.reg);
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
         encode_movzx(&st->cur->data, 1, &a, &b.reg);
         return;
     }
     if (!mc_strcmp(mnem, "movsbq")) {
         if (b.kind != OP_REG) die("asm: movsbq dst");
+        if (a.kind == OP_MEM && a.mem.riprel && a.mem.sym) {
+            Operand aa = a;
+            aa.mem.disp = 0;
+            encode_movsx(&st->cur->data, 8, &aa, &b.reg);
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
         encode_movsx(&st->cur->data, 8, &a, &b.reg);
         return;
     }
     if (!mc_strcmp(mnem, "movswq")) {
         if (b.kind != OP_REG) die("asm: movswq dst");
+        if (a.kind == OP_MEM && a.mem.riprel && a.mem.sym) {
+            Operand aa = a;
+            aa.mem.disp = 0;
+            encode_movsx(&st->cur->data, 16, &aa, &b.reg);
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
         encode_movsx(&st->cur->data, 16, &a, &b.reg);
         return;
     }
     if (!mc_strcmp(mnem, "movslq")) {
         if (b.kind != OP_REG) die("asm: movslq dst");
+        if (a.kind == OP_MEM && a.mem.riprel && a.mem.sym) {
+            Operand aa = a;
+            aa.mem.disp = 0;
+            encode_movsx(&st->cur->data, 32, &aa, &b.reg);
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
         encode_movsx(&st->cur->data, 32, &a, &b.reg);
         return;
     }
@@ -1851,24 +1986,27 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     uint32_t sh_i = 1;
     for (int i = 0; i < st->nsecs; i++) {
         ObjSection *sec = st->secs[i];
-        // Align
         uint64_t align = sec->sh_addralign ? sec->sh_addralign : 1;
-        uint64_t off = align_up_u64((uint64_t)file.len, align);
-        while ((uint64_t)file.len < off) bin_put_u8(&file, 0);
+        if (sec->sh_type != SHT_NOBITS) {
+            uint64_t off = align_up_u64((uint64_t)file.len, align);
+            while ((uint64_t)file.len < off) bin_put_u8(&file, 0);
+        }
 
         Elf64_Shdr sh;
         mc_memset(&sh, 0, sizeof(sh));
         sh.sh_name = sec_names[i].name_off;
         sh.sh_type = sec->sh_type;
         sh.sh_flags = sec->sh_flags;
-        sh.sh_offset = (uint64_t)file.len;
+        sh.sh_offset = (sec->sh_type == SHT_NOBITS) ? 0 : (uint64_t)file.len;
         sh.sh_size = (uint64_t)sec->data.len;
         sh.sh_addralign = align;
         sh.sh_entsize = sec->sh_entsize;
         shdrs[sh_i] = sh;
         sh_i++;
 
-        bin_put(&file, sec->data.buf, sec->data.len);
+        if (sec->sh_type != SHT_NOBITS) {
+            bin_put(&file, sec->data.buf, sec->data.len);
+        }
     }
 
     // .shstrtab

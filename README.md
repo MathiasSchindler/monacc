@@ -121,12 +121,13 @@ All tools:
 
 **To build monacc (Phase 0):**
 - A C compiler (`gcc` or `clang`)
-- GNU assembler (`as`) and linker (`ld`)
+- GNU linker (`ld`)
 - Linux x86_64
 
 **After Phase 1:**
 - Only `as` and `ld` are needed (monacc replaces the C compiler)
-- Work is ongoing to emit ELF objects directly (`--emit-obj`), which would eliminate `as`
+- By default, the build uses internal ELF object emission (`--emit-obj`) which eliminates `as`
+    (set `EMITOBJ=0` to force the external assembler).
 
 ## Current Status
 

@@ -8,6 +8,15 @@
 CC ?= cc
 MONACC := bin/monacc
 
+# Use the internal ELF object emitter by default (replaces external `as`).
+# Set EMITOBJ=0 to force using the system assembler instead.
+EMITOBJ ?= 1
+ifeq ($(EMITOBJ),1)
+MONACC_EMITOBJ_FLAG := --emit-obj
+else
+MONACC_EMITOBJ_FLAG :=
+endif
+
 # Build configuration
 DEBUG ?= 0
 LTO ?= 1
@@ -115,7 +124,7 @@ selfhost: $(MONACC_SELF)
 
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
-	@$(MONACC) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -149,11 +158,14 @@ $(MONACC): $(COMPILER_SRC) | bin
 	@echo "==> Building compiler"
 	$(CC) $(CFLAGS) -I core $(LDFLAGS) $(START_LDFLAGS) $(COMPILER_SRC) -o $@
 
+bin:
+	mkdir -p bin
+
 # === Phase 1: Build tools with monacc ===
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Print a header before building tools
 $(TOOL_BINS): | tool-header
@@ -178,7 +190,7 @@ test: all
 	emitobj_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
-		$(MONACC) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
+		$(MONACC) $(MONACC_EMITOBJ_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
 		./build/test/$$ex >/dev/null 2>&1; \
 		if [ $$? -eq 42 ]; then \
 			echo "  ok: $$ex"; \

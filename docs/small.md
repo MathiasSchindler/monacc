@@ -6,6 +6,8 @@ This document provides tools for analyzing monacc's code generation and a roadma
 
 The script `scripts/compare_codegen.sh` compares monacc-generated binaries against the best-in-class (typically gcc-15 or clang-20) to identify code bloat sources.
 
+For broader “instruction-shape” statistics across the full compiler matrix, see [docs/matrixstat.md](docs/matrixstat.md) (`bin/matrixstat`).
+
 ### Usage
 
 ```bash
@@ -25,13 +27,15 @@ The script `scripts/compare_codegen.sh` compares monacc-generated binaries again
 $ ./scripts/compare_codegen.sh --all | head -15
 Tool         monacc vs best (ratio)    instructions      push/pop      setcc     movslq    [compiler]
 -----------------------------------------------------------------------------------------------------------
-awk           14140 vs   5776 bytes (2.44x)  insns: 4713 vs 1408  push/pop: 904 vs  80  setcc: 34 vs 14  movslq: 69 vs  8  [gcc_15_]
-sh            22672 vs   9528 bytes (2.37x)  insns: 7348 vs 2292  push/pop: 1460 vs  98  setcc: 31 vs 13  movslq: 156 vs 17  [gcc_15_]
-sed           16972 vs   7472 bytes (2.27x)  insns: 5518 vs 1838  push/pop: 1243 vs 147  setcc: 25 vs 11  movslq: 141 vs 10  [gcc_15_]
-find          11459 vs   5408 bytes (2.11x)  insns: 3686 vs 1237  push/pop: 697 vs  98  setcc:  8 vs  4  movslq: 130 vs  9  [gcc_15_]
+awk           13772 vs   5776 bytes (2.38x)  insns: 4351 vs 1408  push/pop: 544 vs  80  setcc: 34 vs 14  movslq: 67 vs  8  [gcc_15_]
+sh            21955 vs   9528 bytes (2.30x)  insns: 6717 vs 2292  push/pop: 830 vs  98  setcc: 31 vs 13  movslq: 152 vs 17  [gcc_15_]
+sed           16427 vs   7472 bytes (2.19x)  insns: 5005 vs 1838  push/pop: 733 vs 147  setcc: 25 vs 11  movslq: 140 vs 10  [gcc_15_]
+find          11157 vs   5408 bytes (2.06x)  insns: 3404 vs 1237  push/pop: 421 vs  98  setcc:  8 vs  4  movslq: 126 vs  9  [gcc_15_]
 ...
-yes            2420 vs   1592 bytes (1.52x)  insns:  791 vs  286  push/pop: 153 vs  26  setcc:  6 vs  5  movslq: 30 vs  4  [clang_20_]
+yes            2356 vs   1592 bytes (1.47x)  insns:  723 vs  286  push/pop:  87 vs  26  setcc:  6 vs  5  movslq: 30 vs  4  [clang_20_]
 ```
+
+Note: for very small tools, fixed ELF header/program-header overhead matters. This repo intentionally uses a size-oriented single-PT_LOAD layout; even one extra program header (e.g. PT_GNU_STACK) costs 56 bytes in every ELF64 output.
 
 ### Key Metrics Explained
 
@@ -95,7 +99,7 @@ Control-flow statements now use a branch-form emitter (`cg_cond_branch`) that ha
 Quick spot-check after the change:
 
 ```
-yes            2420 vs   1592 bytes (1.52x)  insns:  791 vs  286  push/pop: 153 vs  26  setcc:  6 vs  5  movslq: 30 vs  4  [clang_20_]
+yes            2356 vs   1592 bytes (1.47x)  insns:  723 vs  286  push/pop:  87 vs  26  setcc:  6 vs  5  movslq: 30 vs  4  [clang_20_]
 ```
 
 ```asm
@@ -130,9 +134,33 @@ Instead of a full post-pass peephole optimizer, monacc now avoids some of the mo
 - Stores to locals/globals and simple struct members are emitted as direct memory stores (no “compute address → push → RHS → pop”).
 - Constant-index stores (`base[const] = rhs`) can use `lea`/`mov` addressing directly when the base is an addressable array or a pointer value.
 
-Quick spot-check: `yes` improved from the earlier `1.56x` to about `1.52x` bytes ratio.
+Quick spot-check: `yes` improved from the earlier `1.56x` to about `1.47x` bytes ratio.
 
 Current biggest offenders (from `--all`) remain `awk`, `sh`, `sed`, `find` (and `tail`), with push/pop counts that are still far from gcc/clang. That makes them good targets for verifying each incremental push/pop reduction.
+
+Separately, call/syscall lowering now recognizes more “simple args” that can be loaded directly into ABI argument registers without using the push/pop staging path. In particular, common pointer arguments like `&local`, `&global`, and simple `&array[const]` address computations are treated as direct `lea` loads.
+
+This was further expanded to include common pointer arithmetic like `ptr + const` / `ptr - const` (scaled by element size when applicable). These now lower as “load base pointer into arg reg; add/sub imm” rather than going through the stack.
+
+The same mechanism also handles a conservative subset of `ptr ± idx` where `idx` is a simple scalar local/global load and the scale is 1/2/4/8. This uses `%r11` as a dedicated scratch register so it won’t clobber already-loaded ABI arg registers.
+
+This was expanded further to accept small side-effect-free scalar arithmetic in the index, e.g. `p + (i + 1)` / `p + (i - 1)`, by allowing `idx +/- imm32` in the “simple scalar” predicate.
+
+##### P2/P6 Next Steps (Evidence-Driven)
+
+The push/pop gap in the large tools (`awk`, `sh`, `sed`, `find`, `tail`) is still the most obvious signal in `--all`. The following next steps are plausible and measurable:
+
+1. **Broaden “simple index” recognition (still side-effect-free):**
+    - Next plausible expansion: accept a limited `idx + idx2` (both scalar loads) for scale=1 using a single `lea` into the scratch.
+    - Evidence sources: `./scripts/compare_codegen.sh --detail TOOL` (look for push/pop staging around pointer arithmetic feeding calls/syscalls), and the global `push/pop` counts in `--all`.
+
+2. **Fold address arithmetic into a single `lea` when possible:**
+    - Many remaining patterns are “load ptr; add imm; add idx*scale” emitted as separate instructions.
+    - Evidence sources: `--detail TOOL` disassembly; count instruction sequences manually; correlate with `insns` and `push/pop` deltas.
+
+3. **Extend regression coverage for each expansion:**
+    - The example suite is a good place for targeted ABI/call-lowering tests because it runs via `make test`.
+    - Evidence sources: `make test` (correctness), and adding focused examples like `examples/addr_deref_syscall.c` to ensure the new paths assemble and execute.
 
 Many push/pop pairs can be eliminated:
 
@@ -166,6 +194,34 @@ xor    %eax,%eax            ; duplicate!
 
 ; Also: unused function prologues, unreachable code after returns
 ```
+
+---
+
+#### P3b: Emit Initialized Data for Static Locals (and Globals)
+**Expected impact: 1-5% overall, but can be huge for tiny tools**
+
+Today monacc emits all globals into `.bss` using `.zero`, which means it cannot represent initialized objects directly in the binary image. For “initialized static locals” it compensates by generating runtime one-time initialization:
+
+```c
+static char s[] = "abc";  // inside a function
+```
+
+becomes roughly:
+
+```c
+if (!guard) {
+    memcpy(storage, "abc\0", 4);
+    guard = 1;
+}
+```
+
+That adds a hidden guard variable plus extra branches and a memcpy sequence, which is disproportionately expensive in tiny programs (for example `clear`).
+
+**Implementation approach (minimal, high value):**
+1. Extend `GlobalVar` to optionally carry a simple initializer (start with “string bytes for `char[]`”).
+2. For static locals with constant initializers, skip emitting the guard + runtime init statements.
+3. In the ELF/asm emitter, emit such globals into `.data.*` as `.byte ...` plus optional `.zero` padding. Ensure the linker layout is packed (single PT_LOAD) so introducing small `.data` does not add large alignment padding.
+
 
 ---
 

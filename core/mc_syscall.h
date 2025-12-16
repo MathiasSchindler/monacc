@@ -8,6 +8,7 @@
 #define MC_SYS_fstat 5
 #define MC_SYS_lseek 8
 #define MC_SYS_mmap 9
+#define MC_SYS_munmap 11
 #define MC_SYS_close 3
 #define MC_SYS_getuid 102
 #define MC_SYS_getgid 104
@@ -291,6 +292,10 @@ static inline mc_i64 mc_sys_openat(mc_i32 dirfd, const char *path, mc_i32 flags,
 static inline mc_i64 mc_sys_mmap(void *addr, mc_usize len, mc_i32 prot, mc_i32 flags, mc_i32 fd, mc_i64 offset) {
 	return mc_syscall6(MC_SYS_mmap, (mc_i64)addr, (mc_i64)len, (mc_i64)prot, (mc_i64)flags, (mc_i64)fd,
 	                  (mc_i64)offset);
+}
+
+static inline mc_i64 mc_sys_munmap(void *addr, mc_usize len) {
+	return mc_syscall2(MC_SYS_munmap, (mc_i64)addr, (mc_i64)len);
 }
 
 static inline mc_i64 mc_sys_mkdirat(mc_i32 dirfd, const char *path, mc_u32 mode) {

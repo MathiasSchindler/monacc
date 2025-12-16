@@ -419,6 +419,15 @@ int main(int argc, char **argv) {
         ld_argv[base++] = "common-page-size=0x1000";
         ld_argv[base++] = "-e";
         ld_argv[base++] = "_start";
+
+        // Prefer the repo's minimal linker script when available: it keeps a single
+        // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
+        // This also makes small initialized data (e.g. static-local string init) affordable.
+        if (xpath_exists("scripts/minimal.ld")) {
+            ld_argv[base++] = "-T";
+            ld_argv[base++] = "scripts/minimal.ld";
+        }
+
         for (int i = 0; i < nin_paths; i++) {
             ld_argv[base++] = obj_paths[i];
         }

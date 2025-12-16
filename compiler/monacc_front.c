@@ -2,9 +2,71 @@
 
 __attribute__((noreturn, format(printf, 1, 2)))
 void die(const char *fmt, ...) {
-    // Size-win mode: avoid pulling in printf-style formatting.
-    // Keep call sites intact (arguments are ignored) but print the format string literally.
-    xwrite_best_effort(2, fmt, mc_strlen(fmt));
+    // Minimal formatter for common diagnostic patterns.
+    // This avoids pulling in full printf while still giving actionable errors.
+    va_list ap;
+    va_start(ap, fmt);
+
+    for (const char *p = fmt; p && *p; p++) {
+        if (*p != '%') {
+            xwrite_best_effort(2, p, 1);
+            continue;
+        }
+        p++;
+        if (!*p) break;
+
+        if (*p == '%') {
+            xwrite_best_effort(2, "%", 1);
+            continue;
+        }
+
+        if (*p == 's') {
+            const char *s = va_arg(ap, const char *);
+            if (!s) s = "(null)";
+            xwrite_best_effort(2, s, mc_strlen(s));
+            continue;
+        }
+
+        if (*p == 'c') {
+            char c = (char)va_arg(ap, int);
+            xwrite_best_effort(2, &c, 1);
+            continue;
+        }
+
+        if (*p == 'd') {
+            char buf[32];
+            int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "", (mc_i64)va_arg(ap, int), "");
+            if (n > 0) xwrite_best_effort(2, buf, (mc_usize)n);
+            continue;
+        }
+
+        if (*p == 'u') {
+            char buf[32];
+            int n = mc_snprint_cstr_u64_cstr(buf, sizeof(buf), "", (mc_u64)va_arg(ap, unsigned int), "");
+            if (n > 0) xwrite_best_effort(2, buf, (mc_usize)n);
+            continue;
+        }
+
+        // %.*s
+        if (*p == '.') {
+            const char *q = p;
+            if (q[1] == '*' && q[2] == 's') {
+                int n = va_arg(ap, int);
+                const char *s = va_arg(ap, const char *);
+                if (!s) s = "(null)";
+                if (n < 0) n = 0;
+                xwrite_best_effort(2, s, (mc_usize)n);
+                p += 2;
+                continue;
+            }
+        }
+
+        // Unknown format: print it literally to avoid hiding the error.
+        xwrite_best_effort(2, "%", 1);
+        xwrite_best_effort(2, p, 1);
+    }
+
+    va_end(ap);
     xwrite_best_effort(2, "\n", 1);
     _exit(1);
 }

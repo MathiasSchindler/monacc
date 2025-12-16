@@ -14,7 +14,6 @@ ENTRY(_start)
 PHDRS
 {
 	all PT_LOAD FLAGS(7);      /* PF_R | PF_W | PF_X */
-	stack PT_GNU_STACK FLAGS(6); /* PF_R | PF_W */
 }
 
 SECTIONS

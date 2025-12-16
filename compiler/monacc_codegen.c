@@ -321,6 +321,69 @@ static int expr_is_syscall_builtin(const Expr *e) {
     return 1;
 }
 
+static int expr_is_simple_arg(const Expr *e);
+
+static int expr_is_simple_scalar_arg(const Expr *e) {
+    if (!e) return 0;
+    if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return expr_is_simple_scalar_arg(e->lhs);
+
+    // Allow a small, side-effect-free subset of integer arithmetic so pointer
+    // args like `p + (i + 1)` can still be lowered via the direct-arg path.
+    // Keep this conservative: only +/- with an immediate.
+    if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale == 0) {
+        if (!e->lhs || !e->rhs) return 0;
+        if (e->rhs->kind == EXPR_NUM && expr_is_simple_scalar_arg(e->lhs)) return 1;
+        if (e->kind == EXPR_ADD && e->lhs->kind == EXPR_NUM && expr_is_simple_scalar_arg(e->rhs)) return 1;
+        return 0;
+    }
+
+    if (e->kind == EXPR_NUM) return 1;
+    if (e->kind == EXPR_VAR) {
+        if (e->lval_size == 1 || e->lval_size == 2 || e->lval_size == 4 || e->lval_size == 8) return 1;
+        return 0;
+    }
+    if (e->kind == EXPR_GLOBAL) {
+        if (e->lval_size == 1 || e->lval_size == 2 || e->lval_size == 4 || e->lval_size == 8) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+static int expr_is_simple_addr_arg(const Expr *e) {
+    if (!e) return 0;
+    if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return expr_is_simple_addr_arg(e->lhs);
+
+    // &*p  -> p (when p is a simple value load)
+    if (e->kind == EXPR_DEREF) return expr_is_simple_arg(e->lhs);
+
+    if (e->kind == EXPR_VAR) return 1;
+    if (e->kind == EXPR_COMPOUND) return 1;
+    if (e->kind == EXPR_GLOBAL) return 1;
+
+    if (e->kind == EXPR_MEMBER) {
+        // Non-arrow members: base is addressable with a fixed rbp displacement.
+        // Arrow members: allow when base pointer value is a simple arg (load + add off).
+        if (e->member_is_arrow) return expr_is_simple_arg(e->lhs);
+        if (!e->lhs) return 0;
+        if (e->lhs->kind == EXPR_VAR || e->lhs->kind == EXPR_COMPOUND) return 1;
+        return 0;
+    }
+
+    if (e->kind == EXPR_INDEX && e->lhs && e->rhs && e->rhs->kind == EXPR_NUM) {
+        // Only constant-index on addressable objects (stack/global arrays), or on a
+        // simple pointer value (load pointer + add imm offset).
+        const Expr *base = e->lhs;
+        if (base->kind == EXPR_COMPOUND) return 1;
+        if (base->kind == EXPR_VAR && base->lval_size == 0) return 1;
+        if (base->kind == EXPR_VAR && base->lval_size != 0) return 1;
+        if (base->kind == EXPR_GLOBAL && base->lval_size == 0) return 1;
+        if (base->kind == EXPR_GLOBAL && base->lval_size != 0) return 1;
+        return 0;
+    }
+
+    return 0;
+}
+
 // Slightly broader than expr_is_simple_const: expressions that can be loaded
 // directly into *any* register without side effects, and without needing a
 // scratch save/restore scheme.
@@ -330,6 +393,43 @@ static int expr_is_syscall_builtin(const Expr *e) {
 static int expr_is_simple_arg(const Expr *e) {
     if (!e) return 0;
     if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return expr_is_simple_arg(e->lhs);
+    if (e->kind == EXPR_ADDR) return expr_is_simple_addr_arg(e->lhs);
+
+    // Pointer +/- immediate (e.g. buf+1, argv+8). Treat as simple when the pointer
+    // side is a simple arg and the offset is a constant.
+    if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
+        const Expr *ptr_e = NULL;
+        const Expr *imm_e = NULL;
+        if (e->kind == EXPR_ADD) {
+            if (e->ptr_index_side == 1) {
+                ptr_e = e->lhs;
+                imm_e = e->rhs;
+            } else if (e->ptr_index_side == 2) {
+                ptr_e = e->rhs;
+                imm_e = e->lhs;
+            }
+        } else {
+            // For SUB, only pointer - int is supported and ptr_index_side==1.
+            if (e->ptr_index_side == 1) {
+                ptr_e = e->lhs;
+                imm_e = e->rhs;
+            }
+        }
+        if (ptr_e && imm_e && expr_is_simple_scalar_arg(imm_e)) {
+            // Conservative: only scale values supported by LEA.
+            if (!(e->ptr_scale == 1 || e->ptr_scale == 2 || e->ptr_scale == 4 || e->ptr_scale == 8)) return 0;
+            if (imm_e->kind == EXPR_NUM) {
+                long long off = imm_e->num * (long long)e->ptr_scale;
+                if (off >= -2147483648LL && off <= 2147483647LL) {
+                    return expr_is_simple_arg(ptr_e);
+                }
+            } else {
+                // ptr + idx where idx is a simple scalar load.
+                return expr_is_simple_arg(ptr_e);
+            }
+        }
+    }
+
     if (e->kind == EXPR_NUM) return 1;
     if (e->kind == EXPR_STR) return 1;
     if (e->kind == EXPR_FNADDR) return 1;
@@ -384,6 +484,187 @@ static void emit_load_rip_reg(CG *cg, const char *sym, int size, int is_unsigned
 static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, const char *reg32) {
     if (!e) return 0;
     if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return cg_expr_to_reg_simple_arg(cg, e->lhs, reg64, reg32);
+
+    // Simple scalar arithmetic: scalar +/- imm32. This is primarily used by the
+    // ptr+idx lowering path when idx is parenthesized (e.g. `p + (i + 1)`).
+    if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale == 0) {
+        const Expr *base = NULL;
+        long long imm = 0;
+        if (!e->lhs || !e->rhs) return 0;
+        if (e->rhs->kind == EXPR_NUM && expr_is_simple_scalar_arg(e->lhs)) {
+            base = e->lhs;
+            imm = e->rhs->num;
+            if (e->kind == EXPR_SUB) imm = -imm;
+        } else if (e->kind == EXPR_ADD && e->lhs->kind == EXPR_NUM && expr_is_simple_scalar_arg(e->rhs)) {
+            base = e->rhs;
+            imm = e->lhs->num;
+        }
+        if (base) {
+            if (imm < -2147483648LL || imm > 2147483647LL) return 0;
+            if (!cg_expr_to_reg_simple_arg(cg, base, reg64, reg32)) return 0;
+            if (imm != 0) {
+                if (imm > 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, ", imm);
+                } else {
+                    str_appendf_i64(&cg->out, "  sub $%lld, ", -imm);
+                }
+                str_appendf_s(&cg->out, "%s\n", reg64);
+            }
+            return 1;
+        }
+    }
+
+    // Pointer +/- immediate (e.g. buf+1). Load pointer into the target reg and add/sub.
+    if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
+        const Expr *ptr_e = NULL;
+        const Expr *imm_e = NULL;
+        int sign = 1;
+        if (e->kind == EXPR_ADD) {
+            if (e->ptr_index_side == 1) {
+                ptr_e = e->lhs;
+                imm_e = e->rhs;
+            } else if (e->ptr_index_side == 2) {
+                ptr_e = e->rhs;
+                imm_e = e->lhs;
+            }
+        } else {
+            // For SUB, only pointer - int is supported and ptr_index_side==1.
+            if (e->ptr_index_side == 1) {
+                ptr_e = e->lhs;
+                imm_e = e->rhs;
+                sign = -1;
+            }
+        }
+
+        if (ptr_e && imm_e && expr_is_simple_scalar_arg(imm_e)) {
+            if (!(e->ptr_scale == 1 || e->ptr_scale == 2 || e->ptr_scale == 4 || e->ptr_scale == 8)) return 0;
+
+            if (imm_e->kind == EXPR_NUM) {
+                long long off = imm_e->num * (long long)e->ptr_scale;
+                off *= (long long)sign;
+                if (off >= -2147483648LL && off <= 2147483647LL) {
+                    if (!cg_expr_to_reg_simple_arg(cg, ptr_e, reg64, reg32)) return 0;
+                    if (off != 0) {
+                        if (off > 0) {
+                            str_appendf_i64(&cg->out, "  add $%lld, ", off);
+                        } else {
+                            str_appendf_i64(&cg->out, "  sub $%lld, ", -off);
+                        }
+                        str_appendf_s(&cg->out, "%s\n", reg64);
+                    }
+                    return 1;
+                }
+            } else {
+                // ptr +/- idx where idx is a simple scalar load.
+                // Use %r11 as a dedicated scratch so we don't clobber any ABI arg regs.
+                if (!cg_expr_to_reg_simple_arg(cg, ptr_e, reg64, reg32)) return 0;
+                if (!cg_expr_to_reg_simple_arg(cg, imm_e, "%r11", "%r11d")) return 0;
+
+                if (e->ptr_scale != 1) {
+                    int sh = (e->ptr_scale == 2) ? 1 : (e->ptr_scale == 4) ? 2 : 3;
+                    str_appendf_is(&cg->out, "  shl $%d, %s\n", (long long)sh, "%r11");
+                }
+
+                if (sign > 0) {
+                    // lea (%reg64,%r11), %reg64
+                    str_appendf_ss(&cg->out, "  lea (%s,%%r11), %s\n", reg64, reg64);
+                } else {
+                    str_appendf_ss(&cg->out, "  sub %s, %s\n", "%r11", reg64);
+                }
+                return 1;
+            }
+        }
+    }
+
+    if (e->kind == EXPR_ADDR) {
+        const Expr *lhs = e->lhs;
+        while (lhs && (lhs->kind == EXPR_CAST || lhs->kind == EXPR_POS)) lhs = lhs->lhs;
+
+        if (!lhs) return 0;
+        if (lhs->kind == EXPR_DEREF) {
+            // &*p  -> p (when p can be loaded directly into the target reg)
+            if (!lhs->lhs) return 0;
+            return cg_expr_to_reg_simple_arg(cg, lhs->lhs, reg64, reg32);
+        }
+        if (lhs->kind == EXPR_VAR || lhs->kind == EXPR_COMPOUND) {
+            str_appendf_is(&cg->out, "  lea %d(%%rbp), %s\n", (long long)lhs->var_offset, reg64);
+            return 1;
+        }
+        if (lhs->kind == EXPR_GLOBAL) {
+            if (!cg->prg) return 0;
+            const GlobalVar *gv = &cg->prg->globals[lhs->global_id];
+            str_appendf_ss(&cg->out, "  lea %s(%%rip), %s\n", gv->name, reg64);
+            return 1;
+        }
+        if (lhs->kind == EXPR_MEMBER) {
+            if (lhs->member_is_arrow) {
+                // &p->m  -> load p + add off
+                if (!lhs->lhs) return 0;
+                if (!cg_expr_to_reg_simple_arg(cg, lhs->lhs, reg64, reg32)) return 0;
+                if (lhs->member_off) {
+                    str_appendf_i64(&cg->out, "  add $%d, ", (long long)lhs->member_off);
+                    str_appendf_s(&cg->out, "%s\n", reg64);
+                }
+                return 1;
+            }
+            if (!lhs->lhs) return 0;
+            if (lhs->lhs->kind == EXPR_VAR || lhs->lhs->kind == EXPR_COMPOUND) {
+                int disp = lhs->lhs->var_offset + lhs->member_off;
+                str_appendf_is(&cg->out, "  lea %d(%%rbp), %s\n", (long long)disp, reg64);
+                return 1;
+            }
+            return 0;
+        }
+        if (lhs->kind == EXPR_INDEX && lhs->lhs && lhs->rhs && lhs->rhs->kind == EXPR_NUM) {
+            long long idx = lhs->rhs->num;
+            int scale = (lhs->ptr_scale > 0) ? lhs->ptr_scale : 8;
+            long long off = idx * (long long)scale;
+            if (off < -2147483648LL || off > 2147483647LL) return 0;
+
+            const Expr *base = lhs->lhs;
+            if (base->kind == EXPR_COMPOUND) {
+                int disp = base->var_offset + (int)off;
+                str_appendf_is(&cg->out, "  lea %d(%%rbp), %s\n", (long long)disp, reg64);
+                return 1;
+            }
+            if (base->kind == EXPR_VAR && base->lval_size == 0) {
+                int disp = base->var_offset + (int)off;
+                str_appendf_is(&cg->out, "  lea %d(%%rbp), %s\n", (long long)disp, reg64);
+                return 1;
+            }
+            if (base->kind == EXPR_GLOBAL && base->lval_size == 0) {
+                if (!cg->prg) return 0;
+                const GlobalVar *gv = &cg->prg->globals[base->global_id];
+                if (off == 0) {
+                    str_appendf_ss(&cg->out, "  lea %s(%%rip), %s\n", gv->name, reg64);
+                } else {
+                    str_appendf_si(&cg->out, "  lea %s%+d(%%rip), ", gv->name, (long long)(int)off);
+                    str_appendf_s(&cg->out, "%s\n", reg64);
+                }
+                return 1;
+            }
+
+            // Pointer base: load pointer value then add the constant scaled offset.
+            if (base->kind == EXPR_VAR && base->lval_size != 0) {
+                if (!cg_expr_to_reg_simple_arg(cg, base, reg64, reg32)) return 0;
+                if (off != 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, ", off);
+                    str_appendf_s(&cg->out, "%s\n", reg64);
+                }
+                return 1;
+            }
+            if (base->kind == EXPR_GLOBAL && base->lval_size != 0) {
+                if (!cg_expr_to_reg_simple_arg(cg, base, reg64, reg32)) return 0;
+                if (off != 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, ", off);
+                    str_appendf_s(&cg->out, "%s\n", reg64);
+                }
+                return 1;
+            }
+            return 0;
+        }
+        return 0;
+    }
     if (e->kind == EXPR_NUM || e->kind == EXPR_STR) {
         return cg_expr_to_reg(cg, e, reg64, reg32);
     }
@@ -999,6 +1280,13 @@ static void cg_call(CG *cg, const Expr *e) {
             for (int i = 0; i < e->nargs; i++) {
                 (void)cg_expr_to_reg_simple_arg(cg, e->args[i], sreg64[i], sreg32[i]);
             }
+        } else if (need_stack == 1 && !expr_is_simple_arg(e->args[0])) {
+            // Common mixed case: syscall number is complex but all other args are simple.
+            // We can avoid stack shuffling because cg_expr_to_reg_simple_arg doesn't clobber %rax.
+            cg_expr(cg, e->args[0]);
+            for (int i = 1; i < e->nargs; i++) {
+                (void)cg_expr_to_reg_simple_arg(cg, e->args[i], sreg64[i], sreg32[i]);
+            }
         } else {
             // Mixed: evaluate complex args first (push), then load simple ones directly.
             // Push complex args left-to-right.
@@ -1183,6 +1471,7 @@ static void cg_sret_call(CG *cg, const Expr *e) {
     // Call a known function returning a struct by value using an sret pointer.
     // We allocate a stack temporary at e->var_offset and pass its address in %rdi.
     static const char *areg[5] = {"%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    static const char *areg32[5] = {"%esi", "%edx", "%ecx", "%r8d", "%r9d"};
     CallArgInfo ai[64];
     if (e->nargs > (int)(sizeof(ai) / sizeof(ai[0]))) {
         die("too many call args");
@@ -1237,21 +1526,31 @@ static void cg_sret_call(CG *cg, const Expr *e) {
         }
     }
 
-    // Evaluate reg args left-to-right and push temporarily.
+    // Evaluate reg args: push complex ones, load simple ones directly at the end.
     for (int i = 0; i < e->nargs; i++) {
         if (ai[i].kind != CALLARG_REG) continue;
-        cg_expr(cg, e->args[i]);
-        str_appendf(&cg->out, "  push %%rax\n");
+        if (!expr_is_simple_arg(e->args[i])) {
+            cg_expr(cg, e->args[i]);
+            str_appendf(&cg->out, "  push %%rax\n");
+        }
     }
 
     // Set sret pointer.
     str_appendf_i64(&cg->out, "  lea %d(%%rbp), %%rdi\n", e->var_offset);
 
-    // Pop into registers right-to-left.
+    // Pop complex args into registers right-to-left.
     for (int i = e->nargs - 1; i >= 0; i--) {
         if (ai[i].kind != CALLARG_REG) continue;
-        str_appendf(&cg->out, "  pop %%rax\n");
-        str_appendf_s(&cg->out, "  mov %%rax, %s\n", areg[ai[i].reg]);
+        if (!expr_is_simple_arg(e->args[i])) {
+            str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
+        }
+    }
+    // Load simple args directly into target registers.
+    for (int i = 0; i < e->nargs; i++) {
+        if (ai[i].kind != CALLARG_REG) continue;
+        if (expr_is_simple_arg(e->args[i])) {
+            (void)cg_expr_to_reg_simple_arg(cg, e->args[i], areg[ai[i].reg], areg32[ai[i].reg]);
+        }
     }
 
     if (e->callee[0] == 0) {
@@ -2715,7 +3014,34 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
         case STMT_DECL:
             if (s->decl_init) {
                 cg_expr(cg, s->decl_init);
-                emit_store_disp(cg, s->decl_offset, "%rbp", s->decl_store_size);
+                // Optimization: store scalar locals as 8 bytes with proper extension.
+                int sz = s->decl_store_size;
+                if (sz == 1 || sz == 2 || sz == 4) {
+                    // Use the init expression's signedness for extension.
+                    int is_unsigned = s->decl_init->is_unsigned;
+                    if (sz == 1) {
+                        if (is_unsigned) {
+                            str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+                        } else {
+                            str_appendf(&cg->out, "  movsbq %%al, %%rax\n");
+                        }
+                    } else if (sz == 2) {
+                        if (is_unsigned) {
+                            str_appendf(&cg->out, "  movzw %%ax, %%eax\n");
+                        } else {
+                            str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
+                        }
+                    } else { // sz == 4
+                        if (is_unsigned) {
+                            str_appendf(&cg->out, "  mov %%eax, %%eax\n");
+                        } else {
+                            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                        }
+                    }
+                    emit_store_disp(cg, s->decl_offset, "%rbp", 8);
+                } else {
+                    emit_store_disp(cg, s->decl_offset, "%rbp", sz);
+                }
             }
             return;
         case STMT_IF:
@@ -2896,15 +3222,51 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
         }
     }
 
-    // Emit global variables in .bss section
+    // Emit global variables. Most are in .bss (zero-init only), but we support a minimal
+    // initializer form (currently: string bytes for char arrays), emitted into .data.
     if (prg->nglobals > 0) {
         for (int i = 0; i < prg->nglobals; i++) {
             const GlobalVar *gv = &prg->globals[i];
             if (gv->is_extern) continue;
-            // Each global in its own section for --gc-sections
-            str_appendf_s(&cg.out, ".section .bss.%s,\"aw\",@nobits\n", gv->name);
+
             // Compute alignment (use power of 2, max 8)
             int align = (gv->elem_size >= 8) ? 8 : (gv->elem_size >= 4) ? 4 : (gv->elem_size >= 2) ? 2 : 1;
+
+            if (gv->has_init && gv->init_str_id >= 0) {
+                // Each global in its own section for --gc-sections.
+                // Needs to be writable for cases like `static char s[] = "abc"; s[0] = ...;`.
+                str_appendf_s(&cg.out, ".section .data.%s,\"aw\",@progbits\n", gv->name);
+                str_appendf_is(&cg.out, ".align %d\n%s:\n", (long long)align, gv->name);
+
+                if (gv->init_str_id >= prg->nstrs) {
+                    die("internal: bad init_str_id %d", gv->init_str_id);
+                }
+                const StringLit *sl = &prg->strs[gv->init_str_id];
+                mc_usize len = sl->len;
+                if (gv->size > 0 && len > (mc_usize)gv->size) len = (mc_usize)gv->size;
+
+                for (mc_usize off = 0; off < len; ) {
+                    str_appendf(&cg.out, "  .byte ");
+                    mc_usize n = len - off;
+                    if (n > 16) n = 16;
+                    for (mc_usize j = 0; j < n; j++) {
+                        unsigned int b = (unsigned int)sl->data[off + j];
+                        str_appendf_su(&cg.out, "%s%u", (j == 0) ? "" : ", ", (unsigned long long)b);
+                    }
+                    str_appendf(&cg.out, "\n");
+                    off += n;
+                }
+                if (gv->size > (int)len) {
+                    str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size - (int)len);
+                } else {
+                    str_appendf(&cg.out, "\n");
+                }
+                continue;
+            }
+
+            // Default: .bss (zero-init only)
+            // Each global in its own section for --gc-sections
+            str_appendf_s(&cg.out, ".section .bss.%s,\"aw\",@nobits\n", gv->name);
             str_appendf_is(&cg.out, ".align %d\n%s:\n", (long long)align, gv->name);
             str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size);
         }

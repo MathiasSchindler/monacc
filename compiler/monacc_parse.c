@@ -1726,6 +1726,10 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
 
             int has_init = tok_is(p, TOK_ASSIGN);
 
+            // If we can emit the initializer directly as data, we can avoid generating
+            // a runtime one-time init guard+memcpy sequence.
+            int static_init_as_data = 0;
+
             // Parse initializer for arrays early so we can deduce size for unsized arrays.
             // For scalars/structs we use the existing parse_expr path.
             InitEnt *static_array_inits = NULL;
@@ -1761,6 +1765,10 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
                         array_elems = alloc_size;
                         unsized_array = 0;
                     }
+
+                    // We can emit this initializer directly into .data (writable), which is
+                    // correct even if the program later mutates the array.
+                    static_init_as_data = 1;
                 } else if (consume(p, TOK_LBRACE)) {
                     int cap = 0;
                     while (!tok_is(p, TOK_RBRACE)) {
@@ -1861,31 +1869,41 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
             }
             if (gid_existing < 0) die("internal: failed to add static local global");
 
-            // Hidden guard global (0 => not initialized, 1 => initialized)
-            GlobalVar gguard;
-            mc_memset(&gguard, 0, sizeof(gguard));
-            if (mc_strlen(guard_name) >= sizeof(gguard.name)) die("internal: static local guard name too long");
-            mc_memcpy(gguard.name, guard_name, mc_strlen(guard_name));
-            gguard.name[mc_strlen(guard_name)] = 0;
-            gguard.base = BT_LONG;
-            gguard.ptr = 0;
-            gguard.struct_id = -1;
-            gguard.is_unsigned = 0;
-            gguard.is_static = 1;
-            gguard.is_extern = 0;
-            gguard.array_len = 0;
-            gguard.elem_size = 8;
-            gguard.size = 8;
-            int gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
-            if (gid_guard < 0) {
-                program_add_global(p->prg, &gguard);
-                gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
+            if (static_init_as_data) {
+                GlobalVar *gdst = &p->prg->globals[gid_existing];
+                gdst->has_init = 1;
+                gdst->init_str_id = static_array_string_id;
             }
-            if (gid_guard < 0) die("internal: failed to add static local guard global");
+
+            // Hidden guard global (0 => not initialized, 1 => initialized). Only needed
+            // when we must emit runtime init code.
+            int gid_guard = -1;
+            if (has_init && !static_init_as_data) {
+                GlobalVar gguard;
+                mc_memset(&gguard, 0, sizeof(gguard));
+                if (mc_strlen(guard_name) >= sizeof(gguard.name)) die("internal: static local guard name too long");
+                mc_memcpy(gguard.name, guard_name, mc_strlen(guard_name));
+                gguard.name[mc_strlen(guard_name)] = 0;
+                gguard.base = BT_LONG;
+                gguard.ptr = 0;
+                gguard.struct_id = -1;
+                gguard.is_unsigned = 0;
+                gguard.is_static = 1;
+                gguard.is_extern = 0;
+                gguard.array_len = 0;
+                gguard.elem_size = 8;
+                gguard.size = 8;
+                gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
+                if (gid_guard < 0) {
+                    program_add_global(p->prg, &gguard);
+                    gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
+                }
+                if (gid_guard < 0) die("internal: failed to add static local guard global");
+            }
 
             (void)local_add_globalref(ls, nm, nm_len, gid_existing, base, (is_array ? (ptr - 1) : ptr), sid, is_unsigned, lval_size, alloc_size, array_stride);
 
-            if (has_init) {
+            if (has_init && !static_init_as_data) {
                 // Condition: if (!guard)
                 Expr *guard_val = new_expr(EXPR_GLOBAL);
                 guard_val->global_id = gid_guard;

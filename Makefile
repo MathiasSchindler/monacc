@@ -79,6 +79,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	array_constexpr prefix_incdec compound_literal postinc_member_array sret_cond \
 	unsigned_divmod_pow2 const_index sizeof_array packed_struct compound_literal_assign_global extern_incomplete_array static_local_array static_local_init \
 	global_array_store \
+	addr_deref_syscall \
 	asm_syscall
 
 # Default goal: build everything

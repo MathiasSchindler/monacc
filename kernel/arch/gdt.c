@@ -18,13 +18,9 @@ struct tss64 {
 	uint16_t iomap_base;
 } __attribute__((packed));
 
-struct gdt_ptr {
-	uint16_t limit;
-	uint64_t base;
-} __attribute__((packed));
-
 static uint64_t gdt[7];
 static struct tss64 tss;
+static uint8_t kstack0[16384] __attribute__((aligned(16)));
 
 static uint64_t make_seg(uint8_t access, uint8_t flags) {
 	/* Flat segment: limit=0xFFFFF, base=0 */
@@ -61,17 +57,19 @@ static void set_tss_desc(int idx, uint64_t base, uint32_t limit) {
 }
 
 static void gdt_reload(uint16_t code_sel, uint16_t data_sel) {
+	/* Use explicit segment register loads - monacc doesn't support %w modifier */
+	__asm__ volatile("mov %0, %%ds" :: "r"(data_sel));
+	__asm__ volatile("mov %0, %%es" :: "r"(data_sel));
+	__asm__ volatile("mov %0, %%ss" :: "r"(data_sel));
+	/* Far return to reload CS: push CS, push return address, lretq */
 	__asm__ volatile(
-		"movw %w0, %%ds\n"
-		"movw %w0, %%es\n"
-		"movw %w0, %%ss\n"
-		"pushq %1\n"
+		"pushq %0\n"
 		"leaq 1f(%%rip), %%rax\n"
 		"pushq %%rax\n"
 		"lretq\n"
 		"1:\n"
 		:
-		: "r"(data_sel), "r"((uint64_t)code_sel)
+		: "r"((uint64_t)code_sel)
 		: "rax", "memory");
 }
 
@@ -92,17 +90,57 @@ void gdt_tss_init(void) {
 	gdt[5] = 0;
 	gdt[6] = 0;
 
-	static uint8_t kstack0[16384] __attribute__((aligned(16)));
-	tss = (struct tss64){0};
-	tss.rsp0 = (uint64_t)(kstack0 + sizeof(kstack0));
-	tss.iomap_base = sizeof(struct tss64);
+	/* kstack0 is at file scope to ensure it's in BSS, not on function stack.
+	 * Note: monacc doesn't handle static local arrays correctly.
+	 * Also, monacc's sizeof returns wrong value for packed structs.
+	 * TSS64 is exactly 104 bytes (0x68).
+	 * monacc's compound literal copy only copies 8 bytes - must zero manually.
+	 * monacc also doesn't honor __attribute__((packed)) for struct layout,
+	 * so we must use raw byte offsets:
+	 *   RSP0 at offset 4 (8 bytes)
+	 *   iomap_base at offset 102 (2 bytes) */
+	{
+		uint8_t *p = (uint8_t *)&tss;
+		int i;
+		for (i = 0; i < 104; i++) {
+			p[i] = 0;
+		}
+		/* RSP0 at offset 4 (8 bytes, little-endian) */
+		{
+			uint64_t rsp0val = (uint64_t)(kstack0 + 16384);
+			p[4] = (uint8_t)(rsp0val);
+			p[5] = (uint8_t)(rsp0val >> 8);
+			p[6] = (uint8_t)(rsp0val >> 16);
+			p[7] = (uint8_t)(rsp0val >> 24);
+			p[8] = (uint8_t)(rsp0val >> 32);
+			p[9] = (uint8_t)(rsp0val >> 40);
+			p[10] = (uint8_t)(rsp0val >> 48);
+			p[11] = (uint8_t)(rsp0val >> 56);
+		}
+		/* iomap_base at offset 102 (2 bytes) */
+		p[102] = 104;  /* low byte */
+		p[103] = 0;    /* high byte */
+	}
 
-	set_tss_desc(5, (uint64_t)&tss, (uint32_t)(sizeof(tss) - 1));
+	set_tss_desc(5, (uint64_t)&tss, (uint32_t)(104 - 1));  /* limit = 103 */
 
-	struct gdt_ptr gdtr;
-	gdtr.limit = (uint16_t)(sizeof(gdt) - 1);
-	gdtr.base = (uint64_t)gdt;
-	__asm__ volatile("lgdt %0" :: "m"(gdtr));
+	/* Build GDT pointer in a byte array: 2-byte limit + 8-byte base */
+	/* Note: sizeof(gdt) doesn't work correctly in monacc for arrays,
+	   so we compute it as 7 * sizeof(uint64_t) = 56 */
+	uint8_t gdtr[10];
+	uint16_t lim = (uint16_t)(7 * 8 - 1);  /* 7 entries * 8 bytes - 1 = 55 */
+	uint64_t base = (uint64_t)gdt;
+	gdtr[0] = (uint8_t)(lim & 0xFF);
+	gdtr[1] = (uint8_t)(lim >> 8);
+	gdtr[2] = (uint8_t)(base);
+	gdtr[3] = (uint8_t)(base >> 8);
+	gdtr[4] = (uint8_t)(base >> 16);
+	gdtr[5] = (uint8_t)(base >> 24);
+	gdtr[6] = (uint8_t)(base >> 32);
+	gdtr[7] = (uint8_t)(base >> 40);
+	gdtr[8] = (uint8_t)(base >> 48);
+	gdtr[9] = (uint8_t)(base >> 56);
+	__asm__ volatile("lgdt (%0)" :: "r"(gdtr) : "memory");
 
 	/* Reload segments + CS via far return. */
 	gdt_reload(0x08, 0x10);

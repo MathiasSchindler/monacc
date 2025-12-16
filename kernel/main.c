@@ -6,12 +6,27 @@ void gdt_tss_init(void);
 void tss_load(void);
 void idt_init(void);
 
-extern const uint8_t userprog_start[];
-extern const uint8_t userprog_end[];
+/* Get user program address from linker symbol via function pointer trick.
+ * This avoids monacc issues with extern array declarations. */
+void userprog_start_func(void);
+void userprog_end_func(void);
 
 struct regs {
-	uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-	uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
+	uint64_t r15;
+	uint64_t r14;
+	uint64_t r13;
+	uint64_t r12;
+	uint64_t r11;
+	uint64_t r10;
+	uint64_t r9;
+	uint64_t r8;
+	uint64_t rdi;
+	uint64_t rsi;
+	uint64_t rbp;
+	uint64_t rbx;
+	uint64_t rdx;
+	uint64_t rcx;
+	uint64_t rax;
 };
 
 static void kmemcpy(void *dst, const void *src, size_t n) {
@@ -34,7 +49,23 @@ static void serial_write_u64_dec(uint64_t v) {
 	while (i--) serial_putc(buf[i]);
 }
 
+static void serial_write_hex(uint64_t v) {
+	const char *hex = "0123456789abcdef";
+	char buf[16];
+	int i;
+	for (i = 0; i < 16; i++) {
+		buf[15 - i] = hex[v & 0xf];
+		v >>= 4;
+	}
+	/* Skip leading zeros but keep at least one digit */
+	for (i = 0; i < 15 && buf[i] == '0'; i++);
+	while (i < 16) serial_putc(buf[i++]);
+}
+
 void syscall_handler(struct regs *r) {
+	serial_write("[k] syscall ");
+	serial_write_hex(r->rax);
+	serial_write("\n");
 	/* Linux x86_64 syscall numbers */
 	switch (r->rax) {
 	case 0: { /* read(fd, buf, count) */
@@ -71,6 +102,73 @@ void syscall_handler(struct regs *r) {
 		r->rax = count;
 		return;
 	}
+	case 9: { /* mmap(addr, len, prot, flags, fd, offset) */
+		uint64_t addr = r->rdi;
+		uint64_t len = r->rsi;
+		uint64_t prot = r->rdx;
+		uint64_t flags = r->r10;
+		int64_t fd = (int64_t)r->r8;
+		uint64_t offset = r->r9;
+		
+		serial_write("[k] mmap: len=");
+		serial_write_u64_dec(len);
+		serial_write(" flags=0x");
+		serial_write_hex(flags);
+		serial_write("\n");
+		
+		/* We only support anonymous private mappings */
+		if (!(flags & MAP_ANONYMOUS) || !(flags & MAP_PRIVATE)) {
+			serial_write("[k] mmap: bad flags\n");
+			r->rax = (uint64_t)-22;  /* -EINVAL */
+			return;
+		}
+		/* fd must be -1 for anonymous, offset must be 0 */
+		if (fd != -1 || offset != 0) {
+			serial_write("[k] mmap: bad fd/offset\n");
+			r->rax = (uint64_t)-22;  /* -EINVAL */
+			return;
+		}
+		/* We ignore addr hint for now (always pick our own address) */
+		(void)addr;
+		(void)prot;  /* We always map read+write for now */
+		
+		/* Round up length to page size */
+		uint64_t pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+		if (pages == 0) pages = 1;
+		
+		uint64_t paddr = pmm_alloc_pages((uint32_t)pages);
+		if (paddr == 0) {
+			serial_write("[k] mmap: out of memory\n");
+			r->rax = (uint64_t)-12;  /* -ENOMEM */
+			return;
+		}
+		
+		/* Zero the allocated memory (mmap guarantees zeroed pages) */
+		uint8_t *p = (uint8_t *)paddr;
+		uint64_t i;
+		for (i = 0; i < pages * PAGE_SIZE; i++) {
+			p[i] = 0;
+		}
+		
+		serial_write("[k] mmap: returning 0x");
+		serial_write_hex(paddr);
+		serial_write("\n");
+		
+		/* Since we use identity mapping, physical = virtual */
+		r->rax = paddr;
+		return;
+	}
+	case 11: { /* munmap(addr, len) */
+		uint64_t addr = r->rdi;
+		uint64_t len = r->rsi;
+		
+		uint64_t pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+		if (pages == 0) pages = 1;
+		
+		pmm_free_pages(addr, (uint32_t)pages);
+		r->rax = 0;
+		return;
+	}
 	case 60: /* exit(code) */
 		serial_write("Process exited with code ");
 		serial_write_u64_dec(r->rdi);
@@ -105,7 +203,7 @@ static __attribute__((noreturn)) void enter_user(uint64_t user_rip, uint64_t use
 		:
 		: "r"(USER_DS), "r"(user_rsp), "r"(USER_CS), "r"(user_rip)
 		: "rax", "memory");
-	__builtin_unreachable();
+	for (;;) { __asm__ volatile("hlt"); }
 }
 
 static __attribute__((noreturn)) void halt_forever(void) {
@@ -118,6 +216,11 @@ __attribute__((noreturn)) void kmain(void) {
 	serial_init();
 	serial_write("monacc kernel\n");
 
+	/* Initialize physical memory manager */
+	serial_write("[k] pmm_init...\n");
+	pmm_init();
+	serial_write("[k] pmm_init ok\n");
+
 	/* Set up GDT (with ring-3 segments) + TSS, then IDT with int 0x80 gate. */
 	serial_write("[k] gdt_tss_init...\n");
 	gdt_tss_init();
@@ -129,14 +232,13 @@ __attribute__((noreturn)) void kmain(void) {
 	idt_init();
 	serial_write("[k] idt_init ok\n");
 
-	/* Copy the tiny user program to a known low address and jump to ring 3. */
-	uint8_t *user_dst = (uint8_t *)0x200000;
-	size_t user_len = (size_t)(userprog_end - userprog_start);
-	kmemcpy(user_dst, userprog_start, user_len);
-
+	/* Run the user program from its embedded location in the kernel.
+	 * We don't copy it because it uses RIP-relative addressing for strings.
+	 * User stack is at a separate location (0x300000). */
 	uint64_t user_stack_top = 0x300000;
+	uint64_t user_entry = (uint64_t)userprog_start_func;
 	serial_write("Entering userland...\n");
-	enter_user((uint64_t)user_dst, user_stack_top);
+	enter_user(user_entry, user_stack_top);
 
 	halt_forever();
 }

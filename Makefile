@@ -70,7 +70,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	typedef_multi enum enum_constexpr struct_array fnptr_member ternary \
 	cast cast_void logical bitwise_or_xor hex_macro call7 struct_copy \
 	array_constexpr prefix_incdec compound_literal postinc_member_array sret_cond \
-	unsigned_divmod_pow2 const_index
+	unsigned_divmod_pow2 const_index sizeof_array packed_struct compound_literal_assign_global extern_incomplete_array static_local_array static_local_init
 
 # Default goal: build everything
 .DEFAULT_GOAL := all

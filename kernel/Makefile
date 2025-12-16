@@ -1,8 +1,10 @@
-# Phase 0: Multiboot2 + serial hello
+# Phase 2: Multiboot2 + serial I/O + syscalls (read/write/exit)
+# Now building with monacc!
 
 ARCH ?= x86_64
 
-CC ?= gcc
+# Use monacc for C files, GNU as for assembly
+CC := ../bin/monacc
 AS ?= as
 LD ?= ld
 
@@ -21,9 +23,8 @@ OVMF_VARS := $(BUILD)/ovmf_vars.fd
 # Video device for UEFI boot. OVMF typically provides GOP for virtio.
 VGA ?= virtio
 
-CFLAGS := -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -O2 -Wall -Wextra \
-	-mno-red-zone -mcmodel=kernel -m64 -nostdlib \
-	-mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-avx -msoft-float
+# monacc flags: just -c and -I include
+CFLAGS := -c -I include
 
 ASFLAGS := --64
 
@@ -33,10 +34,12 @@ OBJS := \
 	$(BUILD)/boot/multiboot2.o \
 	$(BUILD)/main.o \
 	$(BUILD)/arch/serial.o \
+	$(BUILD)/arch/except.o \
 	$(BUILD)/arch/idt.o \
 	$(BUILD)/arch/gdt.o \
 	$(BUILD)/arch/isr.o \
-	$(BUILD)/user/test_exit.o
+	$(BUILD)/mm/pmm.o \
+	$(BUILD)/user/test_mmap.o
 
 .PHONY: all clean iso run elf
 
@@ -55,25 +58,34 @@ $(BUILD)/boot/multiboot2.o: boot/multiboot2.S | $(BUILD)/boot
 	$(AS) $(ASFLAGS) -o $@ $<
 
 $(BUILD)/main.o: main.c include/kernel.h | $(BUILD)
-	$(CC) $(CFLAGS) -Iinclude -c -o $@ main.c
+	$(CC) $(CFLAGS) main.c -o $@
 
 $(BUILD)/arch/serial.o: arch/serial.c include/kernel.h | $(BUILD)/arch
-	$(CC) $(CFLAGS) -Iinclude -c -o $@ arch/serial.c
+	$(CC) $(CFLAGS) arch/serial.c -o $@
+
+$(BUILD)/arch/except.o: arch/except.c include/kernel.h | $(BUILD)/arch
+	$(CC) $(CFLAGS) arch/except.c -o $@
 
 $(BUILD)/arch/idt.o: arch/idt.c include/kernel.h | $(BUILD)/arch
-	$(CC) $(CFLAGS) -Iinclude -c -o $@ arch/idt.c
+	$(CC) $(CFLAGS) arch/idt.c -o $@
 
 $(BUILD)/arch/gdt.o: arch/gdt.c include/kernel.h | $(BUILD)/arch
-	$(CC) $(CFLAGS) -Iinclude -c -o $@ arch/gdt.c
+	$(CC) $(CFLAGS) arch/gdt.c -o $@
 
 $(BUILD)/arch/isr.o: arch/isr.S | $(BUILD)/arch
 	$(AS) $(ASFLAGS) -o $@ arch/isr.S
 
+$(BUILD)/mm:
+	mkdir -p $(BUILD)/mm
+
+$(BUILD)/mm/pmm.o: mm/pmm.c include/kernel.h | $(BUILD)/mm
+	$(CC) $(CFLAGS) mm/pmm.c -o $@
+
 $(BUILD)/user:
 	mkdir -p $(BUILD)/user
 
-$(BUILD)/user/test_exit.o: user/test_exit.S | $(BUILD)/user
-	$(AS) $(ASFLAGS) -o $@ user/test_exit.S
+$(BUILD)/user/test_mmap.o: user/test_mmap.S | $(BUILD)/user
+	$(AS) $(ASFLAGS) -o $@ user/test_mmap.S
 
 elf: $(KERNEL_ELF)
 

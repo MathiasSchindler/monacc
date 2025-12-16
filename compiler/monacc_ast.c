@@ -54,6 +54,7 @@ int local_add_fixed(Locals *ls, const char *nm, size_t nm_len, BaseType base, in
     mc_memcpy(l->name, nm, nm_len);
     l->name[nm_len] = 0;
     l->offset = offset;
+    l->global_id = -1;
     l->base = base;
     l->ptr = ptr;
     l->struct_id = struct_id;
@@ -166,6 +167,7 @@ int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr,
     mc_memcpy(l->name, nm, nm_len);
     l->name[nm_len] = 0;
     l->offset = ls->next_offset;
+    l->global_id = -1;
     l->base = base;
     l->ptr = ptr;
     l->struct_id = struct_id;
@@ -174,6 +176,29 @@ int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr,
     l->alloc_size = alloc_size;
     l->array_stride = array_stride;
     return l->offset;
+}
+
+int local_add_globalref(Locals *ls, const char *nm, size_t nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+                        int alloc_size, int array_stride) {
+    if (ls->nlocals >= (int)(sizeof(ls->locals) / sizeof(ls->locals[0]))) {
+        die("too many locals");
+    }
+    if (nm_len == 0 || nm_len >= sizeof(ls->locals[0].name)) {
+        die("local name too long");
+    }
+    Local *l = &ls->locals[ls->nlocals++];
+    mc_memcpy(l->name, nm, nm_len);
+    l->name[nm_len] = 0;
+    l->offset = 0;
+    l->global_id = global_id;
+    l->base = base;
+    l->ptr = ptr;
+    l->struct_id = struct_id;
+    l->is_unsigned = is_unsigned;
+    l->size = lval_size;
+    l->alloc_size = alloc_size;
+    l->array_stride = array_stride;
+    return 0;
 }
 
 // Check if a function is a candidate for inlining:
@@ -457,3 +482,37 @@ int type_sizeof(const Program *prg, BaseType base, int ptr, int struct_id) {
     return 8;
 }
 
+void program_add_global(Program *p, const GlobalVar *gv) {
+    // Check if already present
+    for (int i = 0; i < p->nglobals; i++) {
+        if (mc_strcmp(p->globals[i].name, gv->name) == 0) {
+            // Prefer a real definition over an extern declaration.
+            if (p->globals[i].is_extern && !gv->is_extern) {
+                p->globals[i] = *gv;
+            }
+            // Otherwise keep the existing entry (definition beats extern; first wins for extern-only).
+            return;
+        }
+    }
+    if (p->nglobals + 1 > p->globalcap) {
+        int ncap = p->globalcap ? p->globalcap * 2 : 16;
+        GlobalVar *ng = (GlobalVar *)monacc_realloc(p->globals, (size_t)ncap * sizeof(*ng));
+        if (!ng) die("oom");
+        p->globals = ng;
+        p->globalcap = ncap;
+    }
+    p->globals[p->nglobals] = *gv;
+    p->nglobals++;
+}
+
+int program_find_global(const Program *p, const char *name, size_t name_len) {
+    if (!p || !name || name_len == 0) return -1;
+    if (name_len >= 128) return -1;
+    for (int i = 0; i < p->nglobals; i++) {
+        if (mc_strncmp(p->globals[i].name, name, name_len) == 0 &&
+            p->globals[i].name[name_len] == 0) {
+            return i;
+        }
+    }
+    return -1;
+}

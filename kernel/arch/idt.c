@@ -16,6 +16,10 @@ struct idt_ptr {
 } __attribute__((packed));
 
 extern void isr80(void);
+extern void isr6(void);
+extern void isr8(void);
+extern void isr13(void);
+extern void isr14(void);
 
 static struct idt_entry idt[256];
 
@@ -38,8 +42,27 @@ void idt_init(void) {
 	/* int 0x80: present | DPL=3 | interrupt gate */
 	idt_set_gate(0x80, isr80, 0xEE);
 
-	struct idt_ptr idtr;
-	idtr.limit = (uint16_t)(sizeof(idt) - 1);
-	idtr.base = (uint64_t)idt;
-	__asm__ volatile("lidt %0" :: "m"(idtr));
+	/* Exceptions: present | DPL=0 | interrupt gate */
+	idt_set_gate(6, isr6, 0x8E);   /* #UD */
+	idt_set_gate(8, isr8, 0x8E);   /* #DF */
+	idt_set_gate(13, isr13, 0x8E); /* #GP */
+	idt_set_gate(14, isr14, 0x8E); /* #PF */
+
+	/* Note: monacc's sizeof(array) returns element size, not array size.
+	 * Compute manually: 256 entries * 16 bytes = 4096 bytes.
+	 * Use byte array for IDTR to avoid monacc struct memory operand issues. */
+	uint8_t idtr[10];
+	uint16_t lim = (uint16_t)(256 * 16 - 1);
+	uint64_t base = (uint64_t)idt;
+	idtr[0] = (uint8_t)(lim & 0xFF);
+	idtr[1] = (uint8_t)(lim >> 8);
+	idtr[2] = (uint8_t)(base);
+	idtr[3] = (uint8_t)(base >> 8);
+	idtr[4] = (uint8_t)(base >> 16);
+	idtr[5] = (uint8_t)(base >> 24);
+	idtr[6] = (uint8_t)(base >> 32);
+	idtr[7] = (uint8_t)(base >> 40);
+	idtr[8] = (uint8_t)(base >> 48);
+	idtr[9] = (uint8_t)(base >> 56);
+	__asm__ volatile("lidt (%0)" :: "r"(idtr) : "memory");
 }

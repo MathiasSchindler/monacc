@@ -191,3 +191,14 @@ Policy:
 - Prefer shared `mc_*` APIs over `#ifdef MONACC` branches
 - Use `#ifdef MONACC` only for genuinely compiler-specific constraints
 - Preserve gcc/clang build as the reference behavior
+
+---
+
+## Related: kernel/
+
+This repository also contains an experimental x86_64 kernel in kernel/.
+
+It is a separate subproject intended to run monacc-built userland under QEMU (Linux syscall ABI). The kernel has its own documentation:
+
+- kernel/status.md
+- kernel/plan.md

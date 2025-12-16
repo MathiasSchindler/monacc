@@ -6,9 +6,53 @@ A minimal kernel for Linux x86_64 syscall-compatible userland, designed to run m
 
 1. **Run monacc userland** — Execute the existing 70 tools without modification
 2. **Minimal footprint** — Target <100KB kernel binary
-3. **Self-hosted** — Eventually compile with monacc itself
+3. **Self-hosted** — Compile kernel C code with monacc ✓ (achieved as of Phase 2!)
 4. **QEMU-first** — No real hardware support required
 5. **Educational** — Clear, simple code over performance
+
+## Current Status
+
+**The kernel now compiles with monacc!** As of Phase 2, all C files are compiled with `../bin/monacc`, with only assembly files (`.S`) using GNU as.
+
+### monacc limitations discovered
+
+The following issues were encountered and worked around:
+
+1. **`sizeof(array)` returns pointer size (8) instead of array size**
+   - Impact: GDT limit was 7 instead of 55, causing #GP faults
+   - Workaround: Hardcode array sizes as `N * element_size`
+
+2. **No `%w` or `%b` operand modifiers in inline asm**
+   - Impact: Can't use `movw %w0, %%ds` for sized register operands
+   - Workaround: Use separate `__asm__ volatile` statements, push/pop through %r8
+
+3. **Memory operand `"m"` issues with packed structs for lgdt/lidt**
+   - Impact: Corrupted GDT register base address
+   - Workaround: Build GDTR as byte array, use register-indirect `lgdt (%r8)`
+
+4. **No `__builtin_unreachable()`**
+   - Impact: Compiler doesn't know function won't return
+   - Workaround: Use infinite halt loop `for(;;) __asm__("hlt");`
+
+5. **`extern` array declarations create local BSS symbols**
+   - Impact: `extern unsigned char userprog_start[]` generates local symbol at 0, not external reference
+   - Workaround: Declare as function pointer `void userprog_start_func(void)` and cast to uint64_t
+
+6. **`static` local arrays placed on stack, not BSS**
+   - Impact: `static uint8_t kstack0[16384]` inside function uses stack space
+   - Workaround: Move static arrays to file scope
+
+7. **`sizeof(packed struct)` returns wrong value**
+   - Impact: TSS64 should be 104 bytes but monacc returns 112
+   - Workaround: Hardcode struct sizes
+
+8. **`__attribute__((packed))` not honored for struct member offsets**
+   - Impact: TSS rsp0 placed at offset 8 instead of 4 (natural alignment)
+   - Workaround: Use raw byte-level access with explicit offsets
+
+9. **Compound literal struct assignment only copies 8 bytes**
+   - Impact: `tss = (struct tss64){0}` only zeros 8 bytes, not full struct
+   - Workaround: Use explicit byte-by-byte zeroing loop
 
 ## Guiding constraints
 
@@ -209,19 +253,35 @@ int main() {
 
 ---
 
-## Phase 3: Memory Management
+## Phase 3: Memory Management ✓ COMPLETE
 
 **Goal**: Support `mmap()` for heap allocation.
 
-**New components**:
-- Physical page allocator (bitmap or free list)
-- Virtual address space per process (page tables)
-- `mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)`
-- Simple break-style allocator fallback
+**Status**: COMPLETE!
 
-**Syscalls**: `mmap` (9), `munmap` (11) [optional]
+**Implemented components**:
+- Physical page allocator (bitmap-based PMM in `mm/pmm.c`)
+  - Manages memory from 4MB to 128MB (31744 pages)
+  - Functions: `pmm_init()`, `pmm_alloc_page()`, `pmm_free_page()`, `pmm_alloc_pages()`, `pmm_free_pages()`
+- `mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)` - allocates physical pages
+- `munmap(addr, len)` - frees pages back to PMM
 
-**Test**: Any tool using `monacc_malloc()` (the compiler itself)
+**Note**: Currently using identity mapping (no virtual memory/page tables yet). Physical pages are returned directly. Full page table support will come in Phase 4.
+
+**Additional monacc workarounds discovered during this phase**:
+- `extern` array declarations create local BSS symbols instead of external references
+- `static` local arrays placed on stack instead of BSS
+- `sizeof(packed struct)` returns incorrect value
+- `__attribute__((packed))` not honored for struct member offsets
+- Compound literal struct assignment only copies 8 bytes
+
+**Syscalls**: `mmap` (9), `munmap` (11)
+
+**Test**: User program allocates page via mmap, prints success, unmaps, exits
+
+**Files added**:
+- `mm/pmm.c` - Physical memory manager
+- `user/test_mmap.S` - Test program
 
 **Estimated size**: ~15KB
 
@@ -342,18 +402,22 @@ Implement remaining syscalls as needed:
 
 ---
 
-## Phase 9: Self-Hosting
+## Phase 9: Self-Hosting ✓ ACHIEVED
 
 **Goal**: Compile the kernel with monacc.
 
-**Challenges**:
-- Kernel needs inline asm for boot code (monacc doesn't support it)
-- Solution: Keep `boot.S` as hand-written assembly, compile C parts with monacc
+**Status**: COMPLETE as of Phase 2!
 
-**Approach**:
-1. Write kernel C code compatible with monacc's C subset
-2. Use `nasm` or hand-written `.S` for boot stub
-3. Link with `ld` (already used by monacc)
+All kernel C files now compile with monacc. The approach used:
+1. Keep `.S` files (boot/multiboot2.S, arch/isr.S) assembled with GNU as
+2. All `.c` files compiled with `../bin/monacc`
+3. Link with GNU ld
+
+**Workarounds required** (see "monacc limitations discovered" at top):
+- Hardcode array sizes instead of using `sizeof(array)`
+- Use separate asm statements for segment register loads
+- Build GDTR/IDTR as byte arrays with register-indirect addressing
+- Replace `__builtin_unreachable()` with halt loops
 
 ---
 
@@ -363,12 +427,11 @@ Implement remaining syscalls as needed:
 
 ```makefile
 # kernel/Makefile
-CC = gcc  # Later: ../bin/monacc
+CC = ../bin/monacc  # Now using monacc!
 AS = as
 LD = ld
 
-CFLAGS = -ffreestanding -nostdlib -mno-red-zone -mcmodel=kernel \
-         -fno-stack-protector -fno-pic -O2
+CFLAGS = -c -I include  # monacc flags
 
 kernel.elf: boot.o main.o serial.o ...
 	$(LD) -T link.ld -o $@ $^
@@ -376,9 +439,9 @@ kernel.elf: boot.o main.o serial.o ...
 
 Notes:
 
-- Keep early C strictly freestanding (`-ffreestanding`, no libc). Avoid compiler builtins that might pull in runtime.
-- Prefer `clang` or `gcc` as host compiler for now; the *kernel C subset* should stay compatible with monacc for the self-hosting milestone.
-- If using a bootloader (Option A), the build produces an ISO (or a raw disk image) and QEMU boots that image.
+- All C files are compiled with monacc; only `.S` files use GNU as.
+- monacc doesn't need most GCC flags (`-ffreestanding`, `-fno-pic`, etc.) as it's inherently freestanding.
+- Watch out for monacc limitations documented in "monacc limitations discovered" section above.
 
 ### Test
 

@@ -30,8 +30,18 @@ monacc-unified/
 ├── examples/       # Compiler test programs
 ├── tests/          # Unified test suite
 ├── scripts/        # Build helpers
+├── kernel/         # Optional: minimal x86_64 kernel for running monacc userland under QEMU
 └── bin/            # Build output (compiler + all tools)
 ```
+
+## Kernel (optional)
+
+This repo also contains an experimental kernel in kernel/.
+
+It is a separate subproject intended to run monacc-built userland under QEMU (Linux x86_64 syscall ABI). It is not required to build or use monacc on Linux.
+
+- Status and build/run notes: kernel/status.md
+- Roadmap and implementation plan: kernel/plan.md
 
 ## Quick Start
 

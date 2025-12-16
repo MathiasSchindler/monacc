@@ -190,6 +190,15 @@ static int stmt_count_var_uses(const Stmt *s, int off) {
         case STMT_RETURN:
         case STMT_EXPR:
             return expr_count_var_uses(s->expr, off);
+        case STMT_ASM:
+            // Count uses in asm operand expressions
+            for (int i = 0; i < s->asm_noutputs; i++) {
+                n += expr_count_var_uses(s->asm_outputs[i].expr, off);
+            }
+            for (int i = 0; i < s->asm_ninputs; i++) {
+                n += expr_count_var_uses(s->asm_inputs[i].expr, off);
+            }
+            return n;
         default:
             return 0;
     }
@@ -520,6 +529,11 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
     if (!e) die("internal: not an lvalue");
     if (e->kind == EXPR_VAR) {
         str_appendf_i64(&cg->out, "  lea %d(%%rbp), %%rax\n", e->var_offset);
+        return e->lval_size ? e->lval_size : 8;
+    }
+    if (e->kind == EXPR_GLOBAL) {
+        const GlobalVar *gv = &cg->prg->globals[e->global_id];
+        str_appendf_s(&cg->out, "  lea %s(%%rip), %%rax\n", gv->name);
         return e->lval_size ? e->lval_size : 8;
     }
     if (e->kind == EXPR_COND_LVAL) {
@@ -1415,6 +1429,33 @@ static void cg_expr(CG *cg, const Expr *e) {
                 die("rvalue load size %d not supported", e->lval_size);
             }
             return;
+        case EXPR_GLOBAL: {
+            const GlobalVar *gv = &cg->prg->globals[e->global_id];
+            // For arrays, return address; for scalars, load value
+            if (e->lval_size == 0) {
+                // Array decay: return address
+                str_appendf_s(&cg->out, "  lea %s(%%rip), %%rax\n", gv->name);
+            } else if (e->base == BT_STRUCT && e->ptr == 0 && e->lval_size > 8) {
+                str_appendf_s(&cg->out, "  lea %s(%%rip), %%rax\n", gv->name);
+            } else if (e->lval_size == 1) {
+                str_appendf_s(&cg->out, "  movzb %s(%%rip), %%eax\n", gv->name);
+            } else if (e->lval_size == 2) {
+                if (e->is_unsigned) {
+                    str_appendf_s(&cg->out, "  movzw %s(%%rip), %%eax\n", gv->name);
+                } else {
+                    str_appendf_s(&cg->out, "  movswq %s(%%rip), %%rax\n", gv->name);
+                }
+            } else if (e->lval_size == 4) {
+                if (e->is_unsigned) {
+                    str_appendf_s(&cg->out, "  mov %s(%%rip), %%eax\n", gv->name);
+                } else {
+                    str_appendf_s(&cg->out, "  movslq %s(%%rip), %%rax\n", gv->name);
+                }
+            } else {
+                str_appendf_s(&cg->out, "  mov %s(%%rip), %%rax\n", gv->name);
+            }
+            return;
+        }
         case EXPR_STR:
             str_appendf_i64(&cg->out, "  lea .LC%d(%%rip), %%rax\n", e->str_id);
             return;
@@ -1884,6 +1925,366 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
     return 0; // Not handled - use generic path
 }
 
+// ===== Inline Assembly Code Generation =====
+//
+// Constraint mapping for x86_64:
+//   "a" -> %rax/%eax/%ax/%al
+//   "b" -> %rbx/%ebx/%bx/%bl
+//   "c" -> %rcx/%ecx/%cx/%cl
+//   "d" -> %rdx/%edx/%dx/%dl
+//   "D" -> %rdi/%edi/%di/%dil
+//   "S" -> %rsi/%esi/%si/%sil
+//   "r" -> any GPR (we pick from available)
+//   "m" -> memory operand
+//   "i"/"n" -> immediate (integer constant)
+//   "0"-"9" -> same location as operand N
+
+typedef struct {
+    const char *r64;
+    const char *r32;
+    const char *r16;
+    const char *r8;
+} RegSet;
+
+static const RegSet asm_regs[] = {
+    {"%rax", "%eax", "%ax", "%al"},
+    {"%rbx", "%ebx", "%bx", "%bl"},
+    {"%rcx", "%ecx", "%cx", "%cl"},
+    {"%rdx", "%edx", "%dx", "%dl"},
+    {"%rsi", "%esi", "%si", "%sil"},
+    {"%rdi", "%edi", "%di", "%dil"},
+    {"%r8", "%r8d", "%r8w", "%r8b"},
+    {"%r9", "%r9d", "%r9w", "%r9b"},
+    {"%r10", "%r10d", "%r10w", "%r10b"},
+    {"%r11", "%r11d", "%r11w", "%r11b"},
+    {"%r12", "%r12d", "%r12w", "%r12b"},
+    {"%r13", "%r13d", "%r13w", "%r13b"},
+    {"%r14", "%r14d", "%r14w", "%r14b"},
+    {"%r15", "%r15d", "%r15w", "%r15b"},
+};
+
+// Map constraint character to register index, or -1 for non-register constraints
+static int asm_constraint_to_reg(char c) {
+    switch (c) {
+        case 'a': return 0;  // rax
+        case 'b': return 1;  // rbx
+        case 'c': return 2;  // rcx
+        case 'd': return 3;  // rdx
+        case 'S': return 4;  // rsi
+        case 'D': return 5;  // rdi
+        default: return -1;
+    }
+}
+
+// Operand binding for asm codegen
+typedef struct {
+    int kind;           // 0=reg, 1=mem, 2=imm
+    int reg_idx;        // for kind=0: index into asm_regs
+    int mem_offset;     // for kind=1: rbp-relative offset
+    long long imm_val;  // for kind=2: immediate value
+    int is_output;
+    int is_inout;
+    int size;           // 1=byte, 2=word, 4=dword, 8=qword
+    const Expr *expr;
+} AsmBinding;
+
+// Get the size of an expression's type in bytes
+static int expr_type_size(const Expr *e) {
+    if (!e) return 8;
+    // For pointer types, always 8 bytes
+    if (e->ptr > 0) return 8;
+    switch (e->base) {
+        case BT_CHAR: return 1;
+        case BT_SHORT: return 2;
+        case BT_INT: return 4;
+        case BT_LONG: return 8;
+        case BT_VOID: return 0;
+        default: return 8;
+    }
+}
+
+// Get the appropriate register name for a given size
+static const char *asm_reg_for_size(int reg_idx, int size) {
+    if (reg_idx < 0 || reg_idx >= 14) return "%rax";
+    switch (size) {
+        case 1: return asm_regs[reg_idx].r8;
+        case 2: return asm_regs[reg_idx].r16;
+        case 4: return asm_regs[reg_idx].r32;
+        default: return asm_regs[reg_idx].r64;
+    }
+}
+
+static void cg_asm_stmt(CG *cg, const Stmt *s) {
+    // Allocate bindings for all operands
+    int total_ops = s->asm_noutputs + s->asm_ninputs;
+    AsmBinding *bindings = NULL;
+    if (total_ops > 0) {
+        bindings = (AsmBinding *)monacc_calloc((size_t)total_ops, sizeof(AsmBinding));
+    }
+
+    // Track which registers are used
+    int reg_used[16] = {0};
+    int next_scratch = 6; // Start from r8 for "r" constraints
+
+    // Process outputs first (they determine where values go)
+    for (int i = 0; i < s->asm_noutputs; i++) {
+        const AsmOperand *op = &s->asm_outputs[i];
+        AsmBinding *b = &bindings[i];
+        b->is_output = 1;
+        b->is_inout = op->is_inout;
+        b->expr = op->expr;
+        b->size = expr_type_size(op->expr);
+
+        // Skip '=' or '+' prefix
+        const char *cstr = op->constraint;
+        if (*cstr == '=' || *cstr == '+') cstr++;
+
+        // Check for specific register constraint
+        int ridx = asm_constraint_to_reg(*cstr);
+        if (ridx >= 0) {
+            b->kind = 0;
+            b->reg_idx = ridx;
+            reg_used[ridx] = 1;
+        } else if (*cstr == 'r') {
+            // Allocate a scratch register
+            while (next_scratch < 14 && reg_used[next_scratch]) next_scratch++;
+            b->kind = 0;
+            b->reg_idx = next_scratch;
+            reg_used[next_scratch] = 1;
+            next_scratch++;
+        } else if (*cstr == 'm') {
+            b->kind = 1;
+            // For memory operand, get the lvalue address offset
+            if (b->expr && b->expr->kind == EXPR_VAR) {
+                b->mem_offset = b->expr->var_offset;
+            } else {
+                die("asm: 'm' constraint requires a simple variable");
+            }
+        } else {
+            die("asm: unsupported output constraint '%s'", op->constraint);
+        }
+    }
+
+    // Process inputs
+    for (int i = 0; i < s->asm_ninputs; i++) {
+        const AsmOperand *op = &s->asm_inputs[i];
+        AsmBinding *b = &bindings[s->asm_noutputs + i];
+        b->is_output = 0;
+        b->expr = op->expr;
+        b->size = expr_type_size(op->expr);
+
+        const char *cstr = op->constraint;
+
+        // Check for matching constraint (0-9)
+        if (*cstr >= '0' && *cstr <= '9') {
+            int match = *cstr - '0';
+            if (match >= s->asm_noutputs) {
+                die("asm: matching constraint '%c' out of range", *cstr);
+            }
+            b->kind = bindings[match].kind;
+            b->reg_idx = bindings[match].reg_idx;
+            b->mem_offset = bindings[match].mem_offset;
+            b->size = bindings[match].size;
+            continue;
+        }
+
+        // Check for "Nd" (short for dx, used in port I/O)
+        // "N" means 8-bit unsigned constant, "d" means %edx
+        // Together "Nd" is commonly used for port numbers (16-bit in %dx)
+        if (cstr[0] == 'N' && cstr[1] == 'd') {
+            b->kind = 0;
+            b->reg_idx = 3; // rdx
+            b->size = 2;    // port numbers are 16-bit
+            reg_used[3] = 1;
+            continue;
+        }
+
+        int ridx = asm_constraint_to_reg(*cstr);
+        if (ridx >= 0) {
+            b->kind = 0;
+            b->reg_idx = ridx;
+            reg_used[ridx] = 1;
+        } else if (*cstr == 'r') {
+            // Allocate a scratch register
+            while (next_scratch < 14 && reg_used[next_scratch]) next_scratch++;
+            b->kind = 0;
+            b->reg_idx = next_scratch;
+            reg_used[next_scratch] = 1;
+            next_scratch++;
+        } else if (*cstr == 'm') {
+            b->kind = 1;
+            if (b->expr && b->expr->kind == EXPR_VAR) {
+                b->mem_offset = b->expr->var_offset;
+            } else {
+                die("asm: 'm' constraint requires a simple variable");
+            }
+        } else if (*cstr == 'i' || *cstr == 'n') {
+            b->kind = 2;
+            if (b->expr && b->expr->kind == EXPR_NUM) {
+                b->imm_val = b->expr->num;
+            } else {
+                die("asm: 'i'/'n' constraint requires a constant");
+            }
+        } else {
+            die("asm: unsupported input constraint '%s'", op->constraint);
+        }
+    }
+
+    // Load input values into their designated registers.
+    // Strategy: cg_expr always returns in rax, so we need to be careful about
+    // register conflicts. We evaluate all non-constant inputs and push to stack,
+    // then pop into target registers. Constants are loaded directly at the end.
+    // rax-targeted inputs are handled last to avoid being clobbered.
+
+    // First pass: evaluate non-constant, non-rax inputs and push to stack
+    int pushed = 0;
+    for (int i = 0; i < s->asm_ninputs; i++) {
+        AsmBinding *b = &bindings[s->asm_noutputs + i];
+        if (b->kind == 0 && b->reg_idx != 0) {
+            // Not rax - need to evaluate and save
+            if (b->expr->kind != EXPR_NUM) {
+                cg_expr(cg, b->expr);
+                str_appendf(&cg->out, "  push %%rax\n");
+                pushed++;
+            }
+        }
+    }
+
+    // Second pass: pop into target registers (reverse order)
+    for (int i = s->asm_ninputs - 1; i >= 0; i--) {
+        AsmBinding *b = &bindings[s->asm_noutputs + i];
+        if (b->kind == 0 && b->reg_idx != 0) {
+            if (b->expr->kind != EXPR_NUM) {
+                str_appendf_s(&cg->out, "  pop %s\n", asm_regs[b->reg_idx].r64);
+            } else {
+                // Load constant directly
+                str_appendf_is(&cg->out, "  mov $%lld, %s\n", b->expr->num, asm_regs[b->reg_idx].r64);
+            }
+        }
+    }
+
+    // Third pass: load rax-targeted inputs last (so they don't get clobbered)
+    for (int i = 0; i < s->asm_ninputs; i++) {
+        AsmBinding *b = &bindings[s->asm_noutputs + i];
+        if (b->kind == 0 && b->reg_idx == 0) {
+            cg_expr(cg, b->expr);
+        }
+    }
+
+    // For input-output operands (+), also load the initial value
+    for (int i = 0; i < s->asm_noutputs; i++) {
+        AsmBinding *b = &bindings[i];
+        if (b->is_inout && b->kind == 0) {
+            cg_expr(cg, b->expr);
+            if (b->reg_idx != 0) {
+                str_appendf_s(&cg->out, "  mov %%rax, %s\n", asm_regs[b->reg_idx].r64);
+            }
+        }
+    }
+
+    // Emit the assembly template with operand substitution
+    // Template uses %0, %1, ... or %%reg for literal %
+    const char *tmpl = s->asm_template;
+    str_append_bytes(&cg->out, "  ", 2);
+    while (*tmpl) {
+        if (*tmpl == '%') {
+            tmpl++;
+            if (*tmpl == '%') {
+                // Literal %
+                str_append_bytes(&cg->out, "%", 1);
+                tmpl++;
+            } else if (*tmpl >= '0' && *tmpl <= '9') {
+                // Operand reference
+                int opnum = 0;
+                while (*tmpl >= '0' && *tmpl <= '9') {
+                    opnum = opnum * 10 + (*tmpl - '0');
+                    tmpl++;
+                }
+                if (opnum >= total_ops) {
+                    die("asm: operand %%%d out of range", opnum);
+                }
+                AsmBinding *b = &bindings[opnum];
+                if (b->kind == 0) {
+                    const char *regname = asm_reg_for_size(b->reg_idx, b->size);
+                    str_append_bytes(&cg->out, regname, mc_strlen(regname));
+                } else if (b->kind == 1) {
+                    char buf[32];
+                    int n = mc_snprintf(buf, sizeof(buf), "%d(%%rbp)", b->mem_offset);
+                    str_append_bytes(&cg->out, buf, (size_t)n);
+                } else if (b->kind == 2) {
+                    char buf[32];
+                    int n = mc_snprintf(buf, sizeof(buf), "$%lld", b->imm_val);
+                    str_append_bytes(&cg->out, buf, (size_t)n);
+                }
+            } else if (*tmpl == 'w') {
+                // %w0 = 16-bit version
+                tmpl++;
+                if (*tmpl >= '0' && *tmpl <= '9') {
+                    int opnum = *tmpl - '0';
+                    tmpl++;
+                    if (opnum < total_ops && bindings[opnum].kind == 0) {
+                        str_append_bytes(&cg->out, asm_regs[bindings[opnum].reg_idx].r16,
+                                        mc_strlen(asm_regs[bindings[opnum].reg_idx].r16));
+                    }
+                }
+            } else if (*tmpl == 'b') {
+                // %b0 = 8-bit version
+                tmpl++;
+                if (*tmpl >= '0' && *tmpl <= '9') {
+                    int opnum = *tmpl - '0';
+                    tmpl++;
+                    if (opnum < total_ops && bindings[opnum].kind == 0) {
+                        str_append_bytes(&cg->out, asm_regs[bindings[opnum].reg_idx].r8,
+                                        mc_strlen(asm_regs[bindings[opnum].reg_idx].r8));
+                    }
+                }
+            } else {
+                // Unknown modifier or register name, pass through
+                str_append_bytes(&cg->out, "%", 1);
+            }
+        } else if (*tmpl == '\\' && tmpl[1] == 'n') {
+            // \n in template -> newline with indentation
+            str_append_bytes(&cg->out, "\n  ", 3);
+            tmpl += 2;
+        } else if (*tmpl == '\n') {
+            // Actual newline in template
+            str_append_bytes(&cg->out, "\n  ", 3);
+            tmpl++;
+        } else {
+            str_append_bytes(&cg->out, tmpl, 1);
+            tmpl++;
+        }
+    }
+    str_append_bytes(&cg->out, "\n", 1);
+
+    // Store output values back to their destinations
+    for (int i = 0; i < s->asm_noutputs; i++) {
+        AsmBinding *b = &bindings[i];
+        if (b->kind == 0 && b->expr) {
+            // Move result from register to lvalue
+            if (b->expr->kind == EXPR_VAR) {
+                int off = b->expr->var_offset;
+                int sz = b->expr->lval_size;
+                const char *src;
+                if (sz == 1) src = asm_regs[b->reg_idx].r8;
+                else if (sz == 2) src = asm_regs[b->reg_idx].r16;
+                else if (sz == 4) src = asm_regs[b->reg_idx].r32;
+                else src = asm_regs[b->reg_idx].r64;
+                str_appendf_si(&cg->out, "  mov %s, %d(%%rbp)\n", src, (long long)off);
+            } else {
+                // For non-variable lvalues, evaluate address and store
+                // For now, just put result in rax
+                if (b->reg_idx != 0) {
+                    str_appendf_s(&cg->out, "  mov %s, %%rax\n", asm_regs[b->reg_idx].r64);
+                }
+            }
+        }
+        // Memory outputs are already in place
+    }
+
+    monacc_free(bindings);
+}
+
 static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw);
 
 static void cg_stmt_list(CG *cg, const Stmt *first, int ret_label, const SwitchCtx *sw) {
@@ -2116,6 +2517,9 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             }
             str_appendf_i64(&cg->out, ".L%d:\n", sw->default_label);
             return;
+        case STMT_ASM:
+            cg_asm_stmt(cg, s);
+            return;
         default:
             break;
     }
@@ -2145,6 +2549,20 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
                 off += n;
             }
             str_appendf(&cg.out, "\n");
+        }
+    }
+
+    // Emit global variables in .bss section
+    if (prg->nglobals > 0) {
+        for (int i = 0; i < prg->nglobals; i++) {
+            const GlobalVar *gv = &prg->globals[i];
+            if (gv->is_extern) continue;
+            // Each global in its own section for --gc-sections
+            str_appendf_s(&cg.out, ".section .bss.%s,\"aw\",@nobits\n", gv->name);
+            // Compute alignment (use power of 2, max 8)
+            int align = (gv->elem_size >= 8) ? 8 : (gv->elem_size >= 4) ? 4 : (gv->elem_size >= 2) ? 2 : 1;
+            str_appendf_is(&cg.out, ".align %d\n%s:\n", (long long)align, gv->name);
+            str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size);
         }
     }
 

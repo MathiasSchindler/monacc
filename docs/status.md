@@ -246,3 +246,12 @@ All 70 tools compile and link successfully with monacc.
 | Internal ELF emission | 🔄 Experimental |
 | No external assembler | 🔜 Planned |
 | No external linker | 🔜 Planned |
+
+---
+
+## Kernel (separate subproject)
+
+This repository also includes an optional kernel in kernel/ that is intended to run monacc-built userland under QEMU. Kernel progress and plans are tracked separately:
+
+- kernel/status.md (current implemented state; Phases 0–3 completed)
+- kernel/plan.md (roadmap, design notes, and monacc-specific kernel workarounds)

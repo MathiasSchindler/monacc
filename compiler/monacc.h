@@ -158,6 +158,7 @@ typedef struct {
     Lexer lx;
     Token tok;
     Program *prg;
+    char cur_fn_name[128];
 } Parser;
 
 typedef struct {
@@ -222,7 +223,21 @@ typedef struct {
     int cap;
     int size;
     int align;
+    int is_packed;
 } StructDef;
+
+typedef struct {
+    char name[128];
+    BaseType base;
+    int ptr;
+    int struct_id;
+    int is_unsigned;
+    int is_static;
+    int size;           // total size in bytes
+    int elem_size;      // element size for arrays, else same as size
+    int array_len;      // number of elements if array; -1 => incomplete (extern T name[]); 0 => not an array
+    int is_extern;
+} GlobalVar;
 
 struct Program {
     Function *fns;
@@ -244,6 +259,10 @@ struct Program {
     ConstDef *consts;
     int nconsts;
     int constcap;
+
+    GlobalVar *globals;
+    int nglobals;
+    int globalcap;
 };
 
 // ===== AST / locals =====
@@ -251,6 +270,7 @@ struct Program {
 typedef enum {
     EXPR_NUM,
     EXPR_VAR,
+    EXPR_GLOBAL,
     EXPR_STR,
     EXPR_FNADDR,
     EXPR_ASSIGN,
@@ -307,6 +327,7 @@ typedef struct Expr {
     long long num;
     int var_offset; // rbp-relative negative offset (e.g. -8, -16)
     int var_alloc_size; // for EXPR_VAR arrays: total bytes of the object
+    int global_id;  // for EXPR_GLOBAL: index into program globals array
     int str_id;
     BaseType base;
     int ptr;
@@ -346,7 +367,20 @@ typedef enum {
     STMT_CONTINUE,
     STMT_EXPR,
     STMT_DECL,
+    STMT_ASM,
 } StmtKind;
+
+// Inline asm operand (input or output).
+// Constraint chars: "a"=rax, "b"=rbx, "c"=rcx, "d"=rdx, "D"=rdi, "S"=rsi,
+//                   "r"=any GPR, "m"=memory, "i"/"n"=immediate,
+//                   "0"-"9"=same as operand N
+// Modifier: "="=output (write-only), "+"=input-output
+typedef struct {
+    char constraint[16];   // e.g. "=a", "r", "Nd", "m"
+    int is_output;         // constraint starts with '=' or '+'
+    int is_inout;          // constraint starts with '+'
+    struct Expr *expr;     // the C expression
+} AsmOperand;
 
 typedef struct Stmt {
     StmtKind kind;
@@ -389,11 +423,22 @@ typedef struct Stmt {
     // STMT_LABEL / STMT_GOTO
     char label[128];
     struct Stmt *label_stmt; // for STMT_LABEL
+
+    // STMT_ASM: inline assembly
+    char *asm_template;        // template string (e.g. "mov %1, %0")
+    AsmOperand *asm_outputs;   // output operands
+    int asm_noutputs;
+    AsmOperand *asm_inputs;    // input operands
+    int asm_ninputs;
+    char **asm_clobbers;       // clobber list (e.g. "memory", "rcx")
+    int asm_nclobbers;
+    int asm_is_volatile;       // __asm__ volatile
 } Stmt;
 
 typedef struct {
     char name[128];
     int offset; // negative rbp offset
+    int global_id; // >=0 => references a global symbol instead of stack storage
     BaseType base;
     int ptr;
     int struct_id;
@@ -529,6 +574,8 @@ Stmt *new_stmt(StmtKind k);
 const Local *local_find(const Locals *ls, const char *nm, size_t nm_len);
 int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
               int array_stride);
+int local_add_globalref(Locals *ls, const char *nm, size_t nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+                        int alloc_size, int array_stride);
 int local_add_fixed(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
                     int array_stride,
                     int offset);
@@ -549,3 +596,5 @@ const StructMember *struct_find_member(const Program *prg, int struct_id, const 
 int align_up(int x, int a);
 int type_alignof(const Program *prg, BaseType base, int ptr, int struct_id);
 int type_sizeof(const Program *prg, BaseType base, int ptr, int struct_id);
+void program_add_global(Program *p, const GlobalVar *gv);
+int program_find_global(const Program *p, const char *name, size_t name_len);

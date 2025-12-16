@@ -64,6 +64,24 @@ static long long expr_sizeof(Parser *p, const Expr *inner) {
         return (long long)inner->var_alloc_size;
     }
 
+    // Global arrays do not decay under sizeof either.
+    if (inner->kind == EXPR_GLOBAL && inner->lval_size == 0 && inner->var_alloc_size > 0) {
+        return (long long)inner->var_alloc_size;
+    }
+
+    // sizeof(extern T name[]) is invalid (incomplete type).
+    if (inner->kind == EXPR_GLOBAL && inner->lval_size == 0 && p && p->prg) {
+        const GlobalVar *gv = &p->prg->globals[inner->global_id];
+        if (gv->array_len < 0) {
+            die("%s:%d:%d: invalid sizeof incomplete array", p->lx.path, p->tok.line, p->tok.col);
+        }
+    }
+
+    // String literals are arrays; sizeof("abc") is 4 (includes the trailing NUL).
+    if (inner->kind == EXPR_STR && p && p->prg && inner->str_id >= 0 && inner->str_id < p->prg->nstrs) {
+        return (long long)p->prg->strs[inner->str_id].len;
+    }
+
     // Array members: parse_postfix models them as a decayed pointer (ptr+1) with lval_size=0.
     // Under sizeof, recover the true member size from the struct definition.
     if (inner->kind == EXPR_MEMBER && inner->lval_size == 0 && p && p->prg) {
@@ -82,12 +100,28 @@ static long long expr_sizeof(Parser *p, const Expr *inner) {
     return (long long)type_sizeof(p->prg, inner->base, inner->ptr, inner->struct_id);
 }
 
-static void skip_gcc_attrs(Parser *p) {
+static int consume_gcc_attrs_has_packed(Parser *p) {
+    int packed = 0;
     for (;;) {
         if (tok_is_ident(p, "__attribute__") || tok_is_ident(p, "__attribute")) {
             parser_next(p);
-            if (tok_is(p, TOK_LPAREN)) {
-                skip_balanced(p, TOK_LPAREN, TOK_RPAREN);
+            if (consume(p, TOK_LPAREN)) {
+                int depth = 1;
+                while (depth > 0) {
+                    if (p->tok.kind == TOK_EOF) {
+                        die("%s:%d:%d: unexpected EOF in __attribute__", p->lx.path, p->tok.line, p->tok.col);
+                    }
+                    if (tok_is_ident(p, "packed")) packed = 1;
+                    if (consume(p, TOK_LPAREN)) {
+                        depth++;
+                        continue;
+                    }
+                    if (consume(p, TOK_RPAREN)) {
+                        depth--;
+                        continue;
+                    }
+                    parser_next(p);
+                }
             }
             continue;
         }
@@ -100,6 +134,31 @@ static void skip_gcc_attrs(Parser *p) {
         }
         break;
     }
+    return packed;
+}
+
+static void skip_gcc_attrs(Parser *p) {
+    (void)consume_gcc_attrs_has_packed(p);
+}
+
+static void struct_relayout(Parser *p, int struct_id) {
+    if (!p || !p->prg) return;
+    if (struct_id < 0 || struct_id >= p->prg->nstructs) return;
+    StructDef *sd = &p->prg->structs[struct_id];
+
+    int off = 0;
+    int maxa = 1;
+    for (int i = 0; i < sd->nmembers; i++) {
+        StructMember *m = &sd->members[i];
+        int al = sd->is_packed ? 1 : type_alignof(p->prg, m->base, m->ptr, m->struct_id);
+        off = align_up(off, al);
+        m->offset = off;
+        off += m->size;
+        if (al > maxa) maxa = al;
+    }
+    sd->align = sd->is_packed ? 1 : maxa;
+    sd->size = align_up(off, sd->align);
+    if (sd->size == 0) sd->size = 1;
 }
 
 static int skip_type_qualifiers(Parser *p, int *io_is_unsigned, int *io_is_short, int *io_is_long) {
@@ -286,6 +345,12 @@ static void parse_type_spec(Parser *p, BaseType *out_base, int *out_ptr, int *ou
     } else if (consume(p, TOK_KW_STRUCT)) {
         const char *nm = NULL;
         size_t nm_len = 0;
+
+        int saw_packed = 0;
+
+        // Allow GCC-style attributes between 'struct' and the tag name.
+        saw_packed |= consume_gcc_attrs_has_packed(p);
+
         if (p->tok.kind == TOK_IDENT) {
             expect_ident(p, &nm, &nm_len);
             sid = program_get_or_add_struct(p->prg, nm, nm_len);
@@ -293,9 +358,21 @@ static void parse_type_spec(Parser *p, BaseType *out_base, int *out_ptr, int *ou
             // anonymous struct (e.g. typedef struct { ... } Name;)
             sid = program_add_anon_struct(p->prg);
         }
+
+        // Allow attributes after the tag name.
+        saw_packed |= consume_gcc_attrs_has_packed(p);
+
         if (tok_is(p, TOK_LBRACE)) {
             parse_struct_def(p, sid);
         }
+
+        // Allow attributes after the definition: `struct S { ... } __attribute__((packed))`.
+        saw_packed |= consume_gcc_attrs_has_packed(p);
+        if (sid >= 0 && sid < p->prg->nstructs && saw_packed) {
+            p->prg->structs[sid].is_packed = 1;
+            struct_relayout(p, sid);
+        }
+
         base = BT_STRUCT;
     } else if (consume(p, TOK_KW_ENUM)) {
         // enum [Name]? [{...}]?
@@ -576,6 +653,17 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
             Expr *e = new_expr(is_sret ? EXPR_SRET_CALL : EXPR_CALL);
             // If the identifier is a local pointer variable, treat this as an indirect call.
             if (l) {
+                if (l->global_id >= 0) {
+                    Expr *callee = new_expr(EXPR_GLOBAL);
+                    callee->global_id = l->global_id;
+                    const GlobalVar *gv = &p->prg->globals[l->global_id];
+                    callee->base = gv->base;
+                    callee->ptr = gv->ptr;
+                    callee->struct_id = gv->struct_id;
+                    callee->is_unsigned = gv->is_unsigned;
+                    callee->lval_size = (gv->base == BT_STRUCT && gv->ptr == 0) ? gv->size : ((gv->elem_size == 1) ? 1 : (gv->elem_size == 2) ? 2 : (gv->elem_size == 4) ? 4 : 8);
+                    e->lhs = callee;
+                } else {
                 if (l->ptr == 0) {
                     die("%s:%d:%d: cannot call non-pointer '%.*s'", p->lx.path, ident.line, ident.col, (int)ident.len, ident.start);
                 }
@@ -591,6 +679,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
                 callee->is_unsigned = l->is_unsigned;
                 callee->lval_size = l->size;
                 e->lhs = callee;
+                }
             } else {
                 if (ident.len == 0 || ident.len >= sizeof(e->callee)) {
                     die("%s:%d:%d: callee name too long", p->lx.path, ident.line, ident.col);
@@ -683,9 +772,54 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
                 e->lval_size = 8;
                 return e;
             }
+
+            int gid = program_find_global(p->prg, ident.start, ident.len);
+            if (gid >= 0) {
+                const GlobalVar *gv = &p->prg->globals[gid];
+                Expr *e = new_expr(EXPR_GLOBAL);
+                e->global_id = gid;
+                e->base = gv->base;
+                e->ptr = gv->ptr;
+                e->struct_id = gv->struct_id;
+                e->is_unsigned = gv->is_unsigned;
+                // For arrays, the expression decays to a pointer
+                if (gv->array_len != 0) {
+                    e->ptr++;
+                    e->lval_size = 0; // array, not a direct lvalue
+                    e->var_alloc_size = gv->size;
+                } else {
+                    // For structs, preserve the true object size so assignments can memcpy the full object.
+                    if (gv->base == BT_STRUCT && gv->ptr == 0) {
+                        e->lval_size = gv->size;
+                    } else {
+                        e->lval_size = (gv->elem_size == 1) ? 1 : (gv->elem_size == 2) ? 2 : (gv->elem_size == 4) ? 4 : 8;
+                    }
+                }
+                return e;
+            }
+
             die("%s:%d:%d: unknown identifier '%.*s'", p->lx.path, ident.line, ident.col, (int)ident.len, ident.start);
         }
         Expr *e = new_expr(EXPR_VAR);
+        if (l->global_id >= 0) {
+            const GlobalVar *gv = &p->prg->globals[l->global_id];
+            Expr *g = new_expr(EXPR_GLOBAL);
+            g->global_id = l->global_id;
+            g->base = gv->base;
+            g->ptr = gv->ptr;
+            g->struct_id = gv->struct_id;
+            g->is_unsigned = gv->is_unsigned;
+            if (gv->array_len != 0) {
+                g->ptr++;
+                g->lval_size = 0;
+                g->var_alloc_size = gv->size;
+            } else if (gv->base == BT_STRUCT && gv->ptr == 0) {
+                g->lval_size = gv->size;
+            } else {
+                g->lval_size = (gv->elem_size == 1) ? 1 : (gv->elem_size == 2) ? 2 : (gv->elem_size == 4) ? 4 : 8;
+            }
+            return g;
+        }
         e->var_offset = l->offset;
         e->var_alloc_size = l->alloc_size;
         e->base = l->base;
@@ -710,7 +844,7 @@ static int ptr_pointee_size(const Program *prg, BaseType base, int ptr, int stru
 
 static int expr_is_lvalue(const Expr *e) {
     if (!e) return 0;
-    return e->kind == EXPR_VAR || e->kind == EXPR_DEREF || e->kind == EXPR_INDEX || e->kind == EXPR_MEMBER || e->kind == EXPR_COMPOUND ||
+    return e->kind == EXPR_VAR || e->kind == EXPR_GLOBAL || e->kind == EXPR_DEREF || e->kind == EXPR_INDEX || e->kind == EXPR_MEMBER || e->kind == EXPR_COMPOUND ||
            e->kind == EXPR_SRET_CALL || e->kind == EXPR_COND_LVAL;
 }
 
@@ -1506,8 +1640,13 @@ static Stmt *parse_block(Parser *p, Locals *ls) {
 
 static Stmt *parse_decl(Parser *p, Locals *ls) {
     // Local decl subset: type-spec <ident> [= expr] ;
+    int saw_static = 0;
     for (;;) {
-        if (consume(p, TOK_KW_EXTERN) || consume(p, TOK_KW_STATIC)) {
+        if (consume(p, TOK_KW_EXTERN)) {
+            continue;
+        }
+        if (consume(p, TOK_KW_STATIC)) {
+            saw_static = 1;
             continue;
         }
         if (tok_is_ident(p, "inline") || tok_is_ident(p, "__inline") || tok_is_ident(p, "__inline__")) {
@@ -1545,6 +1684,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
         int array_stride = 0;
         int unsized_array = 0;
         int is_array = 0;
+        int array_elems = 0;
         if (consume(p, TOK_LBRACK)) {
             is_array = 1;
             if (consume(p, TOK_RBRACK)) {
@@ -1562,6 +1702,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
             if (n <= 0 || n > 0x7fffffffLL) {
                 die("%s:%d:%d: invalid local array length", p->lx.path, p->tok.line, p->tok.col);
             }
+            array_elems = (int)n;
 
             if (consume(p, TOK_LBRACK)) {
                 // 2D local array: T name[N][M]
@@ -1590,6 +1731,376 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
                 lval_size = 0;
             }
             }
+        }
+
+        if (saw_static && array_stride == 0) {
+            // Static local storage (subset):
+            // - Supports implicit zero-init.
+            // - Supports scalar init: static int x = expr;
+            // - Supports 1D array init: static T a[N] = {..}; and static char s[] = "...";
+            // Initialization runs once via a hidden guard variable.
+            if (!p->prg) die("internal: no program context");
+
+            int has_init = tok_is(p, TOK_ASSIGN);
+
+            // Parse initializer for arrays early so we can deduce size for unsized arrays.
+            // For scalars/structs we use the existing parse_expr path.
+            InitEnt *static_array_inits = NULL;
+            int static_array_ninits = 0;
+            int static_array_init_is_string = 0;
+            int static_array_string_id = -1;
+
+            if (has_init && is_array && lval_size == 0 && base != BT_STRUCT) {
+                (void)consume(p, TOK_ASSIGN);
+
+                int elem_ptr = ptr - 1;
+                int elem_size = type_sizeof(p->prg, base, elem_ptr, sid);
+                if (elem_size != 1 && elem_size != 2 && elem_size != 4 && elem_size != 8) {
+                    die("%s:%d:%d: array element size %d not supported", p->lx.path, p->tok.line, p->tok.col, elem_size);
+                }
+
+                if (p->tok.kind == TOK_STR) {
+                    Expr *se = parse_expr(p, ls);
+                    static_array_init_is_string = 1;
+                    static_array_string_id = se->str_id;
+                    const StringLit *sl = &p->prg->strs[se->str_id];
+                    if (elem_size != 1 || base != BT_CHAR || elem_ptr != 0) {
+                        die("%s:%d:%d: string initializer only supported for char arrays", p->lx.path, p->tok.line, p->tok.col);
+                    }
+                    int need = (int)sl->len;
+                    if (!unsized_array) {
+                        if (alloc_size < need) {
+                            die("%s:%d:%d: string initializer too long", p->lx.path, p->tok.line, p->tok.col);
+                        }
+                    } else {
+                        alloc_size = need;
+                        if (alloc_size < 1) alloc_size = 1;
+                        array_elems = alloc_size;
+                        unsized_array = 0;
+                    }
+                } else if (consume(p, TOK_LBRACE)) {
+                    int cap = 0;
+                    while (!tok_is(p, TOK_RBRACE)) {
+                        if (tok_is(p, TOK_EOF)) {
+                            die("%s:%d:%d: unexpected EOF in array initializer", p->lx.path, p->tok.line, p->tok.col);
+                        }
+                        if (static_array_ninits + 1 > cap) {
+                            int ncap = cap ? cap * 2 : 8;
+                            InitEnt *ni = (InitEnt *)monacc_realloc(static_array_inits, (size_t)ncap * sizeof(*static_array_inits));
+                            if (!ni) die("oom");
+                            static_array_inits = ni;
+                            cap = ncap;
+                        }
+                        Expr *val = parse_expr(p, ls);
+                        static_array_inits[static_array_ninits].off = static_array_ninits * elem_size;
+                        static_array_inits[static_array_ninits].store_size = elem_size;
+                        static_array_inits[static_array_ninits].value = val;
+                        static_array_ninits++;
+                        skip_gcc_attrs(p);
+                        if (consume(p, TOK_COMMA)) {
+                            skip_gcc_attrs(p);
+                            if (tok_is(p, TOK_RBRACE)) break;
+                            continue;
+                        }
+                        break;
+                    }
+                    expect(p, TOK_RBRACE, "'}'");
+
+                    if (unsized_array) {
+                        if (static_array_ninits <= 0) {
+                            die("%s:%d:%d: empty unsized array initializer", p->lx.path, p->tok.line, p->tok.col);
+                        }
+                        alloc_size = static_array_ninits * elem_size;
+                        array_elems = static_array_ninits;
+                        unsized_array = 0;
+                    } else {
+                        if (alloc_size < static_array_ninits * elem_size) {
+                            die("%s:%d:%d: too many array initializer elements", p->lx.path, p->tok.line, p->tok.col);
+                        }
+                    }
+                } else {
+                    die("%s:%d:%d: initializer for this type not supported", p->lx.path, p->tok.line, p->tok.col);
+                }
+            }
+
+            if (unsized_array) {
+                die("%s:%d:%d: static local unsized arrays require an initializer", p->lx.path, p->tok.line, p->tok.col);
+            }
+            if (array_stride != 0) {
+                die("%s:%d:%d: static local 2D arrays are not supported", p->lx.path, p->tok.line, p->tok.col);
+            }
+
+            char gname[128];
+            char guard_name[128];
+            mc_u64 seq = (mc_u64)ls->nlocals;
+            if (p->cur_fn_name[0]) {
+                mc_snprint_cstr_cstr_u64_cstr(gname, sizeof(gname), "__monacc_static_", p->cur_fn_name, seq, "");
+                mc_snprint_cstr_cstr_u64_cstr(guard_name, sizeof(guard_name), "__monacc_static_guard_", p->cur_fn_name, seq, "");
+            } else {
+                mc_snprint_cstr_u64_cstr(gname, sizeof(gname), "__monacc_static_", seq, "");
+                mc_snprint_cstr_u64_cstr(guard_name, sizeof(guard_name), "__monacc_static_guard_", seq, "");
+            }
+
+            GlobalVar gv = {0};
+            if (mc_strlen(gname) >= sizeof(gv.name)) die("internal: static local global name too long");
+            mc_memcpy(gv.name, gname, mc_strlen(gname));
+            gv.name[mc_strlen(gname)] = 0;
+            gv.base = base;
+            gv.struct_id = sid;
+            gv.is_unsigned = is_unsigned;
+            gv.is_static = 1;
+            gv.is_extern = 0;
+
+            if (is_array) {
+                int elem_ptr = ptr - 1;
+                if (elem_ptr < 0) die("internal: bad static array ptr");
+                gv.ptr = elem_ptr;
+                if (array_elems <= 0) {
+                    int esz = type_sizeof(p->prg, base, elem_ptr, sid);
+                    if (esz <= 0) die("internal: bad elem size");
+                    array_elems = alloc_size / esz;
+                }
+                gv.array_len = array_elems;
+                gv.elem_size = type_sizeof(p->prg, base, elem_ptr, sid);
+                gv.size = alloc_size;
+            } else {
+                gv.ptr = ptr;
+                gv.array_len = 0;
+                gv.elem_size = type_sizeof(p->prg, base, ptr, sid);
+                gv.size = gv.elem_size;
+            }
+
+            int gid_existing = program_find_global(p->prg, gv.name, mc_strlen(gv.name));
+            if (gid_existing < 0) {
+                program_add_global(p->prg, &gv);
+                gid_existing = program_find_global(p->prg, gv.name, mc_strlen(gv.name));
+            }
+            if (gid_existing < 0) die("internal: failed to add static local global");
+
+            // Hidden guard global (0 => not initialized, 1 => initialized)
+            GlobalVar gguard = {0};
+            if (mc_strlen(guard_name) >= sizeof(gguard.name)) die("internal: static local guard name too long");
+            mc_memcpy(gguard.name, guard_name, mc_strlen(guard_name));
+            gguard.name[mc_strlen(guard_name)] = 0;
+            gguard.base = BT_LONG;
+            gguard.ptr = 0;
+            gguard.struct_id = -1;
+            gguard.is_unsigned = 0;
+            gguard.is_static = 1;
+            gguard.is_extern = 0;
+            gguard.array_len = 0;
+            gguard.elem_size = 8;
+            gguard.size = 8;
+            int gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
+            if (gid_guard < 0) {
+                program_add_global(p->prg, &gguard);
+                gid_guard = program_find_global(p->prg, gguard.name, mc_strlen(gguard.name));
+            }
+            if (gid_guard < 0) die("internal: failed to add static local guard global");
+
+            (void)local_add_globalref(ls, nm, nm_len, gid_existing, base, (is_array ? (ptr - 1) : ptr), sid, is_unsigned, lval_size, alloc_size, array_stride);
+
+            if (has_init) {
+                // Condition: if (!guard)
+                Expr *guard_val = new_expr(EXPR_GLOBAL);
+                guard_val->global_id = gid_guard;
+                guard_val->base = BT_LONG;
+                guard_val->ptr = 0;
+                guard_val->struct_id = -1;
+                guard_val->is_unsigned = 0;
+                guard_val->lval_size = 8;
+
+                Expr *cond = new_expr(EXPR_NOT);
+                cond->lhs = guard_val;
+                cond->base = BT_INT;
+                cond->ptr = 0;
+                cond->struct_id = -1;
+                cond->is_unsigned = 0;
+                cond->lval_size = 8;
+
+                Stmt *then_block = new_stmt(STMT_BLOCK);
+                Stmt *then_head = NULL;
+                Stmt *then_tail = NULL;
+
+                // Emit initialization statements.
+                if (is_array && (static_array_init_is_string || static_array_inits)) {
+                    if (static_array_init_is_string) {
+                        Expr *dst = new_expr(EXPR_GLOBAL);
+                        dst->global_id = gid_existing;
+                        dst->base = base;
+                        dst->ptr = (ptr - 1) + 1; // array decays
+                        dst->struct_id = sid;
+                        dst->is_unsigned = is_unsigned;
+                        dst->lval_size = 0;
+                        dst->var_alloc_size = alloc_size;
+
+                        Expr *src_str = new_expr(EXPR_STR);
+                        src_str->str_id = static_array_string_id;
+                        src_str->base = BT_CHAR;
+                        src_str->ptr = 1;
+                        src_str->struct_id = -1;
+                        src_str->is_unsigned = 0;
+                        src_str->lval_size = 8;
+
+                        Expr *src = new_expr(EXPR_DEREF);
+                        src->lhs = src_str;
+                        src->base = BT_CHAR;
+                        src->ptr = 0;
+                        src->struct_id = -1;
+                        src->is_unsigned = 0;
+                        src->lval_size = 1;
+
+                        const StringLit *sl = &p->prg->strs[static_array_string_id];
+                        Expr *mc = new_expr(EXPR_MEMCPY);
+                        mc->lhs = dst;
+                        mc->rhs = src;
+                        mc->base = BT_VOID;
+                        mc->ptr = 0;
+                        mc->struct_id = -1;
+                        mc->is_unsigned = 0;
+                        mc->lval_size = (int)sl->len;
+
+                        Stmt *st = new_stmt(STMT_EXPR);
+                        st->expr = mc;
+                        then_head = then_tail = st;
+                    } else {
+                        int elem_size = static_array_inits[0].store_size;
+                        for (int ii = 0; ii < static_array_ninits; ii++) {
+                            const InitEnt *in = &static_array_inits[ii];
+                            if (elem_size <= 0) elem_size = in->store_size;
+                            long long idx = (long long)in->off / (long long)elem_size;
+
+                            Expr *arr = new_expr(EXPR_GLOBAL);
+                            arr->global_id = gid_existing;
+                            arr->base = base;
+                            arr->ptr = (ptr - 1) + 1; // array decays
+                            arr->struct_id = sid;
+                            arr->is_unsigned = is_unsigned;
+                            arr->lval_size = 0;
+                            arr->var_alloc_size = alloc_size;
+
+                            Expr *idx_e = new_expr(EXPR_NUM);
+                            idx_e->num = idx;
+                            idx_e->base = BT_LONG;
+                            idx_e->ptr = 0;
+                            idx_e->struct_id = -1;
+                            idx_e->is_unsigned = 0;
+                            idx_e->lval_size = 8;
+
+                            Expr *el = new_expr(EXPR_INDEX);
+                            el->lhs = arr;
+                            el->rhs = idx_e;
+                            el->base = base;
+                            el->ptr = (ptr - 1);
+                            el->struct_id = sid;
+                            el->is_unsigned = is_unsigned;
+                            el->ptr_scale = elem_size;
+                            el->lval_size = elem_size;
+
+                            Expr *as = new_expr(EXPR_ASSIGN);
+                            as->lhs = el;
+                            as->rhs = in->value;
+                            as->base = base;
+                            as->ptr = (ptr - 1);
+                            as->struct_id = sid;
+                            as->is_unsigned = is_unsigned;
+                            as->lval_size = elem_size;
+
+                            Stmt *st = new_stmt(STMT_EXPR);
+                            st->expr = as;
+                            if (!then_head) then_head = st;
+                            if (then_tail) then_tail->next = st;
+                            then_tail = st;
+                        }
+                    }
+                } else {
+                    // Scalar initializer: static int x = expr;
+                    if (!consume(p, TOK_ASSIGN)) {
+                        die("internal: expected '=' for static initializer");
+                    }
+                    Expr *rhs = parse_expr(p, ls);
+                    Expr *lhs = new_expr(EXPR_GLOBAL);
+                    lhs->global_id = gid_existing;
+                    lhs->base = base;
+                    lhs->ptr = ptr;
+                    lhs->struct_id = sid;
+                    lhs->is_unsigned = is_unsigned;
+                    lhs->lval_size = (lval_size == 1 || lval_size == 2 || lval_size == 4 || lval_size == 8) ? lval_size : 8;
+
+                    Expr *as = new_expr(EXPR_ASSIGN);
+                    as->lhs = lhs;
+                    as->rhs = rhs;
+                    as->base = base;
+                    as->ptr = ptr;
+                    as->struct_id = sid;
+                    as->is_unsigned = is_unsigned;
+                    as->lval_size = lhs->lval_size;
+
+                    Stmt *st = new_stmt(STMT_EXPR);
+                    st->expr = as;
+                    then_head = then_tail = st;
+                }
+
+                // guard = 1
+                Expr *guard_lhs = new_expr(EXPR_GLOBAL);
+                guard_lhs->global_id = gid_guard;
+                guard_lhs->base = BT_LONG;
+                guard_lhs->ptr = 0;
+                guard_lhs->struct_id = -1;
+                guard_lhs->is_unsigned = 0;
+                guard_lhs->lval_size = 8;
+
+                Expr *one = new_expr(EXPR_NUM);
+                one->num = 1;
+                one->base = BT_LONG;
+                one->ptr = 0;
+                one->struct_id = -1;
+                one->is_unsigned = 0;
+                one->lval_size = 8;
+
+                Expr *gset = new_expr(EXPR_ASSIGN);
+                gset->lhs = guard_lhs;
+                gset->rhs = one;
+                gset->base = BT_LONG;
+                gset->ptr = 0;
+                gset->struct_id = -1;
+                gset->is_unsigned = 0;
+                gset->lval_size = 8;
+
+                Stmt *stg = new_stmt(STMT_EXPR);
+                stg->expr = gset;
+                if (!then_head) then_head = stg;
+                if (then_tail) then_tail->next = stg;
+                then_tail = stg;
+
+                then_block->block_first = then_head;
+
+                Stmt *ifs = new_stmt(STMT_IF);
+                ifs->if_cond = cond;
+                ifs->if_then = then_block;
+                ifs->if_else = NULL;
+
+                if (!head) head = ifs;
+                if (tail) tail->next = ifs;
+                tail = ifs;
+                while (tail && tail->next) tail = tail->next;
+            }
+
+            // Declaration is a no-op (storage already exists in the hidden global).
+            Stmt *s = new_stmt(STMT_DECL);
+            s->decl_offset = 0;
+            s->decl_store_size = 0;
+            if (!head) head = s;
+            if (tail) tail->next = s;
+            tail = s;
+            while (tail && tail->next) tail = tail->next;
+
+            skip_gcc_attrs(p);
+            if (consume(p, TOK_COMMA)) {
+                skip_gcc_attrs(p);
+                continue;
+            }
+            break;
         }
 
         // Parse optional initializer early for unsized arrays so we can deduce alloc_size.
@@ -1849,6 +2360,151 @@ static Expr *parse_struct_init_compound(Parser *p, Locals *ls, int sid) {
     return e;
 }
 
+// ===== Inline Assembly Parsing =====
+// Parses GNU-style inline asm:
+//   __asm__ [volatile] ( "template" [: outputs [: inputs [: clobbers]]] );
+//
+// Operand format: [constraint] (expr)  or  "constraint" (expr)
+// Constraint examples: "=a", "r", "m", "Nd", "+r"
+
+static char *parse_asm_string(Parser *p) {
+    // Parse one or more adjacent string literals and concatenate them.
+    if (p->tok.kind != TOK_STR) {
+        die("%s:%d:%d: expected string literal in asm", p->lx.path, p->tok.line, p->tok.col);
+    }
+    Str buf = {0};
+    while (p->tok.kind == TOK_STR) {
+        str_append_bytes(&buf, p->tok.start + 1, p->tok.len - 2); // skip quotes
+        parser_next(p);
+    }
+    char *result = (char *)monacc_malloc(buf.len + 1);
+    if (buf.buf) mc_memcpy(result, buf.buf, buf.len);
+    result[buf.len] = 0;
+    monacc_free(buf.buf);
+    return result;
+}
+
+static void parse_asm_operands(Parser *p, Locals *ls, AsmOperand **out_ops, int *out_n) {
+    // Parse a list of asm operands: "constraint" (expr) [, "constraint" (expr) ...]
+    *out_ops = NULL;
+    *out_n = 0;
+    if (!tok_is(p, TOK_STR)) return; // empty list
+
+    AsmOperand *ops = NULL;
+    int n = 0;
+    int cap = 0;
+    for (;;) {
+        if (!tok_is(p, TOK_STR)) break;
+        // Parse constraint string
+        const char *cstr = p->tok.start + 1;
+        size_t clen = p->tok.len - 2;
+        if (clen >= sizeof(((AsmOperand *)0)->constraint)) {
+            die("%s:%d:%d: asm constraint too long", p->lx.path, p->tok.line, p->tok.col);
+        }
+        parser_next(p);
+
+        // Parse (expr)
+        expect(p, TOK_LPAREN, "'('");
+        Expr *e = parse_expr(p, ls);
+        expect(p, TOK_RPAREN, "')'");
+
+        // Grow array
+        if (n >= cap) {
+            cap = cap ? cap * 2 : 4;
+            ops = (AsmOperand *)monacc_realloc(ops, (size_t)cap * sizeof(AsmOperand));
+        }
+        mc_memset(&ops[n], 0, sizeof(AsmOperand));
+        mc_memcpy(ops[n].constraint, cstr, clen);
+        ops[n].constraint[clen] = 0;
+        ops[n].is_output = (cstr[0] == '=' || cstr[0] == '+');
+        ops[n].is_inout = (cstr[0] == '+');
+        ops[n].expr = e;
+        n++;
+
+        if (!consume(p, TOK_COMMA)) break;
+    }
+    *out_ops = ops;
+    *out_n = n;
+}
+
+static void parse_asm_clobbers(Parser *p, char ***out_clobs, int *out_n) {
+    // Parse a list of clobber strings: "reg" [, "reg" ...]
+    *out_clobs = NULL;
+    *out_n = 0;
+    if (!tok_is(p, TOK_STR)) return;
+
+    char **clobs = NULL;
+    int n = 0;
+    int cap = 0;
+    for (;;) {
+        if (!tok_is(p, TOK_STR)) break;
+        const char *cstr = p->tok.start + 1;
+        size_t clen = p->tok.len - 2;
+        parser_next(p);
+
+        // Grow array
+        if (n >= cap) {
+            cap = cap ? cap * 2 : 4;
+            clobs = (char **)monacc_realloc(clobs, (size_t)cap * sizeof(char *));
+        }
+        clobs[n] = (char *)monacc_malloc(clen + 1);
+        mc_memcpy(clobs[n], cstr, clen);
+        clobs[n][clen] = 0;
+        n++;
+
+        if (!consume(p, TOK_COMMA)) break;
+    }
+    *out_clobs = clobs;
+    *out_n = n;
+}
+
+static Stmt *parse_asm_stmt(Parser *p, Locals *ls) {
+    // Already consumed __asm__ or __asm
+    Stmt *s = new_stmt(STMT_ASM);
+
+    // Optional: volatile / __volatile__
+    s->asm_is_volatile = 0;
+    if (tok_is_ident(p, "volatile") || tok_is_ident(p, "__volatile__")) {
+        s->asm_is_volatile = 1;
+        parser_next(p);
+    }
+
+    // Optional: goto (we skip but don't specially handle)
+    if (tok_is_ident(p, "goto")) {
+        parser_next(p);
+    }
+
+    expect(p, TOK_LPAREN, "'('");
+
+    // Parse template string
+    s->asm_template = parse_asm_string(p);
+
+    // Parse optional sections: outputs, inputs, clobbers
+    s->asm_outputs = NULL;
+    s->asm_noutputs = 0;
+    s->asm_inputs = NULL;
+    s->asm_ninputs = 0;
+    s->asm_clobbers = NULL;
+    s->asm_nclobbers = 0;
+
+    if (consume(p, TOK_COLON)) {
+        // Outputs
+        parse_asm_operands(p, ls, &s->asm_outputs, &s->asm_noutputs);
+        if (consume(p, TOK_COLON)) {
+            // Inputs
+            parse_asm_operands(p, ls, &s->asm_inputs, &s->asm_ninputs);
+            if (consume(p, TOK_COLON)) {
+                // Clobbers
+                parse_asm_clobbers(p, &s->asm_clobbers, &s->asm_nclobbers);
+            }
+        }
+    }
+
+    expect(p, TOK_RPAREN, "')'");
+    expect(p, TOK_SEMI, "';'");
+    return s;
+}
+
 static Stmt *parse_stmt(Parser *p, Locals *ls) {
     if (consume(p, TOK_SEMI)) {
         // Empty statement.
@@ -1975,6 +2631,11 @@ static Stmt *parse_stmt(Parser *p, Locals *ls) {
         s->switch_body = parse_stmt(p, ls);
         return s;
     }
+    // Inline assembly: __asm__ / __asm / asm
+    if (tok_is_ident(p, "__asm__") || tok_is_ident(p, "__asm") || tok_is_ident(p, "asm")) {
+        parser_next(p);
+        return parse_asm_stmt(p, ls);
+    }
     if (looks_like_type_start(p) || tok_is(p, TOK_KW_EXTERN) || tok_is(p, TOK_KW_STATIC)) {
         return parse_decl(p, ls);
     }
@@ -2079,41 +2740,6 @@ static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
     }
     if (out_nparams) *out_nparams = n;
     return ps;
-}
-
-static void skip_to_semi(Parser *p) {
-    int par = 0, br = 0, bc = 0;
-    while (p->tok.kind != TOK_EOF) {
-        if (par == 0 && br == 0 && bc == 0 && consume(p, TOK_SEMI)) {
-            return;
-        }
-        if (consume(p, TOK_LPAREN)) {
-            par++;
-            continue;
-        }
-        if (consume(p, TOK_RPAREN)) {
-            if (par > 0) par--;
-            continue;
-        }
-        if (consume(p, TOK_LBRACK)) {
-            br++;
-            continue;
-        }
-        if (consume(p, TOK_RBRACK)) {
-            if (br > 0) br--;
-            continue;
-        }
-        if (consume(p, TOK_LBRACE)) {
-            bc++;
-            continue;
-        }
-        if (consume(p, TOK_RBRACE)) {
-            if (bc > 0) bc--;
-            continue;
-        }
-        parser_next(p);
-    }
-    die("%s:%d:%d: unexpected EOF while skipping declaration", p->lx.path, p->tok.line, p->tok.col);
 }
 
 static void skip_paren_group(Parser *p) {
@@ -2250,7 +2876,7 @@ static void parse_struct_def(Parser *p, int struct_id) {
             die("%s:%d:%d: invalid struct member type void", p->lx.path, p->tok.line, p->tok.col);
         }
 
-        int al = type_alignof(p->prg, b, ptr, sid);
+        int al = sd->is_packed ? 1 : type_alignof(p->prg, b, ptr, sid);
         int esz = type_sizeof(p->prg, b, ptr, sid);
         int sz = esz;
         if (array_len == -1) {
@@ -2302,8 +2928,8 @@ static void parse_struct_def(Parser *p, int struct_id) {
     }
 
     expect(p, TOK_RBRACE, "'}'");
-    sd->align = maxa;
-    sd->size = align_up(off, maxa);
+    sd->align = sd->is_packed ? 1 : maxa;
+    sd->size = align_up(off, sd->align);
     if (sd->size == 0) sd->size = 1;
 }
 
@@ -2332,6 +2958,14 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
 
     Locals ls = {0};
     ls.next_offset = 0;
+
+    // Track current function name (used for static local symbol naming).
+    if (nm_len > 0 && nm_len < sizeof(p->cur_fn_name)) {
+        mc_memcpy(p->cur_fn_name, nm, nm_len);
+        p->cur_fn_name[nm_len] = 0;
+    } else {
+        p->cur_fn_name[0] = 0;
+    }
 
     int is_sret = (ret_base == BT_STRUCT && ret_ptr == 0);
     if (is_sret) {
@@ -2402,6 +3036,7 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
     }
 
     fn.body = parse_block(p, &ls);
+    p->cur_fn_name[0] = 0;
     fn.stack_size = -ls.next_offset;
     fn.stack_size = (fn.stack_size + 15) & ~15;
     return fn;
@@ -2446,9 +3081,11 @@ void parse_program(Parser *p, Program *out) {
 
         int saw_static = 0;
         int saw_inline = 0;
+        int saw_extern = 0;
         for (;;) {
             int did = 0;
             if (consume(p, TOK_KW_EXTERN)) {
+                saw_extern = 1;
                 did = 1;
             } else if (consume(p, TOK_KW_STATIC)) {
                 saw_static = 1;
@@ -2533,11 +3170,77 @@ void parse_program(Parser *p, Program *out) {
             continue;
         }
 
-        // Global variables/other declarations: accept syntax, ignore for now.
-        skip_to_semi(p);
+        // Global variables
+        // Handle array syntax: T name[N] or T name[]
+        int array_len = 0;
+        if (consume(p, TOK_LBRACK)) {
+            if (tok_is(p, TOK_NUM)) {
+                array_len = (int)p->tok.num;
+                parser_next(p);
+            } else {
+                // Incomplete array (only valid as an extern declaration in this compiler).
+                array_len = -1;
+            }
+            expect(p, TOK_RBRACK, "']'");
+            skip_gcc_attrs(p);
+        }
+
+        if (array_len < 0 && !saw_extern) {
+            die("%s:%d:%d: incomplete global array requires extern", p->lx.path, p->tok.line, p->tok.col);
+        }
+
+        GlobalVar gv = {0};
+        if (nm_len == 0 || nm_len >= sizeof(gv.name)) {
+            die("%s:%d:%d: global variable name too long", p->lx.path, p->tok.line, p->tok.col);
+        }
+        mc_memcpy(gv.name, nm, nm_len);
+        gv.name[nm_len] = 0;
+        gv.base = base;
+        gv.ptr = ptr;
+        gv.struct_id = sid;
+        gv.is_unsigned = is_unsigned;
+        gv.is_static = saw_static;
+        gv.array_len = array_len;
+        gv.is_extern = saw_extern;
+
+        int elem_size = type_sizeof(p->prg, base, ptr, sid);
+        gv.elem_size = elem_size;
+        if (array_len > 0) {
+            gv.size = elem_size * array_len;
+        } else if (array_len < 0) {
+            gv.size = 0;
+        } else {
+            gv.size = elem_size;
+        }
+
+        program_add_global(out, &gv);
+
+        // Skip initializer if present (= ...)
+        if (consume(p, TOK_ASSIGN)) {
+            if (saw_extern) {
+                die("%s:%d:%d: extern global initializers are not supported", p->lx.path, p->tok.line, p->tok.col);
+            }
+            // Skip to semicolon, handling braces for struct/array initializers
+            int brace_depth = 0;
+            while (p->tok.kind != TOK_EOF) {
+                if (tok_is(p, TOK_LBRACE)) {
+                    brace_depth++;
+                    parser_next(p);
+                } else if (tok_is(p, TOK_RBRACE)) {
+                    if (brace_depth > 0) brace_depth--;
+                    parser_next(p);
+                } else if (tok_is(p, TOK_SEMI) && brace_depth == 0) {
+                    break;
+                } else {
+                    parser_next(p);
+                }
+            }
+        }
+        expect(p, TOK_SEMI, "';'");
     }
     if (out->nfns == 0) {
-        die("%s: no functions found", p->lx.path);
+        // Allow files with only global variables (no functions)
+        // die("%s: no functions found", p->lx.path);
     }
 }
 

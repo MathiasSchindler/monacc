@@ -2,7 +2,7 @@
 
 **A self-hosting C compiler for Linux x86_64 with a complete syscall-only userland.**
 
-monacc is a small C compiler that can compile itself and a full suite of Unix command-line tools — all without external dependencies beyond the Linux kernel.
+monacc is a small C compiler that can compile itself and a full suite of Unix command-line tools — with no runtime dependencies beyond the Linux kernel, and no external assembler/linker required for the default build after bootstrap.
 
 ## What is this?
 
@@ -115,7 +115,7 @@ All tools:
 - Are statically linked
 - Have no runtime dependencies beyond the Linux kernel
 - ELF outputs omit section headers by default for smaller file size (use `--keep-shdr` to retain them for debugging)
-- Current sizes (monacc-built, stripped): ~195 bytes (`true`) up to ~29KB (`sh`) (exact sizes change as codegen improves)
+- Current sizes (monacc-built, stripped): ~129 bytes (`true`) up to ~24KB (`sh`) (exact sizes change as codegen improves)
 
 ## Build Requirements
 
@@ -141,14 +141,15 @@ All tools:
 | Tools pass test suite | ✅ |
 | Compiler self-hosts (compiles itself) | ✅ |
 | Self-hosted compiler runs examples | ✅ |
-| Internal ELF object emission | 🔄 Experimental |
+| Internal ELF object emission (`--emit-obj`) | ✅ |
+| Internal linker (`--link-internal`) | ✅ |
 | Build scripts run on built `sh` | 🔜 Planned |
 
 ## Design Principles
 
 1. **Syscalls only** — No libc dependency in output binaries
 2. **Static binaries** — Each tool is standalone
-3. **Size-oriented** — Compiled with `-Os`, LTO, `--gc-sections`
+3. **Size-oriented** — Built with `-Os` + section GC (host build uses `-flto`/`--gc-sections`; monacc outputs do equivalent internally)
 4. **Scope-limited** — Implements what's needed, not everything
 5. **Single platform** — Linux x86_64 only, no abstraction layers
 

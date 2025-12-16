@@ -1,6 +1,6 @@
 # monacc status
 
-Date: 2025-12-16 (Updated)
+Date: 2025-12-17 (Updated)
 
 This document tracks the current state of the monacc compiler and userland tools.
 
@@ -10,7 +10,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Build
 
-- `make` produces a size-optimized stripped binary (~103 KB) + all 70 tools
+- `make` produces a size-optimized stripped binary (~125 KB) + all 70 tools
 - `make test` runs the full test suite (39 examples + tool tests)
 - `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
@@ -25,7 +25,7 @@ This document tracks the current state of the monacc compiler and userland tools
   - `monacc_ast.c` — AST node creation
   - `monacc_codegen.c` — code generation (~2,300 lines)
   - `monacc_str.c` — string builder utilities (~350 lines)
-  - `monacc_elfobj.c` — ELF object emission (experimental)
+  - `monacc_elfobj.c` — ELF object emission (`--emit-obj`)
   - `monacc_fmt.c` — formatting helpers
   - `monacc_sys.c` — syscall wrappers
 - Entry: custom `_start` (Linux x86_64) in `core/mc_start.c`
@@ -97,7 +97,7 @@ This document tracks the current state of the monacc compiler and userland tools
 ### Self-hosting Status
 
 - monacc can compile itself into `.o` files
-- Linked with host toolchain → `monacc-self`
+- Linked with the internal linker by default → `monacc-self` (fallback: `LINKINT=0`)
 - `monacc-self` can compile and run example programs
 - Uses a minimal SELFHOST shim header (`compiler/monacc_selfhost.h`) to avoid relying on full libc headers/macros
 - Codegen avoids varargs formatting in SELFHOST builds
@@ -195,7 +195,7 @@ All 70 tools compile and link successfully with monacc.
 |-------|--------------|
 | Building monacc | Host `cc` (gcc/clang), system headers |
 | Running monacc | Hosted program (can be static) |
-| Building tools | Default: internal `--emit-obj` + `ld` (external `as` optional fallback) |
+| Building tools | Default: internal `--emit-obj` + internal linker (`--link-internal`) |
 | Running tools | Linux kernel only |
 
 ### Progress
@@ -209,12 +209,13 @@ All 70 tools compile and link successfully with monacc.
 - Internal process spawning (`clone/execve/wait4`)
 - Internal PATH search (`xexecvp`)
 - Toolchain pinning (`--toolchain`, `--as`, `--ld`)
-- Experimental ELF object emission (`--emit-obj`)
+- Internal ELF object emission (`--emit-obj`)
+- Internal linker (`--link-internal`) including section GC
+- Optional section headers for debugging (`--keep-shdr`) + inspection (`--dump-elfsec`)
 
 **Remaining:**
-- External `as` no longer required for the default build (kept as an optional fallback)
-- External `ld` still required
 - Host `cc` needed to bootstrap
+- Build/tests using the monacc-built `bin/sh` + tools (fully self-contained build environment)
 
 ---
 
@@ -252,8 +253,8 @@ All 70 tools compile and link successfully with monacc.
 | Self-hosting works | ✅ (simple examples) |
 | Selfhost inline asm | ✅ Works on current `main` |
 | Internal ELF emission | ✅ SELFTEST_EMITOBJ probe passes (still incomplete overall) |
-| No external assembler | 🔜 Planned |
-| No external linker | 🔜 Planned |
+| No external assembler (default build) | ✅ |
+| No external linker (default build) | ✅ |
 
 ---
 

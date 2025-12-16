@@ -1,6 +1,6 @@
 # monacc - Future Roadmap
 
-Date: 2025-12-16
+Date: 2025-12-17
 
 This document outlines remaining work and future directions for monacc.
 
@@ -26,7 +26,7 @@ This document outlines remaining work and future directions for monacc.
 
 The end state for monacc:
 
-1. **Fully self-contained** — no external `as`, `ld`, or libc required
+1. **Fully self-contained** — no external `as`, `ld`, or libc required ✅ (default monacc build outputs)
 2. **Self-hosting** — monacc compiles itself ✅ (achieved)
 3. **Complete userland** — all tools in `tools/` compile and run ✅ (achieved)
 4. **Kernel support** — the kernel in `kernel/` compiles and boots ✅ (achieved)
@@ -51,25 +51,22 @@ done
 ```
 
 ---
+### Phase 2: Eliminate External `ld` (Done)
 
-### Phase 2: Eliminate External `ld`
+**Current state:** monacc links with its internal linker by default (`--link-internal`). External `ld` remains available as a fallback (`LINKINT=0`) for bring-up/debugging.
 
-**What:** Implement a minimal ELF linker inside monacc.
+---
 
-**Why:** Full self-containment — no external tools required.
+### Phase 3: Fully Self-Contained Build/Test Environment
 
-**Complexity:** This is the most significant remaining dependency. The linker needs to:
-- Parse ELF relocatable objects
-- Resolve symbols across translation units
-- Apply relocations
-- Emit a final executable
+**What:** Run builds and tests using the monacc-built tools (`bin/sh`, coreutils-like tools) rather than host `/bin/sh`, host `make`, etc.
 
-**Approach options:**
-1. Single-TU mode (current) — emit executable directly, no linking needed
-2. Minimal linker — only handle the patterns monacc actually generates
-3. Full linker — general-purpose ELF linking
+**Why:** The compiler+userland becomes a closed loop not just at runtime, but for day-to-day development workflows.
 
-**Recommendation:** Option 2 — a minimal linker tailored to monacc's output.
+**Milestones (rough):**
+- Drive `tests/tools/run.sh` under `bin/sh` (or make the test runner shell-agnostic where practical)
+- Minimize host tool assumptions in scripts (e.g. avoid bashisms if `bin/sh` doesn’t support them)
+- Optional: provide a minimal `make`-like driver or a build script that uses only monacc-built tools
 
 ---
 

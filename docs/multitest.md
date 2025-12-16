@@ -89,9 +89,3 @@ This document describes the current multi-toolchain “matrix” test harness, w
 - Smoke tests pass per toolchain.
 - ✅ TSV + HTML report generated with per-tool, per-toolchain data; easy to spot best/worst per tool.
 - No regressions to the existing `make` / `make test` experience when `MULTI` is unset.
-
-## Stretch (later)
-
-- Add musl toolchain row (musl-gcc/clang with musl).
-- Add timing microbenchmarks for a few tools.
-- Publish size deltas per commit (optional CI artifact).

@@ -5,16 +5,16 @@
 #define MONACC_PATH_MAX 4096
 #endif
 
-static char *pp_strip_comments_and_trim(const char *s, size_t len) {
+static char *pp_strip_comments_and_trim(const char *s, mc_usize len) {
     // Remove C comments from a single line of macro replacement text.
     // This matches typical preprocessing behavior (comments are removed before macro replacement is stored).
     char *out = (char *)monacc_malloc(len + 1);
     if (!out) die("oom");
-    size_t j = 0;
+    mc_usize j = 0;
     int in_str = 0;
     int in_chr = 0;
 
-    for (size_t i = 0; i < len; i++) {
+    for (mc_usize i = 0; i < len; i++) {
         char c = s[i];
         char n = (i + 1 < len) ? s[i + 1] : 0;
 
@@ -75,39 +75,39 @@ static void once_add(OnceTable *ot, const char *path) {
     if (once_contains(ot, path)) return;
     if (ot->n + 1 > ot->cap) {
         int ncap = ot->cap ? ot->cap * 2 : 64;
-        char **np = (char **)monacc_realloc(ot->paths, (size_t)ncap * sizeof(char *));
+        char **np = (char **)monacc_realloc(ot->paths, (mc_usize)ncap * sizeof(char *));
         if (!np) die("oom");
         ot->paths = np;
         ot->cap = ncap;
     }
-    size_t n = mc_strlen(path) + 1;
+    mc_usize n = mc_strlen(path) + 1;
     ot->paths[ot->n] = (char *)monacc_malloc(n);
     if (!ot->paths[ot->n]) die("oom");
     mc_memcpy(ot->paths[ot->n], path, n);
     ot->n++;
 }
 
-static char *slurp_file(const char *path, size_t *out_len) {
+static char *slurp_file(const char *path, mc_usize *out_len) {
     int fd = xopen_ro(path);
 
-    size_t cap = 4096;
+    mc_usize cap = 4096;
     char *buf = (char *)monacc_malloc(cap);
     if (!buf) die("oom");
-    size_t n = 0;
+    mc_usize n = 0;
 
     for (;;) {
         if (n + 1 >= cap) {
-            size_t ncap = cap * 2;
+            mc_usize ncap = cap * 2;
             char *nb = (char *)monacc_realloc(buf, ncap);
             if (!nb) die("oom");
             buf = nb;
             cap = ncap;
         }
 
-        ssize_t r = xread_retry(fd, buf + n, (cap - 1) - n);
+        mc_isize r = xread_retry(fd, buf + n, (cap - 1) - n);
         if (r < 0) die("read %s failed", path);
         if (r == 0) break;
-        n += (size_t)r;
+        n += (mc_usize)r;
     }
     buf[n] = 0;
 
@@ -116,7 +116,7 @@ static char *slurp_file(const char *path, size_t *out_len) {
     return buf;
 }
 
-static void path_dirname(const char *in, char *out, size_t out_cap) {
+static void path_dirname(const char *in, char *out, mc_usize out_cap) {
     const char *slash = mc_strrchr(in, '/');
     if (!slash) {
         if (out_cap) {
@@ -125,7 +125,7 @@ static void path_dirname(const char *in, char *out, size_t out_cap) {
         }
         return;
     }
-    size_t n = (size_t)(slash - in);
+    mc_usize n = (mc_usize)(slash - in);
     if (n == 0) n = 1;
     if (n + 1 > out_cap) die("path too long");
     mc_memcpy(out, in, n);
@@ -146,12 +146,12 @@ static int file_exists(const char *path) {
     return 0;
 }
 
-static void resolve_include(const PPConfig *cfg, const char *including_path, const char *inc, char *out, size_t out_cap) {
+static void resolve_include(const PPConfig *cfg, const char *including_path, const char *inc, char *out, mc_usize out_cap) {
     char dir[MONACC_PATH_MAX];
     path_dirname(including_path, dir, sizeof(dir));
 
-    size_t dir_n = mc_strlen(dir);
-    size_t inc_n = mc_strlen(inc);
+    mc_usize dir_n = mc_strlen(dir);
+    mc_usize inc_n = mc_strlen(inc);
     if (dir_n + 1 + inc_n + 1 > out_cap) {
         die("include path too long");
     }
@@ -162,7 +162,7 @@ static void resolve_include(const PPConfig *cfg, const char *including_path, con
     if (file_exists(out)) return;
     for (int i = 0; i < cfg->ninclude_dirs; i++) {
         const char *base = cfg->include_dirs[i];
-        size_t base_n = mc_strlen(base);
+        mc_usize base_n = mc_strlen(base);
         if (base_n + 1 + inc_n + 1 > out_cap) {
             continue;
         }
@@ -177,7 +177,7 @@ static void resolve_include(const PPConfig *cfg, const char *including_path, con
 
 void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out) {
     if (once_contains(ot, path)) return;
-    size_t len = 0;
+    mc_usize len = 0;
     char *src = slurp_file(path, &len);
     const char *p = src;
     const char *end = src + len;
@@ -192,7 +192,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
 
     while (p < end) {
         const char *line = p;
-        const char *nl = mc_memchr(p, '\n', (size_t)(end - p));
+        const char *nl = mc_memchr(p, '\n', (mc_usize)(end - p));
         const char *line_end = nl ? nl : end;
 
         const char *q = line;
@@ -202,12 +202,12 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
             while (q < line_end && (*q == ' ' || *q == '\t')) q++;
 
             // conditionals
-            if ((size_t)(line_end - q) >= 5 && mc_memcmp(q, "ifdef", 5) == 0) {
+            if ((mc_usize)(line_end - q) >= 5 && mc_memcmp(q, "ifdef", 5) == 0) {
                 q += 5;
                 while (q < line_end && (*q == ' ' || *q == '\t')) q++;
                 const char *name = q;
                 while (q < line_end && is_ident_cont((unsigned char)*q)) q++;
-                size_t name_len = (size_t)(q - name);
+                mc_usize name_len = (mc_usize)(q - name);
                 int parent_active = if_active[if_sp];
                 int is_def = (name_len > 0 && mt_lookup(mt, name, name_len) != NULL);
                 if (if_sp + 1 >= (int)(sizeof(if_active) / sizeof(if_active[0]))) {
@@ -217,12 +217,12 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 if_else_seen[if_sp] = 0;
                 if_active[if_sp] = parent_active && is_def;
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 6 && mc_memcmp(q, "ifndef", 6) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 6 && mc_memcmp(q, "ifndef", 6) == 0) {
                 q += 6;
                 while (q < line_end && (*q == ' ' || *q == '\t')) q++;
                 const char *name = q;
                 while (q < line_end && is_ident_cont((unsigned char)*q)) q++;
-                size_t name_len = (size_t)(q - name);
+                mc_usize name_len = (mc_usize)(q - name);
                 int parent_active = if_active[if_sp];
                 int is_def = (name_len > 0 && mt_lookup(mt, name, name_len) != NULL);
                 if (if_sp + 1 >= (int)(sizeof(if_active) / sizeof(if_active[0]))) {
@@ -232,18 +232,18 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 if_else_seen[if_sp] = 0;
                 if_active[if_sp] = parent_active && !is_def;
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 4 && mc_memcmp(q, "else", 4) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 4 && mc_memcmp(q, "else", 4) == 0) {
                 if (if_sp == 0) die("%s: #else without #if", path);
                 if (if_else_seen[if_sp]) die("%s: duplicate #else", path);
                 if_else_seen[if_sp] = 1;
                 int parent_active = if_active[if_sp - 1];
                 if_active[if_sp] = parent_active && !if_active[if_sp];
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 5 && mc_memcmp(q, "endif", 5) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 5 && mc_memcmp(q, "endif", 5) == 0) {
                 if (if_sp == 0) die("%s: #endif without #if", path);
                 if_sp--;
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 7 && mc_memcmp(q, "include", 7) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 7 && mc_memcmp(q, "include", 7) == 0) {
                 if (!if_active[if_sp]) {
                     str_appendf(out, "\n");
                     p = nl ? (nl + 1) : end;
@@ -264,7 +264,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 const char *s = q;
                 while (q < line_end && *q != close) q++;
                 if (q >= line_end) die("bad #include in %s", path);
-                size_t n = (size_t)(q - s);
+                mc_usize n = (mc_usize)(q - s);
                 if (n == 0 || n >= MONACC_PATH_MAX) die("include path too long");
                 char inc[MONACC_PATH_MAX];
                 mc_memcpy(inc, s, n);
@@ -273,7 +273,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 resolve_include(cfg, path, inc, full, sizeof(full));
                 preprocess_file(cfg, mt, ot, full, out);
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 6 && mc_memcmp(q, "define", 6) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 6 && mc_memcmp(q, "define", 6) == 0) {
                 if (!if_active[if_sp]) {
                     str_appendf(out, "\n");
                     p = nl ? (nl + 1) : end;
@@ -283,15 +283,15 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 while (q < line_end && (*q == ' ' || *q == '\t')) q++;
                 const char *name = q;
                 while (q < line_end && is_ident_cont((unsigned char)*q)) q++;
-                size_t name_len = (size_t)(q - name);
+                mc_usize name_len = (mc_usize)(q - name);
                 while (q < line_end && (*q == ' ' || *q == '\t')) q++;
                 // rest is replacement (object-like only)
-                size_t repl_len = (size_t)(line_end - q);
+                mc_usize repl_len = (mc_usize)(line_end - q);
                 char *repl = pp_strip_comments_and_trim(q, repl_len);
                 mt_define(mt, name, name_len, repl);
                 monacc_free(repl);
                 str_appendf(out, "\n");
-            } else if ((size_t)(line_end - q) >= 6 && mc_memcmp(q, "pragma", 6) == 0) {
+            } else if ((mc_usize)(line_end - q) >= 6 && mc_memcmp(q, "pragma", 6) == 0) {
                 if (!if_active[if_sp]) {
                     str_appendf(out, "\n");
                     p = nl ? (nl + 1) : end;
@@ -299,7 +299,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 }
                 q += 6;
                 while (q < line_end && (*q == ' ' || *q == '\t')) q++;
-                if ((size_t)(line_end - q) >= 4 && mc_memcmp(q, "once", 4) == 0) {
+                if ((mc_usize)(line_end - q) >= 4 && mc_memcmp(q, "once", 4) == 0) {
                     once_add(ot, path);
                 }
                 str_appendf(out, "\n");
@@ -313,7 +313,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 p = nl ? (nl + 1) : end;
                 continue;
             }
-            size_t n = (size_t)(line_end - line);
+            mc_usize n = (mc_usize)(line_end - line);
             str_reserve(out, n + 1);
             mc_memcpy(out->buf + out->len, line, n);
             out->len += n;

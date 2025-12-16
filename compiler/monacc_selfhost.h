@@ -1,7 +1,7 @@
 #pragma once
 
 // Self-hosting-only compatibility shims.
-// Included via src/monacc.h when SELFHOST is defined.
+// Included via compiler/monacc.h when SELFHOST is defined.
 //
 // Note: monacc's preprocessor does not support function-like macros, so keep
 // these as declarations/definitions instead of macro tricks.

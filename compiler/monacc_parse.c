@@ -30,11 +30,20 @@ static Expr *parse_eq(Parser *p, Locals *ls);
 static Expr *parse_rel(Parser *p, Locals *ls);
 static Expr *parse_shift(Parser *p, Locals *ls);
 static void skip_paren_group(Parser *p);
-static void parse_declarator_name(Parser *p, const char **out_nm, size_t *out_nm_len, int *io_ptr);
+static void parse_declarator_name(Parser *p, const char **out_nm, mc_usize *out_nm_len, int *io_ptr);
 
 static int tok_is_ident(Parser *p, const char *s) {
-    size_t n = mc_strlen(s);
+    mc_usize n = mc_strlen(s);
     return p->tok.kind == TOK_IDENT && p->tok.len == n && mc_memcmp(p->tok.start, s, n) == 0;
+}
+
+static void expr_set_int(Expr *e) {
+    if (!e) return;
+    e->base = BT_INT;
+    e->ptr = 0;
+    e->struct_id = -1;
+    e->is_unsigned = 0;
+    e->lval_size = 8;
 }
 
 static void skip_balanced(Parser *p, TokenKind open, TokenKind close) {
@@ -226,13 +235,15 @@ static long long eval_const_expr(Parser *p, const Expr *e) {
         return eval_const_expr(p, e->lhs);
     case EXPR_MUL:
         return eval_const_expr(p, e->lhs) * eval_const_expr(p, e->rhs);
-    case EXPR_DIV: {
+    case EXPR_DIV:
+    {
         long long a = eval_const_expr(p, e->lhs);
         long long b = eval_const_expr(p, e->rhs);
         if (b == 0) die("%s:%d:%d: division by zero in constant expression", p->lx.path, p->tok.line, p->tok.col);
         return a / b;
     }
-    case EXPR_MOD: {
+    case EXPR_MOD:
+    {
         long long a = eval_const_expr(p, e->lhs);
         long long b = eval_const_expr(p, e->rhs);
         if (b == 0) die("%s:%d:%d: modulo by zero in constant expression", p->lx.path, p->tok.line, p->tok.col);
@@ -286,7 +297,7 @@ static void parse_enum_def(Parser *p) {
             die("%s:%d:%d: unexpected EOF in enum", p->lx.path, p->tok.line, p->tok.col);
         }
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
         expect_ident(p, &nm, &nm_len);
         skip_gcc_attrs(p);
         if (consume(p, TOK_ASSIGN)) {
@@ -344,7 +355,7 @@ static void parse_type_spec(Parser *p, BaseType *out_base, int *out_ptr, int *ou
         base = BT_VOID;
     } else if (consume(p, TOK_KW_STRUCT)) {
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
 
         int saw_packed = 0;
 
@@ -462,7 +473,8 @@ static unsigned char parse_escape_seq(Parser *p, const Token *at, const char **p
         case '4':
         case '5':
         case '6':
-        case '7': {
+        case '7':
+        {
             // Octal: up to 3 digits (we already consumed one).
             unsigned int v = (unsigned int)(c - '0');
             for (int i = 0; i < 2 && *pp < end; i++) {
@@ -473,7 +485,8 @@ static unsigned char parse_escape_seq(Parser *p, const Token *at, const char **p
             }
             return (unsigned char)(v & 0xffu);
         }
-        case 'x': {
+        case 'x':
+        {
             unsigned int v = 0;
             int nd = 0;
             while (*pp < end) {
@@ -517,14 +530,14 @@ static unsigned char parse_char_literal(Parser *p, const Token *t) {
     return v;
 }
 
-static unsigned char *parse_string_literal(Parser *p, const Token *t, size_t *out_len) {
+static unsigned char *parse_string_literal(Parser *p, const Token *t, mc_usize *out_len) {
     if (t->len < 2 || t->start[0] != '"' || t->start[t->len - 1] != '"') {
         die("%s:%d:%d: invalid string literal", p->lx.path, t->line, t->col);
     }
     const char *q = t->start + 1;
     const char *end = t->start + t->len - 1;
-    size_t cap = 64;
-    size_t len = 0;
+    mc_usize cap = 64;
+    mc_usize len = 0;
     unsigned char *buf = (unsigned char *)monacc_malloc(cap);
     if (!buf) die("oom");
     while (q < end) {
@@ -533,7 +546,7 @@ static unsigned char *parse_string_literal(Parser *p, const Token *t, size_t *ou
             c = parse_escape_seq(p, t, &q, end);
         }
         if (len + 1 > cap) {
-            size_t ncap = cap * 2;
+            mc_usize ncap = cap * 2;
             unsigned char *nb = (unsigned char *)monacc_realloc(buf, ncap);
             if (!nb) die("oom");
             buf = nb;
@@ -585,7 +598,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
     }
     if (p->tok.kind == TOK_STR) {
         // Support C string literal concatenation: "a" "b" => "ab"
-        size_t acc_len = 0;
+        mc_usize acc_len = 0;
         unsigned char *acc = NULL;
 
         Token t0 = p->tok;
@@ -594,12 +607,12 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
 
         while (p->tok.kind == TOK_STR) {
             Token t1 = p->tok;
-            size_t b_len = 0;
+            mc_usize b_len = 0;
             unsigned char *b = parse_string_literal(p, &t1, &b_len);
 
             if (acc_len == 0 || b_len == 0) die("internal: bad string literal length");
             // Replace previous trailing NUL with next string including its NUL.
-            size_t new_len = (acc_len - 1) + b_len;
+            mc_usize new_len = (acc_len - 1) + b_len;
             unsigned char *nb = (unsigned char *)monacc_realloc(acc, new_len);
             if (!nb) die("oom");
             acc = nb;
@@ -695,7 +708,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
                 for (;;) {
                     if (nargs + 1 > cap) {
                         int ncap = cap ? cap * 2 : 4;
-                        Expr **na = (Expr **)monacc_realloc(args, (size_t)ncap * sizeof(*na));
+                        Expr **na = (Expr **)monacc_realloc(args, (mc_usize)ncap * (mc_usize)sizeof(*na));
                         if (!na) die("oom");
                         args = na;
                         cap = ncap;
@@ -914,7 +927,7 @@ static Expr *parse_postfix(Parser *p, Locals *ls) {
             int is_arrow = consume(p, TOK_ARROW);
             if (!is_arrow) (void)consume(p, TOK_DOT);
             const char *mn = NULL;
-            size_t mn_len = 0;
+            mc_usize mn_len = 0;
             expect_ident(p, &mn, &mn_len);
 
             int sid = -1;
@@ -1081,11 +1094,7 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
         }
         Expr *e = new_expr(EXPR_NUM);
         e->num = sz;
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->is_unsigned = 0;
-        e->lval_size = 8;
+        expr_set_int(e);
         return e;
     }
     if (consume(p, TOK_PLUS)) {
@@ -1100,28 +1109,19 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
     if (consume(p, TOK_MINUS)) {
         Expr *e = new_expr(EXPR_NEG);
         e->lhs = parse_unary(p, ls);
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->lval_size = 8;
+        expr_set_int(e);
         return e;
     }
     if (consume(p, TOK_BANG)) {
         Expr *e = new_expr(EXPR_NOT);
         e->lhs = parse_unary(p, ls);
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->lval_size = 8;
+        expr_set_int(e);
         return e;
     }
     if (consume(p, TOK_TILDE)) {
         Expr *e = new_expr(EXPR_BNOT);
         e->lhs = parse_unary(p, ls);
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->lval_size = 8;
+        expr_set_int(e);
         return e;
     }
     if (consume(p, TOK_AMP)) {
@@ -1322,10 +1322,7 @@ static Expr *parse_bitand(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BAND);
         n->lhs = e;
         n->rhs = parse_eq(p, ls);
-        n->base = BT_INT;
-        n->ptr = 0;
-        n->struct_id = -1;
-        n->lval_size = 8;
+        expr_set_int(n);
         e = n;
     }
     return e;
@@ -1337,10 +1334,7 @@ static Expr *parse_bitxor(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BXOR);
         n->lhs = e;
         n->rhs = parse_bitand(p, ls);
-        n->base = BT_INT;
-        n->ptr = 0;
-        n->struct_id = -1;
-        n->lval_size = 8;
+        expr_set_int(n);
         e = n;
     }
     return e;
@@ -1352,10 +1346,7 @@ static Expr *parse_bitor(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BOR);
         n->lhs = e;
         n->rhs = parse_bitxor(p, ls);
-        n->base = BT_INT;
-        n->ptr = 0;
-        n->struct_id = -1;
-        n->lval_size = 8;
+        expr_set_int(n);
         e = n;
     }
     return e;
@@ -1367,10 +1358,7 @@ static Expr *parse_logand(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_LAND);
         n->lhs = e;
         n->rhs = parse_bitor(p, ls);
-        n->base = BT_INT;
-        n->ptr = 0;
-        n->struct_id = -1;
-        n->lval_size = 8;
+        expr_set_int(n);
         e = n;
     }
     return e;
@@ -1382,10 +1370,7 @@ static Expr *parse_logor(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_LOR);
         n->lhs = e;
         n->rhs = parse_logand(p, ls);
-        n->base = BT_INT;
-        n->ptr = 0;
-        n->struct_id = -1;
-        n->lval_size = 8;
+        expr_set_int(n);
         e = n;
     }
     return e;
@@ -1422,9 +1407,7 @@ static Expr *parse_cond(Parser *p, Locals *ls) {
             e->ptr = t->ptr;
             e->struct_id = t->struct_id;
         } else {
-            e->base = BT_INT;
-            e->ptr = 0;
-            e->struct_id = -1;
+            expr_set_int(e);
         }
         e->lval_size = 8;
         return e;
@@ -1669,7 +1652,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
     for (;;) {
         int ptr = base_ptr;
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
         parse_declarator_name(p, &nm, &nm_len, &ptr);
         skip_gcc_attrs(p);
 
@@ -1786,7 +1769,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
                         }
                         if (static_array_ninits + 1 > cap) {
                             int ncap = cap ? cap * 2 : 8;
-                            InitEnt *ni = (InitEnt *)monacc_realloc(static_array_inits, (size_t)ncap * sizeof(*static_array_inits));
+                            InitEnt *ni = (InitEnt *)monacc_realloc(static_array_inits, (mc_usize)ncap * (mc_usize)sizeof(*static_array_inits));
                             if (!ni) die("oom");
                             static_array_inits = ni;
                             cap = ncap;
@@ -1841,7 +1824,8 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
                 mc_snprint_cstr_u64_cstr(guard_name, sizeof(guard_name), "__monacc_static_guard_", seq, "");
             }
 
-            GlobalVar gv = {0};
+            GlobalVar gv;
+            mc_memset(&gv, 0, sizeof(gv));
             if (mc_strlen(gname) >= sizeof(gv.name)) die("internal: static local global name too long");
             mc_memcpy(gv.name, gname, mc_strlen(gname));
             gv.name[mc_strlen(gname)] = 0;
@@ -1878,7 +1862,8 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
             if (gid_existing < 0) die("internal: failed to add static local global");
 
             // Hidden guard global (0 => not initialized, 1 => initialized)
-            GlobalVar gguard = {0};
+            GlobalVar gguard;
+            mc_memset(&gguard, 0, sizeof(gguard));
             if (mc_strlen(guard_name) >= sizeof(gguard.name)) die("internal: static local guard name too long");
             mc_memcpy(gguard.name, guard_name, mc_strlen(guard_name));
             gguard.name[mc_strlen(guard_name)] = 0;
@@ -2138,7 +2123,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
 
                     array_init_zero = 1;
                     array_ninits = (int)sl->len;
-                    array_inits = (InitEnt *)monacc_calloc((size_t)array_ninits, sizeof(*array_inits));
+                    array_inits = (InitEnt *)monacc_calloc((mc_usize)array_ninits, (mc_usize)sizeof(*array_inits));
                     if (!array_inits) die("oom");
                     for (int i = 0; i < array_ninits; i++) {
                         Expr *bv = new_expr(EXPR_NUM);
@@ -2161,7 +2146,7 @@ static Stmt *parse_decl(Parser *p, Locals *ls) {
                         }
                         if (array_ninits + 1 > cap) {
                             int ncap = cap ? cap * 2 : 8;
-                            InitEnt *ni = (InitEnt *)monacc_realloc(array_inits, (size_t)ncap * sizeof(*array_inits));
+                            InitEnt *ni = (InitEnt *)monacc_realloc(array_inits, (mc_usize)ncap * (mc_usize)sizeof(*array_inits));
                             if (!ni) die("oom");
                             array_inits = ni;
                             cap = ncap;
@@ -2303,7 +2288,7 @@ static void parse_struct_init_list(Parser *p, Locals *ls, int sid, Expr *out) {
             die("%s:%d:%d: only designated struct initializers are supported", p->lx.path, p->tok.line, p->tok.col);
         }
         const char *mn = NULL;
-        size_t mn_len = 0;
+        mc_usize mn_len = 0;
         expect_ident(p, &mn, &mn_len);
         skip_gcc_attrs(p);
         expect(p, TOK_ASSIGN, "'='");
@@ -2322,7 +2307,7 @@ static void parse_struct_init_list(Parser *p, Locals *ls, int sid, Expr *out) {
             die("%s:%d:%d: member init size %d not supported", p->lx.path, p->tok.line, p->tok.col, store_sz);
         }
 
-        InitEnt *ni = (InitEnt *)monacc_realloc(out->inits, (size_t)(out->ninits + 1) * sizeof(*out->inits));
+        InitEnt *ni = (InitEnt *)monacc_realloc(out->inits, (mc_usize)(out->ninits + 1) * (mc_usize)sizeof(*out->inits));
         if (!ni) die("oom");
         out->inits = ni;
         out->inits[out->ninits].off = m->offset;
@@ -2372,7 +2357,8 @@ static char *parse_asm_string(Parser *p) {
     if (p->tok.kind != TOK_STR) {
         die("%s:%d:%d: expected string literal in asm", p->lx.path, p->tok.line, p->tok.col);
     }
-    Str buf = {0};
+    Str buf;
+    mc_memset(&buf, 0, sizeof(buf));
     while (p->tok.kind == TOK_STR) {
         str_append_bytes(&buf, p->tok.start + 1, p->tok.len - 2); // skip quotes
         parser_next(p);
@@ -2397,7 +2383,7 @@ static void parse_asm_operands(Parser *p, Locals *ls, AsmOperand **out_ops, int 
         if (!tok_is(p, TOK_STR)) break;
         // Parse constraint string
         const char *cstr = p->tok.start + 1;
-        size_t clen = p->tok.len - 2;
+        mc_usize clen = p->tok.len - 2;
         if (clen >= sizeof(((AsmOperand *)0)->constraint)) {
             die("%s:%d:%d: asm constraint too long", p->lx.path, p->tok.line, p->tok.col);
         }
@@ -2411,7 +2397,7 @@ static void parse_asm_operands(Parser *p, Locals *ls, AsmOperand **out_ops, int 
         // Grow array
         if (n >= cap) {
             cap = cap ? cap * 2 : 4;
-            ops = (AsmOperand *)monacc_realloc(ops, (size_t)cap * sizeof(AsmOperand));
+            ops = (AsmOperand *)monacc_realloc(ops, (mc_usize)cap * (mc_usize)sizeof(AsmOperand));
         }
         mc_memset(&ops[n], 0, sizeof(AsmOperand));
         mc_memcpy(ops[n].constraint, cstr, clen);
@@ -2439,13 +2425,13 @@ static void parse_asm_clobbers(Parser *p, char ***out_clobs, int *out_n) {
     for (;;) {
         if (!tok_is(p, TOK_STR)) break;
         const char *cstr = p->tok.start + 1;
-        size_t clen = p->tok.len - 2;
+        mc_usize clen = p->tok.len - 2;
         parser_next(p);
 
         // Grow array
         if (n >= cap) {
             cap = cap ? cap * 2 : 4;
-            clobs = (char **)monacc_realloc(clobs, (size_t)cap * sizeof(char *));
+            clobs = (char **)monacc_realloc(clobs, (mc_usize)cap * (mc_usize)sizeof(char *));
         }
         clobs[n] = (char *)monacc_malloc(clen + 1);
         mc_memcpy(clobs[n], cstr, clen);
@@ -2565,7 +2551,7 @@ static Stmt *parse_stmt(Parser *p, Locals *ls) {
     if (consume(p, TOK_KW_GOTO)) {
         Stmt *s = new_stmt(STMT_GOTO);
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
         expect_ident(p, &nm, &nm_len);
         if (nm_len == 0 || nm_len >= sizeof(s->label)) {
             die("%s:%d:%d: label name too long", p->lx.path, p->tok.line, p->tok.col);
@@ -2656,7 +2642,7 @@ typedef struct {
     int struct_id;
     int is_unsigned;
     const char *name;
-    size_t name_len;
+    mc_usize name_len;
 } ParamTmp;
 
 static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
@@ -2691,7 +2677,7 @@ static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
         skip_gcc_attrs(p);
 
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
         if (tok_is(p, TOK_IDENT) || tok_is(p, TOK_LPAREN)) {
             parse_declarator_name(p, &nm, &nm_len, &ptr);
         }
@@ -2712,7 +2698,7 @@ static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
 
         if (n + 1 > cap) {
             int ncap = cap ? cap * 2 : 8;
-            ParamTmp *np = (ParamTmp *)monacc_realloc(ps, (size_t)ncap * sizeof(*np));
+            ParamTmp *np = (ParamTmp *)monacc_realloc(ps, (mc_usize)ncap * (mc_usize)sizeof(*np));
             if (!np) die("oom");
             ps = np;
             cap = ncap;
@@ -2762,7 +2748,7 @@ static void skip_paren_group(Parser *p) {
     }
 }
 
-static void parse_declarator_name(Parser *p, const char **out_nm, size_t *out_nm_len, int *io_ptr) {
+static void parse_declarator_name(Parser *p, const char **out_nm, mc_usize *out_nm_len, int *io_ptr) {
     // Minimal declarator handling:
     // - name
     // - (*name)(...)  (function pointer; we treat as pointer and skip params)
@@ -2826,7 +2812,7 @@ static void parse_struct_def(Parser *p, int struct_id) {
         skip_gcc_attrs(p);
 
         const char *mn = NULL;
-        size_t mn_len = 0;
+        mc_usize mn_len = 0;
         parse_declarator_name(p, &mn, &mn_len, &ptr);
         skip_gcc_attrs(p);
 
@@ -2895,7 +2881,7 @@ static void parse_struct_def(Parser *p, int struct_id) {
 
         if (sd->nmembers + 1 > sd->cap) {
             int ncap = sd->cap ? sd->cap * 2 : 8;
-            StructMember *nmemb = (StructMember *)monacc_realloc(sd->members, (size_t)ncap * sizeof(*nmemb));
+            StructMember *nmemb = (StructMember *)monacc_realloc(sd->members, (mc_usize)ncap * (mc_usize)sizeof(*nmemb));
             if (!nmemb) die("oom");
             sd->members = nmemb;
             sd->cap = ncap;
@@ -2934,8 +2920,9 @@ static void parse_struct_def(Parser *p, int struct_id) {
 }
 
 static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, int ret_struct_id, int ret_is_unsigned,
-                                   const char *nm, size_t nm_len, const ParamTmp *params, int nparams) {
-    Function fn = {0};
+                                   const char *nm, mc_usize nm_len, const ParamTmp *params, int nparams) {
+    Function fn;
+    mc_memset(&fn, 0, sizeof(fn));
     if (nm_len == 0 || nm_len >= sizeof(fn.name)) {
         die("%s:%d:%d: function name too long", p->lx.path, p->tok.line, p->tok.col);
     }
@@ -2956,7 +2943,8 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
         fn.param_sizes[i] = 0;
     }
 
-    Locals ls = {0};
+    Locals ls;
+    mc_memset(&ls, 0, sizeof(ls));
     ls.next_offset = 0;
 
     // Track current function name (used for static local symbol naming).
@@ -3064,7 +3052,7 @@ void parse_program(Parser *p, Program *out) {
             int base_ptr = ptr;
             for (;;) {
                 const char *nm = NULL;
-                size_t nm_len = 0;
+                mc_usize nm_len = 0;
                 int dptr = base_ptr;
                 parse_declarator_name(p, &nm, &nm_len, &dptr);
                 skip_gcc_attrs(p);
@@ -3131,7 +3119,7 @@ void parse_program(Parser *p, Program *out) {
 
         // declarator name
         const char *nm = NULL;
-        size_t nm_len = 0;
+        mc_usize nm_len = 0;
         parse_declarator_name(p, &nm, &nm_len, &ptr);
         skip_gcc_attrs(p);
 
@@ -3142,7 +3130,8 @@ void parse_program(Parser *p, Program *out) {
             expect(p, TOK_RPAREN, "')'");
             skip_gcc_attrs(p);
             if (consume(p, TOK_SEMI)) {
-                Function proto = {0};
+                Function proto;
+                mc_memset(&proto, 0, sizeof(proto));
                 if (nm_len == 0 || nm_len >= sizeof(proto.name)) {
                     die("%s:%d:%d: function name too long", p->lx.path, p->tok.line, p->tok.col);
                 }
@@ -3189,7 +3178,8 @@ void parse_program(Parser *p, Program *out) {
             die("%s:%d:%d: incomplete global array requires extern", p->lx.path, p->tok.line, p->tok.col);
         }
 
-        GlobalVar gv = {0};
+        GlobalVar gv;
+        mc_memset(&gv, 0, sizeof(gv));
         if (nm_len == 0 || nm_len >= sizeof(gv.name)) {
             die("%s:%d:%d: global variable name too long", p->lx.path, p->tok.line, p->tok.col);
         }
@@ -3244,7 +3234,7 @@ void parse_program(Parser *p, Program *out) {
     }
 }
 
-void write_file(const char *path, const char *data, size_t len) {
+void write_file(const char *path, const char *data, mc_usize len) {
     int fd = xopen_wtrunc(path, 0644);
     xwrite_all(fd, data, len);
     xclose_checked(fd, "close", path);

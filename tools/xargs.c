@@ -72,23 +72,13 @@ static int is_ws(char c) {
 }
 
 static int status_ok(mc_i32 st) {
-	// Linux wait status encoding.
-	if ((st & 0x7f) == 0) {
-		int ec = (st >> 8) & 0xff;
-		return ec == 0;
-	}
-	return 0;
+	return mc_wait_exitcode(st) == 0;
 }
 
 static int run_one(const char *argv0, const char *path, char **argv_exec, char **envp) {
-	mc_i64 pid =
-#ifdef MONACC
-			mc_sys_fork();
-#else
-			mc_sys_vfork();
-#endif
+	mc_i64 pid = mc_sys_fork();
 	if (pid < 0) {
-		mc_die_errno(argv0, "vfork", pid);
+		mc_die_errno(argv0, "fork", pid);
 	}
 	if (pid == 0) {
 		mc_i64 r = mc_sys_execve(path, argv_exec, envp);

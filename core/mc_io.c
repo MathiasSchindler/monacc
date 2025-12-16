@@ -4,9 +4,7 @@ MC_NORETURN void mc_exit(mc_i32 code) {
 	(void)mc_syscall1(MC_SYS_exit_group, (mc_i64)code);
 	(void)mc_syscall1(MC_SYS_exit, (mc_i64)code);
 	for (;;) {
-#ifndef MONACC
 		__asm__ volatile("hlt");
-#endif
 	}
 }
 
@@ -147,4 +145,71 @@ void mc_join_path_or_die(const char *argv0, const char *base, const char *name, 
 	if (need_slash) out[off++] = '/';
 	for (mc_usize i = 0; i < nlen; i++) out[off + i] = name[i];
 	out[total] = 0;
+}
+
+mc_i32 mc_wait_exitcode(mc_i32 status) {
+	mc_u32 u = (mc_u32)status;
+	mc_u32 sig = u & 0x7Fu;
+	if (sig != 0) {
+		return (mc_i32)(128 + (mc_i32)sig);
+	}
+	return (mc_i32)((u >> 8) & 0xFFu);
+}
+
+mc_i64 mc_execvp(const char *file, char **argv, char **envp) {
+	if (!file || !*file) {
+		return (mc_i64)-MC_ENOENT;
+	}
+	if (mc_has_slash(file)) {
+		return mc_sys_execve(file, argv, envp);
+	}
+
+	const char *path_env = mc_getenv_kv(envp, "PATH=");
+	if (!path_env || !*path_env) {
+		path_env = "/bin:/usr/bin";
+	}
+
+	char full[4096];
+	mc_usize fn = mc_strlen(file);
+
+	const char *p = path_env;
+	for (;;) {
+		const char *seg = p;
+		while (*p && *p != ':') {
+			p++;
+		}
+		mc_usize seglen = (mc_usize)(p - seg);
+
+		// dir + '/' + file + '\0'
+		if (seglen + 1u + fn + 1u <= (mc_usize)sizeof(full)) {
+			mc_usize k = 0;
+			for (; k < seglen; k++) full[k] = seg[k];
+			if (k == 0) {
+				full[k++] = '.';
+			}
+			if (full[k - 1] != '/') {
+				full[k++] = '/';
+			}
+			for (mc_usize j = 0; j < fn; j++) full[k + j] = file[j];
+			k += fn;
+			full[k] = 0;
+
+			mc_i64 r = mc_sys_execve(full, argv, envp);
+			// If execve failed with ENOENT/ENOTDIR, continue searching; otherwise return.
+			if (r < 0) {
+				mc_u64 e = (mc_u64)(-r);
+				if (e != (mc_u64)MC_ENOENT && e != (mc_u64)MC_ENOTDIR) {
+					return r;
+				}
+			}
+		}
+
+		if (*p == ':') {
+			p++;
+			continue;
+		}
+		break;
+	}
+
+	return (mc_i64)-MC_ENOENT;
 }

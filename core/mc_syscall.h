@@ -178,20 +178,7 @@ struct mc_stat {
 
 // Raw syscall dispatch.
 //
-// Hosted builds use inline asm.
-// MONACC builds declare mc_syscall0..6 as extern and rely on the compiler
-// lowering calls to these names into `syscall` instructions.
-
-#ifdef MONACC
-mc_i64 mc_syscall0(mc_i64 n);
-mc_i64 mc_syscall1(mc_i64 n, mc_i64 a1);
-mc_i64 mc_syscall2(mc_i64 n, mc_i64 a1, mc_i64 a2);
-mc_i64 mc_syscall3(mc_i64 n, mc_i64 a1, mc_i64 a2, mc_i64 a3);
-mc_i64 mc_syscall4(mc_i64 n, mc_i64 a1, mc_i64 a2, mc_i64 a3, mc_i64 a4);
-mc_i64 mc_syscall5(mc_i64 n, mc_i64 a1, mc_i64 a2, mc_i64 a3, mc_i64 a4, mc_i64 a5);
-mc_i64 mc_syscall6(mc_i64 n, mc_i64 a1, mc_i64 a2, mc_i64 a3, mc_i64 a4, mc_i64 a5, mc_i64 a6);
-
-#else
+// We use inline asm stubs for all builds.
 static inline mc_i64 mc_syscall0(mc_i64 n) {
 	mc_i64 ret;
 	__asm__ volatile("syscall" : "=a"(ret) : "a"(n) : "rcx", "r11", "memory");
@@ -243,7 +230,6 @@ static inline mc_i64 mc_syscall6(mc_i64 n, mc_i64 a1, mc_i64 a2, mc_i64 a3, mc_i
 		: "rcx", "r11", "memory");
 	return ret;
 }
-#endif
 
 // Common syscall wrappers
 static inline mc_i64 mc_sys_read(mc_i32 fd, void *buf, mc_usize len) {

@@ -52,14 +52,9 @@ static MC_NORETURN void init_spawn_shell_loop(const char *argv0) {
 
 	for (;;) {
 		(void)mc_write_str(1, "[sysbox] init: starting /bin/sh\n");
-		mc_i64 vr =
-#ifdef MONACC
-				mc_sys_fork();
-#else
-				mc_sys_vfork();
-#endif
+		mc_i64 vr = mc_sys_fork();
 		if (vr < 0) {
-			mc_die_errno(argv0, "vfork", vr);
+			mc_die_errno(argv0, "fork", vr);
 		}
 		if (vr == 0) {
 			(void)mc_sys_execve("/bin/sh", shell_argv, shell_envp);

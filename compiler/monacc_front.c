@@ -2,40 +2,24 @@
 
 __attribute__((noreturn, format(printf, 1, 2)))
 void die(const char *fmt, ...) {
-#ifdef SELFHOST
-    // Self-host probes use stub headers; avoid relying on real stdarg/va_list.
-    // We still provide a useful message (format string only).
+    // Size-win mode: avoid pulling in printf-style formatting.
+    // Keep call sites intact (arguments are ignored) but print the format string literally.
     xwrite_best_effort(2, fmt, mc_strlen(fmt));
     xwrite_best_effort(2, "\n", 1);
     _exit(1);
-#else
-    va_list ap;
-    va_start(ap, fmt);
+}
 
-    char stack_buf[1024];
-    va_list ap2;
-    va_copy(ap2, ap);
-    int n = mc_vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap2);
-    va_end(ap2);
-
-    if (n >= 0 && (size_t)n < sizeof(stack_buf)) {
-        xwrite_best_effort(2, stack_buf, (size_t)n);
-    } else if (n >= 0) {
-        size_t need = (size_t)n + 1;
-        char *heap_buf = (char *)monacc_malloc(need);
-        if (heap_buf) {
-            (void)mc_vsnprintf(heap_buf, need, fmt, ap);
-            xwrite_best_effort(2, heap_buf, (size_t)n);
-            monacc_free(heap_buf);
-        } else {
-            xwrite_best_effort(2, stack_buf, sizeof(stack_buf) - 1);
-        }
-    }
-
-    va_end(ap);
+__attribute__((noreturn))
+void die_i64(const char *prefix, long long v, const char *suffix) {
+    if (!prefix) prefix = "";
+    if (!suffix) suffix = "";
+    xwrite_best_effort(2, prefix, mc_strlen(prefix));
+    char buf[32];
+    int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "", (mc_i64)v, "");
+    if (n > 0) xwrite_best_effort(2, buf, (mc_usize)n);
+    xwrite_best_effort(2, suffix, mc_strlen(suffix));
     xwrite_best_effort(2, "\n", 1);
     _exit(1);
-#endif
 }
 
 const char *tok_kind_name(TokenKind k) {
@@ -115,7 +99,7 @@ const char *tok_kind_name(TokenKind k) {
     return "?";
 }
 
-const char *mt_lookup(const MacroTable *mt, const char *name, size_t name_len) {
+const char *mt_lookup(const MacroTable *mt, const char *name, mc_usize name_len) {
     if (!mt) return NULL;
     for (int i = mt->n - 1; i >= 0; i--) {
         const Macro *m = &mt->macros[i];
@@ -126,7 +110,7 @@ const char *mt_lookup(const MacroTable *mt, const char *name, size_t name_len) {
     return NULL;
 }
 
-void mt_define(MacroTable *mt, const char *name, size_t name_len, const char *repl) {
+void mt_define(MacroTable *mt, const char *name, mc_usize name_len, const char *repl) {
     if (!mt) return;
     // Replace if already present.
     for (int i = 0; i < mt->n; i++) {
@@ -135,7 +119,7 @@ void mt_define(MacroTable *mt, const char *name, size_t name_len, const char *re
             monacc_free(m->repl);
             {
                 const char *src = repl ? repl : "";
-                size_t n = mc_strlen(src) + 1;
+                mc_usize n = mc_strlen(src) + 1;
                 m->repl = (char *)monacc_malloc(n);
                 if (!m->repl) die("oom");
                 mc_memcpy(m->repl, src, n);
@@ -145,7 +129,7 @@ void mt_define(MacroTable *mt, const char *name, size_t name_len, const char *re
     }
     if (mt->n + 1 > mt->cap) {
         int ncap = mt->cap ? mt->cap * 2 : 128;
-        Macro *nm = (Macro *)monacc_realloc(mt->macros, (size_t)ncap * sizeof(*nm));
+        Macro *nm = (Macro *)monacc_realloc(mt->macros, (mc_usize)ncap * sizeof(*nm));
         if (!nm) die("oom");
         mt->macros = nm;
         mt->cap = ncap;
@@ -157,21 +141,21 @@ void mt_define(MacroTable *mt, const char *name, size_t name_len, const char *re
     m->name[name_len] = 0;
     {
         const char *src = repl ? repl : "";
-        size_t n = mc_strlen(src) + 1;
+        mc_usize n = mc_strlen(src) + 1;
         m->repl = (char *)monacc_malloc(n);
         if (!m->repl) die("oom");
         mc_memcpy(m->repl, src, n);
     }
 }
 
-static int lex_is_expanding(Lexer *lx, const char *name, size_t name_len) {
+static int lex_is_expanding(Lexer *lx, const char *name, mc_usize name_len) {
     for (int i = 0; i < lx->exp_n; i++) {
         if (mc_strlen(lx->exp[i].name) == name_len && mc_memcmp(lx->exp[i].name, name, name_len) == 0) return 1;
     }
     return 0;
 }
 
-static void lex_push_macro(Lexer *lx, const char *name, size_t name_len, const char *repl) {
+static void lex_push_macro(Lexer *lx, const char *name, mc_usize name_len, const char *repl) {
     if (lx->exp_n >= (int)(sizeof(lx->exp) / sizeof(lx->exp[0]))) {
         die("macro expansion too deep");
     }
@@ -213,7 +197,7 @@ void expect(Parser *p, TokenKind k, const char *what) {
     parser_next(p);
 }
 
-void expect_ident(Parser *p, const char **out_start, size_t *out_len) {
+void expect_ident(Parser *p, const char **out_start, mc_usize *out_len) {
     if (p->tok.kind != TOK_IDENT) {
         die("%s:%d:%d: expected identifier", p->lx.path, p->tok.line, p->tok.col);
     }
@@ -332,7 +316,8 @@ Token lex_next(Lexer *lx) {
 restart:
     skip_ws_and_comments(lx);
 
-    Token t = {0};
+    Token t;
+    mc_memset(&t, 0, sizeof(t));
     t.start = lex_cur_ptr(lx);
     t.line = lx->line;
     t.col = lx->col;
@@ -347,7 +332,7 @@ restart:
     if (is_ident_start(c)) {
         (void)getc_lex(lx);
         while (is_ident_cont(peekc_nopop(lx))) (void)getc_lex(lx);
-        t.len = (size_t)(lex_cur_ptr_nopop(lx) - t.start);
+        t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
         if (t.len == 3 && mc_memcmp(t.start, "int", 3) == 0) {
             t.kind = TOK_KW_INT;
         } else if (t.len == 4 && mc_memcmp(t.start, "char", 4) == 0) {
@@ -454,7 +439,7 @@ restart:
         }
 
         t.kind = TOK_NUM;
-        t.len = (size_t)(lex_cur_ptr_nopop(lx) - t.start);
+        t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
         t.num = (long long)v;
         return t;
     }
@@ -481,7 +466,7 @@ restart:
             (void)getc_lex(lx);
         }
         t.kind = TOK_STR;
-        t.len = (size_t)(lex_cur_ptr_nopop(lx) - t.start);
+        t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
         return t;
     }
 
@@ -507,7 +492,7 @@ restart:
             (void)getc_lex(lx);
         }
         t.kind = TOK_CHAR;
-        t.len = (size_t)(lex_cur_ptr_nopop(lx) - t.start);
+        t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
         return t;
     }
 

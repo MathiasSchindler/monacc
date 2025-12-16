@@ -1,6 +1,6 @@
 # monacc specification
 
-Date: 2025-12-15
+Date: 2025-12-16
 
 This document captures the goals, constraints, and design decisions for monacc: a self-hosting C compiler for Linux x86_64 with an integrated syscall-only userland.
 
@@ -89,15 +89,16 @@ The language subset is intentionally tool-driven; monacc does not aim for full C
 - Function-like macros
 - Full `#if` expression evaluation
 
-### The Inline-Asm Problem
+### Inline Asm Support
 
-The userland tools use GNU inline asm for syscall wrappers. Implementing full GCC asm constraints would be a major complexity multiplier.
+monacc supports GNU-style inline assembly:
 
-**Solution:** Keep the syscall ABI as plain C declarations in the shared core, and teach monacc to lower them.
+- `__asm__ volatile` statements with input/output operands
+- Common constraint letters: `=a`, `r`, `m`, `i`, `n`, `D`, `S`, `d`, `c`, digit constraints (`0`-`9`)
+- Clobber lists (`"rcx"`, `"r11"`, `"memory"`)
+- Operand modifiers: `%0`, `%1`, etc.
 
-- Core declares `mc_syscall0..6`.
-- Under `-DMONACC`, monacc recognizes calls to `mc_syscall0..6` and lowers them directly to the `syscall` instruction.
-- This avoids GNU inline-asm constraints entirely while keeping tools C-only.
+This allows the `core/mc_syscall.h` syscall wrappers to use inline asm directly, keeping the tools portable between gcc/clang and monacc.
 
 ---
 
@@ -185,12 +186,12 @@ This is explicitly **not** trying to be POSIX-complete or portable.
 Because both the compiler and the tools are in-tree, we can choose between:
 
 - **Extending monacc** when a missing feature is core C, small to implement, and broadly useful
-- **Patching tools** (under `#ifdef MONACC`) when the blocker is GCC-specific or a one-off construct
+- **Adapting tools** when the construct is GCC-specific or a one-off
 
 Policy:
-- Prefer shared `mc_*` APIs over `#ifdef MONACC` branches
-- Use `#ifdef MONACC` only for genuinely compiler-specific constraints
-- Preserve gcc/clang build as the reference behavior
+- Prefer shared `mc_*` APIs
+- Keep tools and compiler buildable with gcc/clang as the reference
+- No `#ifdef MONACC` blocks remain in tools (as of 2025-12-16)
 
 ---
 

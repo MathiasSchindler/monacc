@@ -713,11 +713,7 @@ static mc_i32 sh_exec_for(const char *argv0, struct sh_tok *toks, mc_u32 end, mc
 }
 
 static mc_i32 sh_status_to_exit(mc_i32 st) {
-	// Linux wait status encoding.
-	if ((st & 0x7f) == 0) {
-		return (mc_i32)((st >> 8) & 0xff);
-	}
-	return (mc_i32)(128 + (st & 0x7f));
+	return mc_wait_exitcode(st);
 }
 
 static mc_i32 sh_exec_search(const char *argv0, char **envp, const char *cmd, char *const argv_exec[]) {
@@ -803,14 +799,9 @@ static mc_i32 sh_run_pipeline(const char *argv0, struct sh_cmd *cmds, mc_u32 ncm
 			}
 		}
 
-		mc_i64 vr =
-#ifdef MONACC
-				mc_sys_fork();
-#else
-				mc_sys_vfork();
-#endif
+		mc_i64 vr = mc_sys_fork();
 		if (vr < 0) {
-			sh_print_errno(argv0, "vfork", vr);
+			sh_print_errno(argv0, "fork", vr);
 			return 1;
 		}
 		if (vr == 0) {

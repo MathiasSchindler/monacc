@@ -42,8 +42,8 @@ static void elf_trim_shdr_best_effort(const char *path) {
     if (fd < 0) return;
 
     Elf64_Ehdr eh;
-    ssize_t r = xread_retry(fd, &eh, sizeof(eh));
-    if (r != (ssize_t)sizeof(eh)) {
+    mc_isize r = xread_retry(fd, &eh, sizeof(eh));
+    if (r != (mc_isize)sizeof(eh)) {
         xclose_best_effort(fd);
         return;
     }
@@ -69,14 +69,14 @@ static void elf_trim_shdr_best_effort(const char *path) {
     Elf64_Phdr *phdrs = phdr_stack;
     int phdr_dyn = 0;
     if (eh.e_phnum > (mc_u16)(sizeof(phdr_stack) / sizeof(phdr_stack[0]))) {
-        phdrs = (Elf64_Phdr *)monacc_malloc((size_t)eh.e_phnum * sizeof(*phdrs));
+        phdrs = (Elf64_Phdr *)monacc_malloc((mc_usize)eh.e_phnum * sizeof(*phdrs));
         if (!phdrs) goto out;
         phdr_dyn = 1;
     }
 
-    size_t phdr_bytes = (size_t)eh.e_phnum * sizeof(*phdrs);
+    mc_usize phdr_bytes = (mc_usize)eh.e_phnum * sizeof(*phdrs);
     r = xread_retry(fd, phdrs, phdr_bytes);
-    if (r != (ssize_t)phdr_bytes) goto out_free;
+    if (r != (mc_isize)phdr_bytes) goto out_free;
 
     mc_u64 max_load_end = 0;
     for (mc_u16 i = 0; i < eh.e_phnum; i++) {
@@ -128,22 +128,22 @@ typedef struct {
 } CmdDefine;
 
 static char *join_dir_prog(const char *dir, const char *prog) {
-    size_t dlen = mc_strlen(dir);
-    size_t plen = mc_strlen(prog);
+    mc_usize dlen = mc_strlen(dir);
+    mc_usize plen = mc_strlen(prog);
     int need_slash = (dlen > 0 && dir[dlen - 1] != '/');
-    size_t n = dlen + (need_slash ? 1u : 0u) + plen + 1u;
+    mc_usize n = dlen + (need_slash ? 1u : 0u) + plen + 1u;
     char *out = (char *)monacc_malloc(n);
     if (!out) die("oom");
     mc_memcpy(out, dir, dlen);
-    size_t pos = dlen;
+    mc_usize pos = dlen;
     if (need_slash) out[pos++] = '/';
     mc_memcpy(out + pos, prog, plen);
     out[pos + plen] = 0;
     return out;
 }
 
-static void cmd_define_add(CmdDefine **defs, int *ndefs, const char *name, size_t name_len, const char *repl) {
-    CmdDefine *nd = (CmdDefine *)monacc_realloc(*defs, (size_t)(*ndefs + 1) * sizeof(**defs));
+static void cmd_define_add(CmdDefine **defs, int *ndefs, const char *name, mc_usize name_len, const char *repl) {
+    CmdDefine *nd = (CmdDefine *)monacc_realloc(*defs, (mc_usize)(*ndefs + 1) * sizeof(**defs));
     if (!nd) die("oom");
     *defs = nd;
     CmdDefine *d = &(*defs)[(*ndefs)++];
@@ -155,7 +155,7 @@ static void cmd_define_add(CmdDefine **defs, int *ndefs, const char *name, size_
 
     {
         const char *src = repl ? repl : "1";
-        size_t n = mc_strlen(src);
+        mc_usize n = mc_strlen(src);
         d->repl = (char *)monacc_malloc(n + 1);
         if (!d->repl) die("oom");
         mc_memcpy(d->repl, src, n + 1);
@@ -170,18 +170,22 @@ static void mt_apply_cmd_defines(MacroTable *mt, const CmdDefine *defs, int ndef
 
 static void compile_to_obj(const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
                            const CmdDefine *defs, int ndefs, int with_start, const char *dump_pp_path, const char *as_prog, int emit_obj) {
-    MacroTable mt = {0};
+    MacroTable mt;
+    mc_memset(&mt, 0, sizeof(mt));
     mt_apply_cmd_defines(&mt, defs, ndefs);
 
-    OnceTable ot = {0};
-    Str pp = {0};
+    OnceTable ot;
+    mc_memset(&ot, 0, sizeof(ot));
+    Str pp;
+    mc_memset(&pp, 0, sizeof(pp));
     preprocess_file(cfg, &mt, &ot, in_path, &pp);
 
     if (dump_pp_path) {
         write_file(dump_pp_path, pp.buf ? pp.buf : "", pp.len);
     }
 
-    Parser p = {0};
+    Parser p;
+    mc_memset(&p, 0, sizeof(p));
     p.lx.path = in_path;
     p.lx.src = pp.buf;
     p.lx.len = pp.len;
@@ -191,11 +195,13 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
     p.lx.mt = &mt;
     parser_next(&p);
 
-    Program prg = {0};
+    Program prg;
+    mc_memset(&prg, 0, sizeof(prg));
     p.prg = &prg;
     parse_program(&p, &prg);
 
-    Str out_asm = {0};
+    Str out_asm;
+    mc_memset(&out_asm, 0, sizeof(out_asm));
     emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
 
     // Always emit the textual assembly as well; it's used by the external 'as' path
@@ -209,9 +215,9 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
         die("--emit-obj is not supported in SELFHOST mode");
 #endif
     } else {
-        char *as_argv[] = {(char *)(as_prog ? as_prog : "as"), "--64", (char *)tmp_s, "-o", (char *)tmp_o, NULL};
+        char *as_argv[6] = {(char *)(as_prog ? as_prog : "as"), "--64", (char *)tmp_s, "-o", (char *)tmp_o, NULL};
         int rc = run_cmd(as_argv);
-        if (rc != 0) die("as failed (%d)", rc);
+        if (rc != 0) die_i64("as failed (", rc, ")");
     }
 
     monacc_free(out_asm.buf);
@@ -247,7 +253,8 @@ int main(int argc, char **argv) {
     int use_nmagic = 1;
     int emit_obj = 0;
     int keep_shdr = 0;
-    PPConfig cfg = {0};
+    PPConfig cfg;
+    mc_memset(&cfg, 0, sizeof(cfg));
 
     CmdDefine *defs = NULL;
     int ndefs = 0;
@@ -260,7 +267,7 @@ int main(int argc, char **argv) {
             compile_only = 1;
         } else if (!mc_strcmp(argv[i], "-I")) {
             if (i + 1 >= argc) usage(argv[0]);
-            cfg.include_dirs = (char **)monacc_realloc(cfg.include_dirs, (size_t)(cfg.ninclude_dirs + 1) * sizeof(char *));
+            cfg.include_dirs = (char **)monacc_realloc(cfg.include_dirs, (mc_usize)(cfg.ninclude_dirs + 1) * sizeof(char *));
             if (!cfg.include_dirs) die("oom");
             cfg.include_dirs[cfg.ninclude_dirs++] = argv[++i];
         } else if (!mc_strncmp(argv[i], "-D", 2)) {
@@ -273,7 +280,7 @@ int main(int argc, char **argv) {
             if (!eq) {
                 cmd_define_add(&defs, &ndefs, arg, mc_strlen(arg), "1");
             } else {
-                cmd_define_add(&defs, &ndefs, arg, (size_t)(eq - arg), eq + 1);
+                cmd_define_add(&defs, &ndefs, arg, (mc_usize)(eq - arg), eq + 1);
             }
         } else if (argv[i][0] == '-') {
             if (!mc_strcmp(argv[i], "--dump-pp")) {
@@ -324,7 +331,7 @@ int main(int argc, char **argv) {
             }
             usage(argv[0]);
         } else {
-            in_paths = (char **)monacc_realloc(in_paths, (size_t)(nin_paths + 1) * sizeof(char *));
+            in_paths = (char **)monacc_realloc(in_paths, (mc_usize)(nin_paths + 1) * sizeof(char *));
             if (!in_paths) die("oom");
             in_paths[nin_paths++] = argv[i];
         }
@@ -356,9 +363,9 @@ int main(int argc, char **argv) {
     }
 
     // Compile each input to its own .o (only the first input emits _start).
-    char **obj_paths = (char **)monacc_calloc((size_t)nin_paths, sizeof(char *));
+    char **obj_paths = (char **)monacc_calloc((mc_usize)nin_paths, sizeof(char *));
     if (!obj_paths) die("oom");
-    char **asm_paths = (char **)monacc_calloc((size_t)nin_paths, sizeof(char *));
+    char **asm_paths = (char **)monacc_calloc((mc_usize)nin_paths, sizeof(char *));
     if (!asm_paths) die("oom");
 
     for (int i = 0; i < nin_paths; i++) {
@@ -372,8 +379,8 @@ int main(int argc, char **argv) {
         }
 
         {
-            size_t ns = mc_strlen(tmp_s) + 1;
-            size_t no = mc_strlen(tmp_o) + 1;
+            mc_usize ns = mc_strlen(tmp_s) + 1;
+            mc_usize no = mc_strlen(tmp_o) + 1;
             asm_paths[i] = (char *)monacc_malloc(ns);
             obj_paths[i] = (char *)monacc_malloc(no);
             if (!asm_paths[i] || !obj_paths[i]) die("oom");
@@ -390,7 +397,7 @@ int main(int argc, char **argv) {
         int base = 0;
         // Allocate with slack to keep this robust as flags change.
         int argc_ld = nin_paths + 32;
-        char **ld_argv = (char **)monacc_calloc((size_t)argc_ld + 1, sizeof(char *));
+        char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
         if (!ld_argv) die("oom");
         ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
         ld_argv[base++] = "-nostdlib";
@@ -420,7 +427,7 @@ int main(int argc, char **argv) {
         ld_argv[base] = NULL;
         int rc = run_cmd(ld_argv);
         monacc_free(ld_argv);
-        if (rc != 0) die("ld failed (%d)", rc);
+        if (rc != 0) die_i64("ld failed (", rc, ")");
     }
 
     if (!keep_shdr) {

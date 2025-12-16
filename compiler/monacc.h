@@ -10,9 +10,9 @@
 // Shared core helpers (string/mem, syscalls, parsing, etc).
 #include "mc.h"
 
-void *monacc_malloc(size_t size);
-void *monacc_calloc(size_t nmemb, size_t size);
-void *monacc_realloc(void *ptr, size_t size);
+void *monacc_malloc(mc_usize size);
+void *monacc_calloc(mc_usize nmemb, mc_usize size);
+void *monacc_realloc(void *ptr, mc_usize size);
 void monacc_free(void *ptr);
 
 // ===== Shared core types =====
@@ -41,16 +41,16 @@ typedef struct {
 
 typedef struct {
     const char *src;
-    size_t len;
-    size_t pos;
+    mc_usize len;
+    mc_usize pos;
     char name[128];
 } LexExp;
 
 typedef struct {
     const char *path;
     const char *src;
-    size_t len;
-    size_t pos;
+    mc_usize len;
+    mc_usize pos;
     int line;
     int col;
 
@@ -136,7 +136,7 @@ typedef enum {
 typedef struct {
     TokenKind kind;
     const char *start;
-    size_t len;
+    mc_usize len;
     long long num;
     int line;
     int col;
@@ -188,7 +188,7 @@ typedef struct {
 
 typedef struct {
     unsigned char *data;
-    size_t len;
+    mc_usize len;
 } StringLit;
 
 typedef struct {
@@ -458,14 +458,17 @@ typedef struct {
 
 typedef struct {
     char *buf;
-    size_t len;
-    size_t cap;
+    mc_usize len;
+    mc_usize cap;
 } Str;
 
 // ===== Cross-module APIs =====
 
 __attribute__((noreturn, format(printf, 1, 2)))
 void die(const char *fmt, ...);
+
+__attribute__((noreturn))
+void die_i64(const char *prefix, long long v, const char *suffix);
 
 __attribute__((format(printf, 1, 2)))
 void errf(const char *fmt, ...);
@@ -483,8 +486,8 @@ int mc_snprintf(char *dst, mc_usize cap, const char *fmt, ...);
 
 const char *tok_kind_name(TokenKind k);
 
-const char *mt_lookup(const MacroTable *mt, const char *name, size_t name_len);
-void mt_define(MacroTable *mt, const char *name, size_t name_len, const char *repl);
+const char *mt_lookup(const MacroTable *mt, const char *name, mc_usize name_len);
+void mt_define(MacroTable *mt, const char *name, mc_usize name_len, const char *repl);
 
 int is_ident_cont(unsigned char c);
 
@@ -492,14 +495,13 @@ Token lex_next(Lexer *lx);
 
 void parser_next(Parser *p);
 void expect(Parser *p, TokenKind k, const char *what);
-void expect_ident(Parser *p, const char **out_start, size_t *out_len);
+void expect_ident(Parser *p, const char **out_start, mc_usize *out_len);
 
-void str_reserve(Str *s, size_t add);
-void str_append_bytes(Str *s, const char *buf, size_t n);
-#ifndef SELFHOST
-__attribute__((format(printf, 2, 3)))
-#endif
-void str_appendf(Str *s, const char *fmt, ...);
+void str_reserve(Str *s, mc_usize add);
+void str_append_bytes(Str *s, const char *buf, mc_usize n);
+// `str_appendf` supports only literals and `%%`.
+// Use typed helpers for conversions.
+void str_appendf(Str *s, const char *fmt);
 void str_appendf_i64(Str *s, const char *fmt, long long v);
 void str_appendf_u64(Str *s, const char *fmt, unsigned long long v);
 void str_appendf_s(Str *s, const char *fmt, const char *v);
@@ -512,7 +514,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
 
 void parse_program(Parser *p, Program *out);
 
-void write_file(const char *path, const char *data, size_t len);
+void write_file(const char *path, const char *data, mc_usize len);
 
 // ===== Syscall wrappers (hosted + selfhost) =====
 
@@ -520,9 +522,9 @@ int xopen_ro(const char *path);
 int xopen_ro_try(const char *path);
 int xopen_wtrunc(const char *path, int mode);
 int xopen_rdwr_try(const char *path);
-ssize_t xread_retry(int fd, void *buf, size_t len);
-void xwrite_all(int fd, const void *buf, size_t len);
-void xwrite_best_effort(int fd, const void *buf, size_t len);
+mc_isize xread_retry(int fd, void *buf, mc_usize len);
+void xwrite_all(int fd, const void *buf, mc_usize len);
+void xwrite_best_effort(int fd, const void *buf, mc_usize len);
 void xclose_best_effort(int fd);
 void xclose_checked(int fd, const char *what, const char *path);
 
@@ -546,12 +548,12 @@ typedef struct {
     char d_name[];
 } linux_dirent64;
 
-ssize_t xgetdents64_retry(int fd, void *buf, size_t len);
+mc_isize xgetdents64_retry(int fd, void *buf, mc_usize len);
 
 typedef struct {
     int fd;
-    size_t pos;
-    size_t end;
+    mc_usize pos;
+    mc_usize end;
     char buf[8192];
 } DirIter;
 
@@ -565,36 +567,36 @@ void emit_x86_64_sysv_freestanding(const Program *prg, Str *out);
 void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int with_start);
 
 // Internal toolchain reduction: assemble monacc-emitted x86_64 assembly into an ELF64 relocatable object.
-void assemble_x86_64_elfobj(const char *asm_buf, size_t asm_len, const char *out_o_path);
+void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path);
 
 // AST/program helpers used across modules
 Expr *new_expr(ExprKind k);
 Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams, Expr **args);
 Stmt *new_stmt(StmtKind k);
-const Local *local_find(const Locals *ls, const char *nm, size_t nm_len);
-int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
+const Local *local_find(const Locals *ls, const char *nm, mc_usize nm_len);
+int local_add(Locals *ls, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
               int array_stride);
-int local_add_globalref(Locals *ls, const char *nm, size_t nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+int local_add_globalref(Locals *ls, const char *nm, mc_usize nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
                         int alloc_size, int array_stride);
-int local_add_fixed(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
+int local_add_fixed(Locals *ls, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,
                     int array_stride,
                     int offset);
 
-int program_add_str(Program *p, const unsigned char *data, size_t len);
-const Typedef *program_find_typedef(const Program *p, const char *nm, size_t nm_len);
-void program_add_typedef(Program *p, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned);
-const ConstDef *program_find_const(const Program *p, const char *nm, size_t nm_len);
-void program_add_const(Program *p, const char *nm, size_t nm_len, long long value);
+int program_add_str(Program *p, const unsigned char *data, mc_usize len);
+const Typedef *program_find_typedef(const Program *p, const char *nm, mc_usize nm_len);
+void program_add_typedef(Program *p, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned);
+const ConstDef *program_find_const(const Program *p, const char *nm, mc_usize nm_len);
+void program_add_const(Program *p, const char *nm, mc_usize nm_len, long long value);
 void program_add_fn(Program *p, const Function *fn);
-const Function *program_find_fn(const Program *p, const char *nm, size_t nm_len);
-void program_mark_fn_called(Program *p, const char *nm, size_t nm_len);
+const Function *program_find_fn(const Program *p, const char *nm, mc_usize nm_len);
+void program_mark_fn_called(Program *p, const char *nm, mc_usize nm_len);
 
-int program_get_or_add_struct(Program *p, const char *name, size_t name_len);
+int program_get_or_add_struct(Program *p, const char *name, mc_usize name_len);
 int program_add_anon_struct(Program *p);
-const StructMember *struct_find_member(const Program *prg, int struct_id, const char *name, size_t name_len);
+const StructMember *struct_find_member(const Program *prg, int struct_id, const char *name, mc_usize name_len);
 
 int align_up(int x, int a);
 int type_alignof(const Program *prg, BaseType base, int ptr, int struct_id);
 int type_sizeof(const Program *prg, BaseType base, int ptr, int struct_id);
 void program_add_global(Program *p, const GlobalVar *gv);
-int program_find_global(const Program *p, const char *name, size_t name_len);
+int program_find_global(const Program *p, const char *name, mc_usize name_len);

@@ -9,11 +9,11 @@
 int xopen_ro(const char *path);
 int xopen_ro_try(const char *path);
 int xopen_wtrunc(const char *path, int mode);
-ssize_t xread_retry(int fd, void *buf, size_t len);
-void xwrite_all(int fd, const void *buf, size_t len);
+mc_isize xread_retry(int fd, void *buf, mc_usize len);
+void xwrite_all(int fd, const void *buf, mc_usize len);
 
 // Best-effort variant for diagnostics: ignores errors.
-void xwrite_best_effort(int fd, const void *buf, size_t len);
+void xwrite_best_effort(int fd, const void *buf, mc_usize len);
 
 void xclose_best_effort(int fd);
 
@@ -25,4 +25,4 @@ int xpath_exists(const char *path);
 
 int xexecvp(const char *file, char *const argv[]);
 
-ssize_t xgetdents64_retry(int fd, void *buf, size_t len);
+mc_isize xgetdents64_retry(int fd, void *buf, mc_usize len);

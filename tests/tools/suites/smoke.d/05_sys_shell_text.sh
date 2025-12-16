@@ -144,6 +144,19 @@ OUT=$($BIN/sh -c "$BIN/echo hi")
 OUT=$($BIN/sh -c "$BIN/echo hi | $BIN/tr i o")
 [ "$OUT" = "ho" ] || fail "sh pipeline failed: '$OUT'"
 
+OUT=$($BIN/sh -c "$BIN/echo one; $BIN/echo two")
+[ "$OUT" = "one
+two" ] || fail "sh ';' sequencing failed: '$OUT'"
+
+set +e
+$BIN/sh -c "$BIN/false" >/dev/null 2>&1
+RC=$?
+set -e
+[ $RC -ne 0 ] || fail "sh exit status propagation failed (expected non-zero)"
+
+OUT=$($BIN/sh -c "$BIN/echo \$0:\$1" ARG0 ARG1)
+[ "$OUT" = "ARG0:ARG1" ] || fail "sh -c argv ($0/$1) handling failed: '$OUT'"
+
 $BIN/sh -c "$BIN/echo hi > $TMP/sh_out" || fail "sh redirect > failed"
 [ "$(cat "$TMP/sh_out")" = "hi" ] || fail "sh redirect file content mismatch"
 

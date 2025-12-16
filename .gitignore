@@ -1,3 +1,13 @@
-bin/
-kernel/
-build/test/
+# Build outputs
+/bin/
+/build/
+
+# Keep kernel sources tracked; ignore only generated artifacts.
+/kernel/build/
+
+# Common build artifacts
+*.o
+*.a
+*.so
+*.elf
+*.iso

@@ -6,14 +6,14 @@ set -euo pipefail
 # This is intentionally not part of `make test` yet; use it as an additional
 # regression check for the internal object writer under SELFHOST constraints.
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-MONACC_BIN="${MONACC_BIN:-./monacc}"
+MONACC_BIN="${MONACC_BIN:-./bin/monacc}"
 
 if [[ ! -x "$MONACC_BIN" ]]; then
   echo "selftest-emitobj: missing monacc binary at $MONACC_BIN" >&2
-  echo "selftest-emitobj: run 'make all' first" >&2
+  echo "selftest-emitobj: run 'make' first" >&2
   exit 0
 fi
 
@@ -29,20 +29,25 @@ link_err="$out_dir/monacc-self.link.err"
 # Note: unlike scripts/selftest.sh, we include monacc_elfobj.c so the produced
 # monacc-self also supports --emit-obj in SELFHOST mode.
 src=(
-  src/monacc_front.c
-  src/monacc_fmt.c
-  src/monacc_str.c
-  src/monacc_sys.c
-  src/monacc_ast.c
-  src/monacc_parse.c
-  src/monacc_codegen.c
-  src/monacc_pp.c
-  src/monacc_elfobj.c
-  src/monacc_main.c
+  compiler/monacc_front.c
+  compiler/monacc_fmt.c
+  compiler/monacc_str.c
+  compiler/monacc_sys.c
+  compiler/monacc_ast.c
+  compiler/monacc_parse.c
+  compiler/monacc_codegen.c
+  compiler/monacc_pp.c
+  compiler/monacc_elfobj.c
+  compiler/monacc_main.c
+
+  # Core helpers used by the compiler.
+  core/mc_str.c
+  core/mc_snprint.c
 )
 
 selfhost_inc=(
-  -I selfhost/include
+  -I core
+  -I compiler
   -DSELFHOST
 )
 

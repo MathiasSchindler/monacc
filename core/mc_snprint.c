@@ -30,6 +30,17 @@ static void mpb_put_u64_dec(McPrintBuf *b, mc_u64 v) {
 	while (n--) mpb_putc(b, tmp[n]);
 }
 
+static void mpb_put_i64_dec(McPrintBuf *b, mc_i64 v) {
+	if (v < 0) {
+		mpb_putc(b, '-');
+		// Avoid overflow for MC_I64_MIN.
+		mc_u64 u = (mc_u64)(-(v + 1)) + 1;
+		mpb_put_u64_dec(b, u);
+		return;
+	}
+	mpb_put_u64_dec(b, (mc_u64)v);
+}
+
 static void mpb_terminate(McPrintBuf *b) {
 	if (!b->cap) return;
 	mc_usize n = (b->pos < b->cap) ? b->pos : (b->cap - 1);
@@ -55,6 +66,19 @@ int mc_snprint_cstr_u64_cstr(char *dst, mc_usize cap, const char *a, mc_u64 u, c
 	pb.pos = 0;
 	mpb_puts(&pb, a);
 	mpb_put_u64_dec(&pb, u);
+	mpb_puts(&pb, b);
+	mpb_terminate(&pb);
+	if (pb.pos > (mc_usize)MC_INT_MAX) return MC_INT_MAX;
+	return (int)pb.pos;
+}
+
+int mc_snprint_cstr_i64_cstr(char *dst, mc_usize cap, const char *a, mc_i64 i, const char *b) {
+	McPrintBuf pb;
+	pb.dst = dst;
+	pb.cap = cap;
+	pb.pos = 0;
+	mpb_puts(&pb, a);
+	mpb_put_i64_dec(&pb, i);
 	mpb_puts(&pb, b);
 	mpb_terminate(&pb);
 	if (pb.pos > (mc_usize)MC_INT_MAX) return MC_INT_MAX;

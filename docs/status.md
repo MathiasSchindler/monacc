@@ -1,6 +1,6 @@
 # monacc status
 
-Date: 2025-12-15
+Date: 2025-12-16 (Updated)
 
 This document tracks the current state of the monacc compiler and userland tools.
 
@@ -10,8 +10,9 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Build
 
-- `make` produces a size-optimized stripped binary + all 70 tools
-- `make test` runs the full test suite
+- `make` produces a size-optimized stripped binary (~103 KB) + all 70 tools
+- `make test` runs the full test suite (37 examples + tool tests)
+- `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
 
 ### Codebase Shape
@@ -96,7 +97,7 @@ This document tracks the current state of the monacc compiler and userland tools
 - monacc can compile itself into `.o` files
 - Linked with host toolchain → `monacc-self`
 - `monacc-self` can compile and run example programs
-- Uses `selfhost/` headers to avoid full libc headers
+- Uses a minimal SELFHOST shim header (`compiler/monacc_selfhost.h`) to avoid relying on full libc headers/macros
 - Codegen avoids varargs formatting in SELFHOST builds
 
 ---
@@ -220,7 +221,7 @@ All 70 tools compile and link successfully with monacc.
 ### Test Suite
 
 `make test` runs:
-1. **Example programs** (29 tests) — compiler correctness
+1. **Example programs** (37 tests) — compiler correctness
 2. **Tool smoke tests** — basic functionality
 3. **Tool integration tests** — realistic usage
 4. **Tool realworld tests** — recipe-style scenarios
@@ -229,9 +230,11 @@ All 70 tools compile and link successfully with monacc.
 
 | Suite | Status |
 |-------|--------|
-| Compiler examples | ✅ 29/29 pass |
+| Compiler examples | ✅ 37/37 pass |
 | Tool tests | ✅ All pass |
-| Self-hosting | ✅ monacc-self builds and runs examples |
+| Self-hosting | ✅ monacc-self builds and runs simple examples |
+
+**Note:** The selfhosted compiler (`monacc-self`) has a known bug generating broken assembly for inline asm. See `plan.md` P0 priority issue.
 
 ---
 
@@ -242,8 +245,9 @@ All 70 tools compile and link successfully with monacc.
 | Compiler builds | ✅ |
 | All 70 tools compile | ✅ |
 | Tools pass tests | ✅ |
-| Self-hosting works | ✅ |
-| Internal ELF emission | 🔄 Experimental |
+| Self-hosting works | ✅ (simple examples) |
+| Selfhost inline asm | ⚠️ Bug: empty registers |
+| Internal ELF emission | 🔄 ~50% examples work |
 | No external assembler | 🔜 Planned |
 | No external linker | 🔜 Planned |
 

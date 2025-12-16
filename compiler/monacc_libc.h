@@ -9,8 +9,7 @@
 #include "mc_syscall.h"
 
 // Minimal sys/types subset (avoid pulling in <sys/types.h>).
-typedef mc_usize size_t;
-typedef mc_isize ssize_t;
+// Prefer mc_usize/mc_isize directly in the compiler.
 typedef int pid_t;
 typedef unsigned int mode_t;
 

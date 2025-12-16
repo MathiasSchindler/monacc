@@ -103,71 +103,6 @@ static void find_print_path_or_die(const char *argv0, const char *path) {
 	if (mc_write_all(1, "\n", 1) < 0) mc_die_errno(argv0, "write", -1);
 }
 
-static mc_i64 find_execvp(const char *file, char **argv, char **envp) {
-	if (!file || !*file) {
-		return (mc_i64)-MC_ENOENT;
-	}
-	if (mc_has_slash(file)) {
-		return mc_sys_execve(file, argv, envp);
-	}
-
-	const char *path_env = mc_getenv_kv(envp, "PATH=");
-	if (!path_env || !*path_env) {
-		path_env = "/bin:/usr/bin";
-	}
-
-	char full[4096];
-	mc_usize fn = mc_strlen(file);
-
-	const char *p = path_env;
-	for (;;) {
-		const char *seg = p;
-		while (*p && *p != ':') {
-			p++;
-		}
-		mc_usize seglen = (mc_usize)(p - seg);
-
-		if (seglen + 1 + fn + 1 <= sizeof(full)) {
-			mc_usize k = 0;
-			for (; k < seglen; k++) full[k] = seg[k];
-			if (k == 0) {
-				full[k++] = '.';
-			}
-			if (full[k - 1] != '/') {
-				full[k++] = '/';
-			}
-			for (mc_usize j = 0; j < fn; j++) full[k + j] = file[j];
-			k += fn;
-			full[k] = 0;
-
-			mc_i64 r = mc_sys_execve(full, argv, envp);
-			if (r < 0) {
-				mc_u64 e = (mc_u64)(-r);
-				if (e != (mc_u64)MC_ENOENT && e != (mc_u64)MC_ENOTDIR) {
-					return r;
-				}
-			}
-		}
-
-		if (*p == ':') {
-			p++;
-			continue;
-		}
-		break;
-	}
-
-	return (mc_i64)-MC_ENOENT;
-}
-
-static int find_exit_code_from_wait_status(mc_i32 status) {
-	mc_u32 u = (mc_u32)status;
-	mc_u32 sig = u & 0x7Fu;
-	if (sig != 0) {
-		return 128 + (int)sig;
-	}
-	return (int)((u >> 8) & 0xFFu);
-}
-
 static const char *find_exec_subst_braces(const char *arg, const char *path, char *storage, mc_usize storage_cap, mc_usize *io_used) {
 	if (!arg) arg = "";
 	if (!path) path = "";
@@ -241,19 +176,14 @@ static void find_run_exec(const char *argv0, const struct find_expr *e, const ch
 		return;
 	}
 
-	mc_i64 pid =
-#ifdef MONACC
-			mc_sys_fork();
-#else
-			mc_sys_vfork();
-#endif
+	mc_i64 pid = mc_sys_fork();
 	if (pid < 0) {
-		mc_print_errno(argv0, "vfork", pid);
+		mc_print_errno(argv0, "fork", pid);
 		*any_fail = 1;
 		return;
 	}
 	if (pid == 0) {
-		mc_i64 r = find_execvp(argv_exec[0], argv_exec, envp);
+		mc_i64 r = mc_execvp(argv_exec[0], argv_exec, envp);
 		(void)mc_write_str(2, argv0);
 		(void)mc_write_str(2, ": -exec: ");
 		(void)mc_write_str(2, argv_exec[0]);
@@ -270,7 +200,7 @@ static void find_run_exec(const char *argv0, const struct find_expr *e, const ch
 		*any_fail = 1;
 		return;
 	}
-	int rc = find_exit_code_from_wait_status(status);
+	int rc = (int)mc_wait_exitcode(status);
 	if (rc != 0) {
 		*any_fail = 1;
 	}

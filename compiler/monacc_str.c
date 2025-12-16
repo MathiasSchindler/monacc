@@ -5,9 +5,9 @@
 
 // ===== String Builder =====
 
-void str_reserve(Str *s, size_t add) {
+void str_reserve(Str *s, mc_usize add) {
     if (s->len + add <= s->cap) return;
-    size_t ncap = s->cap ? s->cap : 4096;
+        mc_usize ncap = s->cap ? s->cap : 4096;
     while (ncap < s->len + add) ncap *= 2;
     char *nb = (char *)monacc_realloc(s->buf, ncap);
     if (!nb) die("oom");
@@ -15,15 +15,13 @@ void str_reserve(Str *s, size_t add) {
     s->cap = ncap;
 }
 
-void str_append_bytes(Str *s, const char *buf, size_t n) {
+void str_append_bytes(Str *s, const char *buf, mc_usize n) {
     if (!buf || n == 0) return;
     str_reserve(s, n + 1);
     mc_memcpy(s->buf + s->len, buf, n);
     s->len += n;
     s->buf[s->len] = 0;
 }
-
-#ifdef SELFHOST
 
 static void str_append_cstr(Str *s, const char *cstr) {
     if (!cstr) return;
@@ -48,7 +46,7 @@ static void str_append_u64_dec(Str *s, unsigned long long v) {
         tmp[i] = tmp[n - 1 - i];
         tmp[n - 1 - i] = c;
     }
-    str_append_bytes(s, tmp, (size_t)n);
+    str_append_bytes(s, tmp, (mc_usize)n);
 }
 
 static void str_append_i64_dec(Str *s, long long v) {
@@ -61,285 +59,209 @@ static void str_append_i64_dec(Str *s, long long v) {
     str_append_u64_dec(s, (unsigned long long)v);
 }
 
-// SELFHOST: no stdarg; allow only '%%' escapes (no conversions).
-void str_appendf(Str *s, const char *fmt, ...) {
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        // Emit the offending format for easier progress tracking.
-        xwrite_best_effort(2, "SELFHOST: unsupported str_appendf fmt: ", 36);
-        xwrite_best_effort(2, fmt, mc_strlen(fmt));
-        xwrite_best_effort(2, "\n", 1);
-        die("SELFHOST: unsupported str_appendf fmt");
+typedef enum {
+    FMT_TOK_END = 0,
+    FMT_TOK_LIT,
+    FMT_TOK_ESC_PERCENT,
+    FMT_TOK_CONV,
+    FMT_TOK_BAD,
+} FmtTokKind;
+
+typedef struct {
+    FmtTokKind kind;
+    const char *lit;
+    mc_usize lit_len;
+    char conv;  // 'd', 'u', 's'
+    int is_ll;  // for %lld
+} FmtTok;
+
+static const char *fmt_next_tok(const char *p, FmtTok *t) {
+    t->kind = FMT_TOK_END;
+    t->lit = NULL;
+    t->lit_len = 0;
+    t->conv = 0;
+    t->is_ll = 0;
+
+    if (!p || !*p) return p;
+
+    if (*p != '%') {
+        const char *q = p;
+        while (*q && *q != '%') q++;
+        t->kind = FMT_TOK_LIT;
+        t->lit = p;
+        t->lit_len = (mc_usize)(q - p);
+        return q;
     }
+
+    // '%' sequence
+    if (p[1] == '%') {
+        t->kind = FMT_TOK_ESC_PERCENT;
+        return p + 2;
+    }
+    if (p[1] == 'd' || p[1] == 'u' || p[1] == 's') {
+        t->kind = FMT_TOK_CONV;
+        t->conv = p[1];
+        return p + 2;
+    }
+    if (p[1] == 'l' && p[2] == 'l' && p[3] == 'd') {
+        t->kind = FMT_TOK_CONV;
+        t->conv = 'd';
+        t->is_ll = 1;
+        return p + 4;
+    }
+    if (p[1] == 'l' && p[2] == 'l' && p[3] == 'u') {
+        t->kind = FMT_TOK_CONV;
+        t->conv = 'u';
+        t->is_ll = 1;
+        return p + 4;
+    }
+
+    t->kind = FMT_TOK_BAD;
+    return p + 1;
+}
+
+typedef enum {
+    FMT_ARG_CSTR = 1,
+    FMT_ARG_I64,
+    FMT_ARG_U64,
+} FmtArgKind;
+
+typedef struct {
+    FmtArgKind kind;
+    const char *s;
+    long long i;
+    unsigned long long u;
+} FmtArg;
+
+static void str_appendf_args(Str *s, const char *fmt, const FmtArg *args, int nargs, int allow_conv) {
+    const char *p = fmt;
+    int used = 0;
+    while (p && *p) {
+        FmtTok tok;
+        p = fmt_next_tok(p, &tok);
+        if (tok.kind == FMT_TOK_LIT) {
+            str_append_bytes(s, tok.lit, tok.lit_len);
+            continue;
+        }
+        if (tok.kind == FMT_TOK_ESC_PERCENT) {
+            str_append_bytes(s, "%", 1);
+            continue;
+        }
+        if (tok.kind != FMT_TOK_CONV) {
+            die("unsupported format");
+        }
+
+        if (!allow_conv) {
+            // Emit the offending format for easier progress tracking.
+            xwrite_best_effort(2, "unsupported str_appendf fmt: ", 26);
+            xwrite_best_effort(2, fmt, mc_strlen(fmt));
+            xwrite_best_effort(2, "\n", 1);
+            die("unsupported str_appendf fmt");
+        }
+
+        if (used >= nargs) die("unexpected extra conversion");
+        const FmtArg *a = &args[used++];
+        if (tok.conv == 's') {
+            if (a->kind != FMT_ARG_CSTR) die("string conversion type mismatch");
+            str_append_cstr(s, a->s);
+            continue;
+        }
+        if (tok.conv == 'd') {
+            if (a->kind != FMT_ARG_I64) die("integer conversion type mismatch");
+            str_append_i64_dec(s, a->i);
+            continue;
+        }
+        if (tok.conv == 'u') {
+            if (a->kind != FMT_ARG_U64) die("unsigned conversion type mismatch");
+            str_append_u64_dec(s, a->u);
+            continue;
+        }
+        die("unsupported conversion");
+    }
+    if (used != nargs) die("expected exactly one conversion");
+}
+
+// `str_appendf`: allow only '%%' escapes (no conversions).
+void str_appendf(Str *s, const char *fmt) {
+    str_appendf_args(s, fmt, NULL, 0, 0);
 }
 
 void str_appendf_i64(Str *s, const char *fmt, long long v) {
-    int used = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (p[1] == 'd') {
-            if (++used != 1) die("SELFHOST: unexpected extra conversion");
-            str_append_i64_dec(s, v);
-            p += 2;
-            continue;
-        }
-        if (p[1] == 'l' && p[2] == 'l' && p[3] == 'd') {
-            if (++used != 1) die("SELFHOST: unexpected extra conversion");
-            str_append_i64_dec(s, v);
-            p += 4;
-            continue;
-        }
-        die("SELFHOST: unsupported integer format");
-    }
-    if (used != 1) die("SELFHOST: expected exactly one integer conversion");
+    FmtArg a;
+    a.kind = FMT_ARG_I64;
+    a.i = v;
+    a.s = NULL;
+    a.u = 0;
+    str_appendf_args(s, fmt, &a, 1, 1);
 }
 
 void str_appendf_u64(Str *s, const char *fmt, unsigned long long v) {
-    int used = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (p[1] == 'u') {
-            if (++used != 1) die("SELFHOST: unexpected extra conversion");
-            str_append_u64_dec(s, v);
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported unsigned format");
-    }
-    if (used != 1) die("SELFHOST: expected exactly one unsigned conversion");
+    FmtArg a;
+    a.kind = FMT_ARG_U64;
+    a.u = v;
+    a.s = NULL;
+    a.i = 0;
+    str_appendf_args(s, fmt, &a, 1, 1);
 }
 
 void str_appendf_s(Str *s, const char *fmt, const char *v) {
-    int used = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (p[1] == 's') {
-            if (++used != 1) die("SELFHOST: unexpected extra conversion");
-            str_append_cstr(s, v);
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported string format");
-    }
-    if (used != 1) die("SELFHOST: expected exactly one string conversion");
+    FmtArg a;
+    a.kind = FMT_ARG_CSTR;
+    a.s = v;
+    a.i = 0;
+    a.u = 0;
+    str_appendf_args(s, fmt, &a, 1, 1);
 }
 
 void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1) {
-    int state = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (state == 0 && p[1] == 's') {
-            str_append_cstr(s, s0);
-            state = 1;
-            p += 2;
-            continue;
-        }
-        if (state == 1 && p[1] == 's') {
-            str_append_cstr(s, s1);
-            state = 2;
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported multi-arg format");
-    }
-    if (state != 2) die("SELFHOST: expected %s then %s");
+    FmtArg args[2];
+    args[0].kind = FMT_ARG_CSTR;
+    args[0].s = s0;
+    args[0].i = 0;
+    args[0].u = 0;
+    args[1].kind = FMT_ARG_CSTR;
+    args[1].s = s1;
+    args[1].i = 0;
+    args[1].u = 0;
+    str_appendf_args(s, fmt, args, 2, 1);
 }
 
 void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0) {
-    int state = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (state == 0 && p[1] == 's') {
-            str_append_cstr(s, s0);
-            state = 1;
-            p += 2;
-            continue;
-        }
-        if (state == 1 && p[1] == 'd') {
-            str_append_i64_dec(s, i0);
-            state = 2;
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported multi-arg format");
-    }
-    if (state != 2) die("SELFHOST: expected %s then %d");
+    FmtArg args[2];
+    args[0].kind = FMT_ARG_CSTR;
+    args[0].s = s0;
+    args[0].i = 0;
+    args[0].u = 0;
+    args[1].kind = FMT_ARG_I64;
+    args[1].s = NULL;
+    args[1].i = i0;
+    args[1].u = 0;
+    str_appendf_args(s, fmt, args, 2, 1);
 }
 
 void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0) {
-    int state = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (state == 0 && p[1] == 's') {
-            str_append_cstr(s, s0);
-            state = 1;
-            p += 2;
-            continue;
-        }
-        if (state == 1 && p[1] == 'u') {
-            str_append_u64_dec(s, u0);
-            state = 2;
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported multi-arg format");
-    }
-    if (state != 2) die("SELFHOST: expected %s then %u");
+    FmtArg args[2];
+    args[0].kind = FMT_ARG_CSTR;
+    args[0].s = s0;
+    args[0].i = 0;
+    args[0].u = 0;
+    args[1].kind = FMT_ARG_U64;
+    args[1].s = NULL;
+    args[1].i = 0;
+    args[1].u = u0;
+    str_appendf_args(s, fmt, args, 2, 1);
 }
 
 void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0) {
-    int state = 0;
-    for (const char *p = fmt; p && *p; ) {
-        if (*p != '%') {
-            const char *q = p;
-            while (*q && *q != '%') q++;
-            str_append_bytes(s, p, (size_t)(q - p));
-            p = q;
-            continue;
-        }
-        if (p[1] == '%') {
-            str_append_bytes(s, "%", 1);
-            p += 2;
-            continue;
-        }
-        if (state == 0 && p[1] == 'd') {
-            str_append_i64_dec(s, i0);
-            state = 1;
-            p += 2;
-            continue;
-        }
-        if (state == 1 && p[1] == 's') {
-            str_append_cstr(s, s0);
-            state = 2;
-            p += 2;
-            continue;
-        }
-        die("SELFHOST: unsupported multi-arg format");
-    }
-    if (state != 2) die("SELFHOST: expected %d then %s");
+    FmtArg args[2];
+    args[0].kind = FMT_ARG_I64;
+    args[0].s = NULL;
+    args[0].i = i0;
+    args[0].u = 0;
+    args[1].kind = FMT_ARG_CSTR;
+    args[1].s = s0;
+    args[1].i = 0;
+    args[1].u = 0;
+    str_appendf_args(s, fmt, args, 2, 1);
 }
 
-#else
-
-__attribute__((format(printf, 2, 3)))
-void str_appendf(Str *s, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-
-    char stack_buf[1024];
-    va_list ap2;
-    va_copy(ap2, ap);
-    int n = mc_vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap2);
-    va_end(ap2);
-
-    if (n < 0) {
-        va_end(ap);
-        return;
-    }
-
-    if ((size_t)n < sizeof(stack_buf)) {
-        str_append_bytes(s, stack_buf, (size_t)n);
-        va_end(ap);
-        return;
-    }
-
-    size_t need = (size_t)n + 1;
-    char *heap_buf = (char *)monacc_malloc(need);
-    if (!heap_buf) {
-        str_append_bytes(s, stack_buf, sizeof(stack_buf) - 1);
-        va_end(ap);
-        return;
-    }
-
-    (void)mc_vsnprintf(heap_buf, need, fmt, ap);
-    str_append_bytes(s, heap_buf, (size_t)n);
-    monacc_free(heap_buf);
-    va_end(ap);
-}
-
-void str_appendf_i64(Str *s, const char *fmt, long long v) { str_appendf(s, fmt, v); }
-void str_appendf_u64(Str *s, const char *fmt, unsigned long long v) { str_appendf(s, fmt, v); }
-void str_appendf_s(Str *s, const char *fmt, const char *v) { str_appendf(s, fmt, v); }
-void str_appendf_ss(Str *s, const char *fmt, const char *s0, const char *s1) { str_appendf(s, fmt, s0, s1); }
-void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0) { str_appendf(s, fmt, s0, i0); }
-void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0) { str_appendf(s, fmt, s0, u0); }
-void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0) { str_appendf(s, fmt, i0, s0); }
-
-#endif

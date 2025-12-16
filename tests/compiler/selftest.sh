@@ -6,14 +6,14 @@ set -euo pipefail
 # Attempts to compile monacc using the host-built ./monacc.
 # This is informational by default: it always exits 0, but writes logs.
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-MONACC_BIN="${MONACC_BIN:-./monacc}"
+MONACC_BIN="${MONACC_BIN:-./bin/monacc}"
 
 if [[ ! -x "$MONACC_BIN" ]]; then
   echo "selftest: missing monacc binary at $MONACC_BIN" >&2
-  echo "selftest: run 'make all' first" >&2
+  echo "selftest: run 'make' first" >&2
   exit 0
 fi
 
@@ -28,19 +28,24 @@ link_err="$out_dir/monacc-self.link.err"
 # Keep the source list explicit and stable.
 # (This matches the main Makefile build list.)
 src=(
-  src/monacc_front.c
-  src/monacc_fmt.c
-  src/monacc_str.c
-  src/monacc_sys.c
-  src/monacc_ast.c
-  src/monacc_parse.c
-  src/monacc_codegen.c
-  src/monacc_pp.c
-  src/monacc_main.c
+  compiler/monacc_front.c
+  compiler/monacc_fmt.c
+  compiler/monacc_str.c
+  compiler/monacc_sys.c
+  compiler/monacc_ast.c
+  compiler/monacc_parse.c
+  compiler/monacc_codegen.c
+  compiler/monacc_pp.c
+  compiler/monacc_main.c
+
+  # Core helpers used by the compiler.
+  core/mc_str.c
+  core/mc_snprint.c
 )
 
 selfhost_inc=(
-  -I selfhost/include
+  -I core
+  -I compiler
   -DSELFHOST
 )
 

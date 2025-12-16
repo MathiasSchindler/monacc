@@ -7,10 +7,6 @@
 
 int main(int argc, char **argv);
 
-// Provided by the hosted compiler runtime (compiler/monacc_sys.c).
-// Tools don't reference this symbol.
-void mc_set_start_envp(char **envp);
-
 __attribute__((noreturn, used, noinline)) static void mc_start_c(long *sp) {
 	int argc = (int)sp[0];
 	char **argv = (char **)(sp + 1);

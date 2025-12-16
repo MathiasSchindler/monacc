@@ -95,9 +95,9 @@ static uint64_t elf_r_info(uint32_t sym, uint32_t type) {
 
 // ===== Small binary buffer helpers =====
 
-static void bin_reserve(Str *s, size_t add) {
+static void bin_reserve(Str *s, mc_usize add) {
     if (s->len + add <= s->cap) return;
-    size_t ncap = s->cap ? s->cap : 4096;
+    mc_usize ncap = s->cap ? s->cap : 4096;
     while (ncap < s->len + add) ncap *= 2;
     char *nb = (char *)monacc_realloc(s->buf, ncap);
     if (!nb) die("oom");
@@ -105,7 +105,7 @@ static void bin_reserve(Str *s, size_t add) {
     s->cap = ncap;
 }
 
-static void bin_put(Str *s, const void *p, size_t n) {
+static void bin_put(Str *s, const void *p, mc_usize n) {
     if (!p || n == 0) return;
     bin_reserve(s, n);
     mc_memcpy(s->buf + s->len, p, n);
@@ -132,7 +132,7 @@ static void bin_put_u64_le(Str *s, uint64_t v) {
     bin_put(s, b, 8);
 }
 
-static void bin_patch_u32_le(Str *s, size_t off, uint32_t v) {
+static void bin_patch_u32_le(Str *s, mc_usize off, uint32_t v) {
     if (!s || off + 4 > s->len) die("internal: patch out of range");
     s->buf[off + 0] = (char)(v & 0xff);
     s->buf[off + 1] = (char)((v >> 8) & 0xff);
@@ -194,7 +194,7 @@ typedef struct {
 
 typedef struct {
     ObjSection *sec;
-    size_t disp_off; // offset of the rel32/disp32 field within sec->data
+    mc_usize disp_off; // offset of the rel32/disp32 field within sec->data
     char *target;
     int is_jcc;
     int cc; // 0=je/jz, 1=jne
@@ -216,7 +216,7 @@ typedef struct {
     ObjSection *cur;
 } AsmState;
 
-static char *xstrdup_n(const char *p, size_t n) {
+static char *xstrdup_n(const char *p, mc_usize n) {
     char *s = (char *)monacc_malloc(n + 1);
     if (!s) die("oom");
     mc_memcpy(s, p, n);
@@ -243,8 +243,8 @@ static const char *rskip_ws(const char *p, const char *end) {
     return end;
 }
 
-static size_t span_len(const char *p, const char *end) {
-    size_t n = 0;
+static mc_usize span_len(const char *p, const char *end) {
+    mc_usize n = 0;
     while (p < end) {
         n++;
         p++;
@@ -253,12 +253,12 @@ static size_t span_len(const char *p, const char *end) {
 }
 
 static int starts_with(const char *p, const char *end, const char *lit) {
-    size_t n = mc_strlen(lit);
-    if ((unsigned long)(end - p) < n) return 0;
+    mc_usize n = mc_strlen(lit);
+    if ((mc_usize)(end - p) < n) return 0;
     return mc_memcmp(p, lit, n) == 0;
 }
 
-static ObjSection *get_or_add_section(AsmState *st, const char *name, size_t name_len, uint64_t sh_flags) {
+static ObjSection *get_or_add_section(AsmState *st, const char *name, mc_usize name_len, uint64_t sh_flags) {
     for (int i = 0; i < st->nsecs; i++) {
         ObjSection *s = st->secs[i];
         if (mc_strlen(s->name) == name_len && mc_memcmp(s->name, name, name_len) == 0) {
@@ -269,7 +269,7 @@ static ObjSection *get_or_add_section(AsmState *st, const char *name, size_t nam
 
     if (st->nsecs + 1 > st->capsecs) {
         int ncap = st->capsecs ? st->capsecs * 2 : 32;
-        ObjSection **ns = (ObjSection **)monacc_realloc(st->secs, (unsigned long)ncap * sizeof(*ns));
+        ObjSection **ns = (ObjSection **)monacc_realloc(st->secs, (mc_usize)ncap * (mc_usize)sizeof(*ns));
         if (!ns) die("oom");
         st->secs = ns;
         st->capsecs = ncap;
@@ -289,7 +289,7 @@ static ObjSection *get_or_add_section(AsmState *st, const char *name, size_t nam
     return s;
 }
 
-static ObjSym *find_sym(AsmState *st, const char *name, size_t name_len) {
+static ObjSym *find_sym(AsmState *st, const char *name, mc_usize name_len) {
     for (int i = 0; i < st->nsyms; i++) {
         ObjSym *s = &st->syms[i];
         if (mc_strlen(s->name) == name_len && mc_memcmp(s->name, name, name_len) == 0) return s;
@@ -297,12 +297,12 @@ static ObjSym *find_sym(AsmState *st, const char *name, size_t name_len) {
     return NULL;
 }
 
-static ObjSym *get_or_add_sym(AsmState *st, const char *name, size_t name_len) {
+static ObjSym *get_or_add_sym(AsmState *st, const char *name, mc_usize name_len) {
     ObjSym *s = find_sym(st, name, name_len);
     if (s) return s;
     if (st->nsyms + 1 > st->capsyms) {
         int ncap = st->capsyms ? st->capsyms * 2 : 64;
-        ObjSym *ns = (ObjSym *)monacc_realloc(st->syms, (unsigned long)ncap * sizeof(*ns));
+        ObjSym *ns = (ObjSym *)monacc_realloc(st->syms, (mc_usize)ncap * (mc_usize)sizeof(*ns));
         if (!ns) die("oom");
         st->syms = ns;
         st->capsyms = ncap;
@@ -322,7 +322,7 @@ static ObjSym *get_or_add_sym(AsmState *st, const char *name, size_t name_len) {
 static void sec_add_rela(ObjSection *sec, uint64_t off, const char *sym, uint32_t r_type, int64_t addend) {
     if (sec->nrela + 1 > sec->caprela) {
         int ncap = sec->caprela ? sec->caprela * 2 : 16;
-        PendingRela *nr = (PendingRela *)monacc_realloc(sec->rela, (unsigned long)ncap * sizeof(*nr));
+        PendingRela *nr = (PendingRela *)monacc_realloc(sec->rela, (mc_usize)ncap * (mc_usize)sizeof(*nr));
         if (!nr) die("oom");
         sec->rela = nr;
         sec->caprela = ncap;
@@ -334,10 +334,10 @@ static void sec_add_rela(ObjSection *sec, uint64_t off, const char *sym, uint32_
     r->addend = addend;
 }
 
-static void add_fixup(AsmState *st, ObjSection *sec, size_t disp_off, const char *target, size_t target_len, int is_jcc, int cc) {
+static void add_fixup(AsmState *st, ObjSection *sec, mc_usize disp_off, const char *target, mc_usize target_len, int is_jcc, int cc) {
     if (st->nfix + 1 > st->capfix) {
         int ncap = st->capfix ? st->capfix * 2 : 64;
-        Fixup *nf = (Fixup *)monacc_realloc(st->fix, (unsigned long)ncap * sizeof(*nf));
+        Fixup *nf = (Fixup *)monacc_realloc(st->fix, (mc_usize)ncap * (mc_usize)sizeof(*nf));
         if (!nf) die("oom");
         st->fix = nf;
         st->capfix = ncap;
@@ -407,8 +407,8 @@ static int parse_int64(const char *p, const char *end, long long *out) {
     return 1;
 }
 
-static int reg_name_match(const char *p, size_t n, const char *lit, int reg, int width, int needs_rex, Reg *out) {
-    size_t m = mc_strlen(lit);
+static int reg_name_match(const char *p, mc_usize n, const char *lit, int reg, int width, int needs_rex, Reg *out) {
+    mc_usize m = mc_strlen(lit);
     if (n == m && mc_memcmp(p, lit, m) == 0) {
         out->reg = reg;
         out->width = width;
@@ -421,7 +421,7 @@ static int reg_name_match(const char *p, size_t n, const char *lit, int reg, int
 static int parse_reg_name(const char *p, const char *end, Reg *out) {
     if (p >= end || *p != '%') return 0;
     p++;
-    size_t n = (unsigned long)(end - p);
+    mc_usize n = (mc_usize)(end - p);
 
     // r8..r15 (optionally with b/w/d suffix)
     if (n >= 2 && p[0] == 'r' && p[1] >= '8' && p[1] <= '9') {
@@ -1213,17 +1213,17 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     m1 = rskip_ws(m0, m1);
 
     // Handle "rep movsb" / "rep stosb"
-    if (mc_strlen("rep") == (unsigned long)(m1 - m0) && mc_memcmp(m0, "rep", 3) == 0) {
+    if (mc_strlen("rep") == (mc_usize)(m1 - m0) && mc_memcmp(m0, "rep", 3) == 0) {
         p = skip_ws(p, end);
         const char *m20 = p;
         while (p < end && !is_space(*p)) p++;
         const char *m21 = rskip_ws(m20, p);
-        if ((unsigned long)(m21 - m20) == 5 && mc_memcmp(m20, "movsb", 5) == 0) {
+        if ((mc_usize)(m21 - m20) == 5 && mc_memcmp(m20, "movsb", 5) == 0) {
             bin_put_u8(&st->cur->data, 0xF3);
             bin_put_u8(&st->cur->data, 0xA4);
             return;
         }
-        if ((unsigned long)(m21 - m20) == 5 && mc_memcmp(m20, "stosb", 5) == 0) {
+        if ((mc_usize)(m21 - m20) == 5 && mc_memcmp(m20, "stosb", 5) == 0) {
             bin_put_u8(&st->cur->data, 0xF3);
             bin_put_u8(&st->cur->data, 0xAA);
             return;
@@ -1233,7 +1233,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 
     // Copy mnemonic to a temp NUL-terminated buffer.
     char mnem[16];
-    size_t mn = (unsigned long)(m1 - m0);
+    mc_usize mn = (mc_usize)(m1 - m0);
     if (mn >= sizeof(mnem)) die("asm: mnemonic too long");
     mc_memcpy(mnem, m0, mn);
     mnem[mn] = 0;
@@ -1310,7 +1310,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             if (a.kind != OP_SYM || a.indirect) die("asm: jmp expects label");
             // e9 disp32
             bin_put_u8(&st->cur->data, 0xE9);
-            size_t disp_off = st->cur->data.len;
+            mc_usize disp_off = st->cur->data.len;
             bin_put_u32_le(&st->cur->data, 0);
             add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 0, 0);
             return;
@@ -1323,7 +1323,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             }
             if (a.kind != OP_SYM || a.indirect) die("asm: call expects symbol");
             bin_put_u8(&st->cur->data, 0xE8);
-            size_t disp_off = st->cur->data.len;
+            mc_usize disp_off = st->cur->data.len;
             bin_put_u32_le(&st->cur->data, 0);
             ObjSym *sym = get_or_add_sym(st, a.sym, mc_strlen(a.sym));
             sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PLT32, -4);
@@ -1333,7 +1333,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             if (a.kind != OP_SYM) die("asm: jcc expects label");
             bin_put_u8(&st->cur->data, 0x0F);
             bin_put_u8(&st->cur->data, (!mc_strcmp(mnem, "jne")) ? 0x85 : 0x84);
-            size_t disp_off = st->cur->data.len;
+            mc_usize disp_off = st->cur->data.len;
             bin_put_u32_le(&st->cur->data, 0);
             add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 1, (!mc_strcmp(mnem, "jne")) ? 1 : 0);
             return;
@@ -1367,7 +1367,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
         if (a.mem.riprel && a.mem.sym) {
             encode_lea(&st->cur->data, &a.mem, &b.reg);
             // relocation is at the disp32 field (end-4)
-            size_t disp_off = st->cur->data.len - 4;
+            mc_usize disp_off = st->cur->data.len - 4;
             ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
             sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, -4);
             return;
@@ -1457,7 +1457,7 @@ static void resolve_fixups(AsmState *st) {
 static uint32_t add_strtab(Str *strtab, const char *s) {
     if (!s || !*s) return 0;
     uint32_t off = (uint32_t)strtab->len;
-    size_t n = mc_strlen(s);
+    mc_usize n = mc_strlen(s);
     bin_put(strtab, s, n);
     bin_put_u8(strtab, 0);
     return off;
@@ -1486,7 +1486,7 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     bin_put_u8(&shstr, 0);
 
     // Helper to record sh_name offsets.
-    SecName *sec_names = (SecName *)monacc_calloc((unsigned long)(st->nsecs + 8), sizeof(*sec_names));
+    SecName *sec_names = (SecName *)monacc_calloc((mc_usize)(st->nsecs + 8), (mc_usize)sizeof(*sec_names));
     if (!sec_names) die("oom");
     for (int i = 0; i < st->nsecs; i++) {
         sec_names[i].sec = st->secs[i];
@@ -1511,11 +1511,11 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     }
 
     int nsyms_out = 1 + nlocals + nglobals;
-    Elf64_Sym *symtab = (Elf64_Sym *)monacc_calloc((unsigned long)nsyms_out, sizeof(*symtab));
+    Elf64_Sym *symtab = (Elf64_Sym *)monacc_calloc((mc_usize)nsyms_out, (mc_usize)sizeof(*symtab));
     if (!symtab) die("oom");
 
     // Map symbol name -> symtab index.
-    SymIndex *sym_index = (SymIndex *)monacc_calloc((unsigned long)st->nsyms, sizeof(*sym_index));
+    SymIndex *sym_index = (SymIndex *)monacc_calloc((mc_usize)st->nsyms, (mc_usize)sizeof(*sym_index));
     if (!sym_index) die("oom");
 
     int out_i = 1;
@@ -1786,7 +1786,7 @@ static void asmstate_free(AsmState *st) {
     st->cur = NULL;
 }
 
-void assemble_x86_64_elfobj(const char *asm_buf, size_t asm_len, const char *out_o_path) {
+void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path) {
     AsmState st;
     mc_memset(&st, 0, sizeof(st));
 

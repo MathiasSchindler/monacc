@@ -43,6 +43,7 @@ int mc_parse_u32_dec_n(const char *s, mc_usize n, mc_u32 *out);
 // Small snprintf-like helpers (no stdarg required)
 int mc_snprint_cstr_cstr(char *dst, mc_usize cap, const char *a, const char *b);
 int mc_snprint_cstr_u64_cstr(char *dst, mc_usize cap, const char *a, mc_u64 u, const char *b);
+int mc_snprint_cstr_i64_cstr(char *dst, mc_usize cap, const char *a, mc_i64 i, const char *b);
 int mc_snprint_cstr_cstr_u64_cstr(char *dst, mc_usize cap, const char *a, const char *mid, mc_u64 u, const char *b);
 
 // I/O helpers
@@ -55,6 +56,14 @@ mc_i64 mc_write_i64_dec(mc_i32 fd, mc_i64 v);
 // Directory iteration
 typedef int (*mc_dirent_cb)(void *ctx, const char *name, mc_u8 d_type);
 mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx);
+
+// Process helpers
+mc_i64 mc_execvp(const char *file, char **argv, char **envp);
+mc_i32 mc_wait_exitcode(mc_i32 status);
+
+// Startup environment (set by core/mc_start.c in hosted builds)
+void mc_set_start_envp(char **envp);
+char **mc_get_start_envp(void);
 
 // Common UX helpers
 MC_NORETURN void mc_die_usage(const char *argv0, const char *usage);

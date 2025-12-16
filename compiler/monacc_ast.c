@@ -24,16 +24,16 @@ static void sb_write_u64_dec(int fd, unsigned long long v) {
         tmp[i] = tmp[n - 1 - i];
         tmp[n - 1 - i] = c;
     }
-    xwrite_best_effort(fd, tmp, (size_t)n);
+    xwrite_best_effort(fd, tmp, (mc_usize)n);
 }
 
-static void sb_write_bytes(int fd, const char *s, size_t n) {
+static void sb_write_bytes(int fd, const char *s, mc_usize n) {
     if (!s || n == 0) return;
     xwrite_best_effort(fd, s, n);
 }
 #endif
 
-int local_add_fixed(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+int local_add_fixed(Locals *ls, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
                            int alloc_size, int array_stride, int offset) {
     if (ls->nlocals >= (int)(sizeof(ls->locals) / sizeof(ls->locals[0]))) {
 #ifdef SELFHOST
@@ -102,7 +102,7 @@ Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams
 
     // Clone argument array if present
     if (e->args && e->nargs > 0) {
-        c->args = (Expr **)monacc_calloc((size_t)e->nargs, sizeof(Expr *));
+        c->args = (Expr **)monacc_calloc((mc_usize)e->nargs, sizeof(Expr *));
         if (!c->args) die("oom");
         for (int i = 0; i < e->nargs; i++) {
             c->args[i] = expr_clone_with_subst(e->args[i], param_offsets, nparams, args);
@@ -111,7 +111,7 @@ Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams
 
     // Clone inits array if present (for compound literals)
     if (e->inits && e->ninits > 0) {
-        c->inits = (InitEnt *)monacc_calloc((size_t)e->ninits, sizeof(InitEnt));
+        c->inits = (InitEnt *)monacc_calloc((mc_usize)e->ninits, sizeof(InitEnt));
         if (!c->inits) die("oom");
         for (int i = 0; i < e->ninits; i++) {
             c->inits[i] = e->inits[i];
@@ -129,7 +129,7 @@ Stmt *new_stmt(StmtKind k) {
     return s;
 }
 
-const Local *local_find(const Locals *ls, const char *nm, size_t nm_len) {
+const Local *local_find(const Locals *ls, const char *nm, mc_usize nm_len) {
     for (int i = ls->nlocals - 1; i >= 0; i--) {
         const Local *l = &ls->locals[i];
         if (mc_strlen(l->name) == nm_len && mc_memcmp(l->name, nm, nm_len) == 0) {
@@ -139,7 +139,7 @@ const Local *local_find(const Locals *ls, const char *nm, size_t nm_len) {
     return NULL;
 }
 
-int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+int local_add(Locals *ls, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
                      int alloc_size, int array_stride) {
     if (ls->nlocals >= (int)(sizeof(ls->locals) / sizeof(ls->locals[0]))) {
 #ifdef SELFHOST
@@ -178,7 +178,7 @@ int local_add(Locals *ls, const char *nm, size_t nm_len, BaseType base, int ptr,
     return l->offset;
 }
 
-int local_add_globalref(Locals *ls, const char *nm, size_t nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
+int local_add_globalref(Locals *ls, const char *nm, mc_usize nm_len, int global_id, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size,
                         int alloc_size, int array_stride) {
     if (ls->nlocals >= (int)(sizeof(ls->locals) / sizeof(ls->locals[0]))) {
         die("too many locals");
@@ -249,7 +249,7 @@ void program_add_fn(Program *p, const Function *fn) {
     }
     if (p->nfns + 1 > p->cap) {
         int ncap = p->cap ? p->cap * 2 : 16;
-        Function *nf = (Function *)monacc_realloc(p->fns, (size_t)ncap * sizeof(*nf));
+        Function *nf = (Function *)monacc_realloc(p->fns, (mc_usize)ncap * sizeof(*nf));
         if (!nf) die("oom");
         p->fns = nf;
         p->cap = ncap;
@@ -259,7 +259,7 @@ void program_add_fn(Program *p, const Function *fn) {
     p->nfns++;
 }
 
-const Function *program_find_fn(const Program *p, const char *name, size_t name_len) {
+const Function *program_find_fn(const Program *p, const char *name, mc_usize name_len) {
     if (!p || !name || name_len == 0) return NULL;
     if (name_len >= 128) return NULL;
     char buf[128];
@@ -272,7 +272,7 @@ const Function *program_find_fn(const Program *p, const char *name, size_t name_
     return NULL;
 }
 
-void program_mark_fn_called(Program *p, const char *name, size_t name_len) {
+void program_mark_fn_called(Program *p, const char *name, mc_usize name_len) {
     if (!p || !name || name_len == 0) return;
     if (name_len >= 128) return;
     char buf[128];
@@ -287,7 +287,7 @@ void program_mark_fn_called(Program *p, const char *name, size_t name_len) {
     }
 }
 
-const Typedef *program_find_typedef(const Program *p, const char *name, size_t name_len) {
+const Typedef *program_find_typedef(const Program *p, const char *name, mc_usize name_len) {
     if (!p || !name || name_len == 0) return NULL;
     for (int i = p->ntypedefs - 1; i >= 0; i--) {
         const Typedef *td = &p->typedefs[i];
@@ -298,7 +298,7 @@ const Typedef *program_find_typedef(const Program *p, const char *name, size_t n
     return NULL;
 }
 
-void program_add_typedef(Program *p, const char *name, size_t name_len, BaseType base, int ptr, int struct_id, int is_unsigned) {
+void program_add_typedef(Program *p, const char *name, mc_usize name_len, BaseType base, int ptr, int struct_id, int is_unsigned) {
     if (!p) die("internal: no program context");
     if (!name || name_len == 0 || name_len >= sizeof(p->typedefs[0].name)) {
         die("typedef name too long");
@@ -316,7 +316,7 @@ void program_add_typedef(Program *p, const char *name, size_t name_len, BaseType
     }
     if (p->ntypedefs + 1 > p->typedefcap) {
         int ncap = p->typedefcap ? p->typedefcap * 2 : 64;
-        Typedef *nt = (Typedef *)monacc_realloc(p->typedefs, (size_t)ncap * sizeof(*nt));
+        Typedef *nt = (Typedef *)monacc_realloc(p->typedefs, (mc_usize)ncap * sizeof(*nt));
         if (!nt) die("oom");
         p->typedefs = nt;
         p->typedefcap = ncap;
@@ -330,7 +330,7 @@ void program_add_typedef(Program *p, const char *name, size_t name_len, BaseType
     td->is_unsigned = is_unsigned;
 }
 
-const ConstDef *program_find_const(const Program *p, const char *name, size_t name_len) {
+const ConstDef *program_find_const(const Program *p, const char *name, mc_usize name_len) {
     if (!p || !name || name_len == 0) return NULL;
     for (int i = p->nconsts - 1; i >= 0; i--) {
         const ConstDef *c = &p->consts[i];
@@ -341,7 +341,7 @@ const ConstDef *program_find_const(const Program *p, const char *name, size_t na
     return NULL;
 }
 
-void program_add_const(Program *p, const char *name, size_t name_len, long long value) {
+void program_add_const(Program *p, const char *name, mc_usize name_len, long long value) {
     if (!p) die("internal: no program context");
     if (!name || name_len == 0 || name_len >= sizeof(p->consts[0].name)) {
         die("const name too long");
@@ -356,7 +356,7 @@ void program_add_const(Program *p, const char *name, size_t name_len, long long 
     }
     if (p->nconsts + 1 > p->constcap) {
         int ncap = p->constcap ? p->constcap * 2 : 128;
-        ConstDef *nc = (ConstDef *)monacc_realloc(p->consts, (size_t)ncap * sizeof(*nc));
+        ConstDef *nc = (ConstDef *)monacc_realloc(p->consts, (mc_usize)ncap * sizeof(*nc));
         if (!nc) die("oom");
         p->consts = nc;
         p->constcap = ncap;
@@ -367,11 +367,11 @@ void program_add_const(Program *p, const char *name, size_t name_len, long long 
     c->value = value;
 }
 
-int program_add_str(Program *p, const unsigned char *data, size_t len) {
+int program_add_str(Program *p, const unsigned char *data, mc_usize len) {
     if (!p) die("internal: no program context");
     if (p->nstrs + 1 > p->strcap) {
         int ncap = p->strcap ? p->strcap * 2 : 32;
-        StringLit *ns = (StringLit *)monacc_realloc(p->strs, (size_t)ncap * sizeof(*ns));
+        StringLit *ns = (StringLit *)monacc_realloc(p->strs, (mc_usize)ncap * sizeof(*ns));
         if (!ns) die("oom");
         p->strs = ns;
         p->strcap = ncap;
@@ -386,7 +386,7 @@ int program_add_str(Program *p, const unsigned char *data, size_t len) {
 
 int type_sizeof(const Program *prg, BaseType base, int ptr, int struct_id);
 
-static int program_find_struct_id(const Program *p, const char *name, size_t name_len) {
+static int program_find_struct_id(const Program *p, const char *name, mc_usize name_len) {
     if (!p) return -1;
     for (int i = 0; i < p->nstructs; i++) {
         const StructDef *sd = &p->structs[i];
@@ -397,13 +397,13 @@ static int program_find_struct_id(const Program *p, const char *name, size_t nam
     return -1;
 }
 
-int program_get_or_add_struct(Program *p, const char *name, size_t name_len) {
+int program_get_or_add_struct(Program *p, const char *name, mc_usize name_len) {
     if (!p) die("internal: no program context");
     int id = program_find_struct_id(p, name, name_len);
     if (id >= 0) return id;
     if (p->nstructs + 1 > p->structcap) {
         int ncap = p->structcap ? p->structcap * 2 : 32;
-        StructDef *ns = (StructDef *)monacc_realloc(p->structs, (size_t)ncap * sizeof(*ns));
+        StructDef *ns = (StructDef *)monacc_realloc(p->structs, (mc_usize)ncap * sizeof(*ns));
         if (!ns) die("oom");
         p->structs = ns;
         p->structcap = ncap;
@@ -427,7 +427,7 @@ int program_add_anon_struct(Program *p) {
     return program_get_or_add_struct(p, buf, mc_strlen(buf));
 }
 
-const StructMember *struct_find_member(const Program *prg, int struct_id, const char *name, size_t name_len) {
+const StructMember *struct_find_member(const Program *prg, int struct_id, const char *name, mc_usize name_len) {
     if (!prg || struct_id < 0 || struct_id >= prg->nstructs) return NULL;
     const StructDef *sd = &prg->structs[struct_id];
     for (int i = 0; i < sd->nmembers; i++) {
@@ -496,7 +496,7 @@ void program_add_global(Program *p, const GlobalVar *gv) {
     }
     if (p->nglobals + 1 > p->globalcap) {
         int ncap = p->globalcap ? p->globalcap * 2 : 16;
-        GlobalVar *ng = (GlobalVar *)monacc_realloc(p->globals, (size_t)ncap * sizeof(*ng));
+        GlobalVar *ng = (GlobalVar *)monacc_realloc(p->globals, (mc_usize)ncap * sizeof(*ng));
         if (!ng) die("oom");
         p->globals = ng;
         p->globalcap = ncap;
@@ -505,7 +505,7 @@ void program_add_global(Program *p, const GlobalVar *gv) {
     p->nglobals++;
 }
 
-int program_find_global(const Program *p, const char *name, size_t name_len) {
+int program_find_global(const Program *p, const char *name, mc_usize name_len) {
     if (!p || !name || name_len == 0) return -1;
     if (name_len >= 128) return -1;
     for (int i = 0; i < p->nglobals; i++) {

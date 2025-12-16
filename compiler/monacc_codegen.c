@@ -2137,7 +2137,6 @@ static void cg_asm_stmt(CG *cg, const Stmt *s) {
     // rax-targeted inputs are handled last to avoid being clobbered.
 
     // First pass: evaluate non-constant, non-rax inputs and push to stack
-    int pushed = 0;
     for (int i = 0; i < s->asm_ninputs; i++) {
         AsmBinding *b = &bindings[s->asm_noutputs + i];
         if (b->kind == 0 && b->reg_idx != 0) {
@@ -2145,7 +2144,6 @@ static void cg_asm_stmt(CG *cg, const Stmt *s) {
             if (b->expr->kind != EXPR_NUM) {
                 cg_expr(cg, b->expr);
                 str_appendf(&cg->out, "  push %%rax\n");
-                pushed++;
             }
         }
     }

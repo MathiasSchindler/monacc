@@ -1,7 +1,7 @@
 #include "mc.h"
 
 // Hosted-only implementation.
-#if !defined(MONACC) && !defined(SELFHOST)
+#if (!defined(MONACC) || defined(USE_MC_VSNPRINTF)) && !defined(SELFHOST)
 
 // Minimal stdarg subset (avoid pulling in <stdarg.h>).
 typedef __builtin_va_list va_list;

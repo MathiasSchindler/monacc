@@ -8,6 +8,14 @@
 CC ?= cc
 MONACC := bin/monacc
 
+# Detect macOS/ARM64 and adjust build to use libc shim instead of inline asm
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    # Define MONACC to disable inline asm in mc_syscall.h
+    # Define USE_MC_VSNPRINTF to re-enable mc_vsnprintf because we set MONACC
+    CFLAGS_MAC := -DMONACC -DUSE_MC_VSNPRINTF
+endif
+
 # Build configuration
 DEBUG ?= 0
 LTO ?= 1
@@ -21,6 +29,12 @@ else
 CFLAGS := -Os -DNDEBUG $(CFLAGS_BASE) -ffunction-sections -fdata-sections \
 	-fno-unwind-tables -fno-asynchronous-unwind-tables
 LDFLAGS := -s -Wl,--gc-sections
+endif
+
+ifeq ($(UNAME_S),Darwin)
+    CFLAGS += $(CFLAGS_MAC)
+    # Override LDFLAGS for macOS
+    LDFLAGS := -Wl,-dead_strip
 endif
 
 ifeq ($(LTO),1)
@@ -60,6 +74,15 @@ COMPILER_SRC := \
 
 START_LDFLAGS := -nostartfiles -Wl,-e,_start
 
+# Apply source modifications for macOS
+ifeq ($(UNAME_S),Darwin)
+    # Use shim for syscalls
+    COMPILER_SRC += compiler/monacc_shim.c
+    # Use standard libc startup (crt1.o) instead of custom _start
+    COMPILER_SRC := $(filter-out core/mc_start.c, $(COMPILER_SRC))
+    START_LDFLAGS :=
+endif
+
 # Tool sources (all .c files in tools/)
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_NAMES := $(basename $(notdir $(TOOL_SRCS)))
@@ -86,9 +109,15 @@ INITRAMFS_GZ := $(INITRAMFS_CPIO).gz
 
 .PHONY: initramfs initramfs-cpio initramfs-root
 
+ifeq ($(UNAME_S),Darwin)
+all: $(MONACC)
+	@echo ""
+	@echo "Build complete: bin/monacc (Tools skipped on macOS due to missing ELF linker)"
+else
 all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
 	@echo ""
 	@echo "Build complete: bin/monacc + $(words $(TOOL_BINS)) tools + aliases"
+endif
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -129,7 +158,7 @@ bin:
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) -DMONACC -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_FLAGS) -DMONACC -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Print a header before building tools
 $(TOOL_BINS): | tool-header

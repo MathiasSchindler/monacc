@@ -37,17 +37,11 @@ The `core/` directory is effectively the project's own minimal libc — syscall-
 
 ## Remaining Work
 
-### Phase 1: Eliminate External `as` (In Progress)
+### Phase 1: Eliminate External `as` (Done)
 
-**Current state:** `--emit-obj` works for ~50% of examples. The internal assembler in `monacc_elfobj.c` needs additional instruction support.
+**Current state:** `--emit-obj` works for all examples and is the default build mode. External `as` remains available as a fallback (e.g. `EMITOBJ=0`).
 
-**Missing patterns identified:**
-- `asm: unsupported 1-op insn '%s'` — various single-operand instructions
-- `asm: unsupported directive '%.*s'` — `.section` variants, alignment directives
-- `asm: bad register` — edge cases in register parsing
-- `asm: shift form` — addressing mode variants
-
-**Goal:** Make `--emit-obj` work for all examples, then make it the default.
+**Ongoing work:** Keep expanding the internal assembler/object emitter as new codegen patterns appear, and keep it covered by `make test`.
 
 **Testing:**
 ```bash

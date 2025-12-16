@@ -11,7 +11,7 @@ This document tracks the current state of the monacc compiler and userland tools
 ### Build
 
 - `make` produces a size-optimized stripped binary (~103 KB) + all 70 tools
-- `make test` runs the full test suite (37 examples + tool tests)
+- `make test` runs the full test suite (39 examples + tool tests)
 - `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
 
@@ -33,9 +33,9 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Toolchain
 
-- By default, monacc shells out to `as` + `ld`
-- Experimental: `--emit-obj` skips external `as` and emits ELF64 `.o` internally
-- Supports `--toolchain <dir>`, `--as <path>`, `--ld <path>` overrides
+- By default, monacc uses internal ELF object emission (`--emit-obj`) and then links with `ld`
+- Fallback: external `as` + `ld` (e.g. with `EMITOBJ=0` in the Makefile)
+- Supports `--toolchain <dir>`, `--as <path>`, `--ld <path>` overrides (note: `--as` is only used in the external-assembler path)
 
 ### Frontend
 
@@ -193,7 +193,7 @@ All 70 tools compile and link successfully with monacc.
 |-------|--------------|
 | Building monacc | Host `cc` (gcc/clang), system headers |
 | Running monacc | Hosted program (can be static) |
-| Building tools | External `as` + `ld` |
+| Building tools | Default: internal `--emit-obj` + `ld` (external `as` optional fallback) |
 | Running tools | Linux kernel only |
 
 ### Progress
@@ -210,7 +210,7 @@ All 70 tools compile and link successfully with monacc.
 - Experimental ELF object emission (`--emit-obj`)
 
 **Remaining:**
-- External `as` still required (unless `--emit-obj`)
+- External `as` no longer required for the default build (kept as an optional fallback)
 - External `ld` still required
 - Host `cc` needed to bootstrap
 

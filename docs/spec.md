@@ -40,7 +40,7 @@ Both components share a common design philosophy: syscall-only, minimal dependen
 
 - **Target ABI**: Linux x86_64 SysV
 - **Data model**: LP64 (`long` is 64-bit)
-- **Output**: AT&T x86_64 assembly, assembled+linked by host `as`/`ld`
+- **Output**: AT&T x86_64 assembly; by default assembled internally into an ELF64 relocatable (`--emit-obj`) and linked by host `ld` (external `as` is an optional fallback)
 - **Runtime model**: freestanding binaries (syscall-only)
 
 ### Compiler Pipeline

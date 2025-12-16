@@ -113,11 +113,10 @@ static void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: %s <input1.c> [input2.c ...] -o <output> [-c] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n",
-         argv0);
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
 #endif
     _exit(2);
 }

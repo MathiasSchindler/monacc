@@ -179,6 +179,7 @@ typedef struct {
 
     mc_u64 *sec_vaddr;   // indexed by shndx
     mc_u64 *sec_fileoff; // indexed by shndx (0 for NOBITS)
+    unsigned char *sec_keep; // indexed by shndx (GC reachability)
 } InputObj;
 
 typedef struct {
@@ -331,8 +332,18 @@ static void input_obj_free(InputObj *in) {
     if (in->relsecs) monacc_free(in->relsecs);
     if (in->sec_vaddr) monacc_free(in->sec_vaddr);
     if (in->sec_fileoff) monacc_free(in->sec_fileoff);
+    if (in->sec_keep) monacc_free(in->sec_keep);
     if (in->file) monacc_free(in->file);
     mc_memset(in, 0, sizeof(*in));
+}
+
+static void mark_keep(InputObj *in, mc_u16 shndx) {
+    if (!in) return;
+    if (shndx == SHN_UNDEF || shndx == SHN_ABS) return;
+    if (shndx >= in->eh->e_shnum) return;
+    const Elf64_Shdr *sh = &in->shdrs[shndx];
+    if ((sh->sh_flags & SHF_ALLOC) == 0) return;
+    in->sec_keep[shndx] = 1;
 }
 
 void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr) {
@@ -345,7 +356,8 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         input_obj_parse(&ins[i], obj_paths[i]);
         ins[i].sec_vaddr = (mc_u64 *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(mc_u64));
         ins[i].sec_fileoff = (mc_u64 *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(mc_u64));
-        if (!ins[i].sec_vaddr || !ins[i].sec_fileoff) die("oom");
+        ins[i].sec_keep = (unsigned char *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, 1);
+        if (!ins[i].sec_vaddr || !ins[i].sec_fileoff || !ins[i].sec_keep) die("oom");
     }
 
     // Build global symbol table from definitions.
@@ -403,6 +415,85 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         }
     }
 
+    // Step 7: GC sections (approximate ld --gc-sections) by keeping only sections
+    // reachable from _start via relocations.
+    {
+        int start_gi = find_global_sym(gs, ngs, "_start");
+        if (start_gi < 0 || !gs[start_gi].defined) die("link-internal: missing _start symbol");
+
+        int wcap = 0;
+        for (int oi = 0; oi < nobj_paths; oi++) wcap += (int)ins[oi].eh->e_shnum;
+        int *work_oi = (int *)monacc_malloc((mc_usize)wcap * sizeof(*work_oi));
+        mc_u16 *work_si = (mc_u16 *)monacc_malloc((mc_usize)wcap * sizeof(*work_si));
+        if (!work_oi || !work_si) die("oom");
+        int wn = 0;
+
+        // Root: section containing _start.
+        {
+            InputObj *def = &ins[gs[start_gi].obji];
+            const Elf64_Sym *s = &def->symtab[gs[start_gi].symi];
+            mc_u16 shndx = s->st_shndx;
+            mark_keep(def, shndx);
+            work_oi[wn] = gs[start_gi].obji;
+            work_si[wn] = shndx;
+            wn++;
+        }
+
+        // Traverse relocations out of kept sections and keep their defining sections.
+        while (wn > 0) {
+            wn--;
+            int oi = work_oi[wn];
+            mc_u16 si = work_si[wn];
+            InputObj *in = &ins[oi];
+
+            for (mc_u16 rsi = 0; rsi < in->nrelsecs; rsi++) {
+                const Elf64_Shdr *rsh = &in->relsecs[rsi];
+                if (rsh->sh_info != si) continue;
+                if (rsh->sh_info >= in->eh->e_shnum) die("link-internal: bad relocation target section index");
+
+                const Elf64_Rela *rels = (const Elf64_Rela *)checked_slice(in->file, in->file_len, rsh->sh_offset, rsh->sh_size, "rela");
+                mc_usize nrel = (mc_usize)(rsh->sh_size / sizeof(Elf64_Rela));
+
+                for (mc_usize i = 0; i < nrel; i++) {
+                    mc_u32 rsym = elf64_r_sym(rels[i].r_info);
+                    if (rsym >= (mc_u32)in->symtab_n) die("link-internal: bad relocation symbol index");
+                    const Elf64_Sym *s = &in->symtab[rsym];
+
+                    InputObj *def = NULL;
+                    mc_u32 def_symi = 0;
+                    if (s->st_shndx != SHN_UNDEF) {
+                        def = in;
+                        def_symi = rsym;
+                    } else {
+                        const char *nm = sym_name(in, rsym);
+                        int gi = find_global_sym(gs, ngs, nm);
+                        if (gi < 0 || !gs[gi].defined) {
+                            die("link-internal: undefined symbol %s", nm && *nm ? nm : "<noname>");
+                        }
+                        def = &ins[gs[gi].obji];
+                        def_symi = gs[gi].symi;
+                    }
+
+                    mc_u16 shndx = def->symtab[def_symi].st_shndx;
+                    if (shndx == SHN_UNDEF || shndx == SHN_ABS) continue;
+                    if (shndx >= def->eh->e_shnum) die("link-internal: bad symbol shndx");
+                    if ((def->shdrs[shndx].sh_flags & SHF_ALLOC) == 0) continue;
+
+                    if (!def->sec_keep[shndx]) {
+                        def->sec_keep[shndx] = 1;
+                        if (wn >= wcap) die("link-internal: internal error: gc work overflow");
+                        work_oi[wn] = (int)(def - ins);
+                        work_si[wn] = shndx;
+                        wn++;
+                    }
+                }
+            }
+        }
+
+        monacc_free(work_oi);
+        monacc_free(work_si);
+    }
+
     // Step 5: layout with separate RX and RW PT_LOAD segments.
     // RX holds headers + .text + .rodata (+ other non-writable alloc PROGBITS).
     // RW holds .data (+ other writable alloc PROGBITS) and .bss as memsz>filesz.
@@ -420,6 +511,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
             for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
                 const Elf64_Shdr *sh = &in->shdrs[si];
                 if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+                if (!in->sec_keep[si]) continue;
                 if (!sec_is_rx(sh)) continue;
                 if (sh->sh_type == SHT_NOBITS) continue;
                 if (sh->sh_size == 0) continue;
@@ -456,6 +548,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
             for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
                 const Elf64_Shdr *sh = &in->shdrs[si];
                 if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+                if (!in->sec_keep[si]) continue;
                 if (sec_is_rx(sh)) continue;
                 if (sh->sh_type == SHT_NOBITS) continue;
                 if (sh->sh_size == 0) continue;
@@ -481,6 +574,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
             const Elf64_Shdr *sh = &in->shdrs[si];
             if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+            if (!in->sec_keep[si]) continue;
             if (sec_is_rx(sh)) continue;
             if (sh->sh_type != SHT_NOBITS) continue;
             if (sh->sh_size == 0) continue;
@@ -517,6 +611,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
             const Elf64_Shdr *sh = &in->shdrs[si];
             if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+            if (!in->sec_keep[si]) continue;
             if (sh->sh_type == SHT_NOBITS) continue;
             if (sh->sh_size == 0) continue;
             mc_u64 dst_off = in->sec_fileoff[si];
@@ -534,6 +629,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
             const Elf64_Shdr *rsh = &in->relsecs[rsi];
             if (rsh->sh_info >= in->eh->e_shnum) die("link-internal: bad relocation target section index");
             mc_u16 tgt = (mc_u16)rsh->sh_info;
+            if (!in->sec_keep[tgt]) continue;
             const Elf64_Shdr *tsh = &in->shdrs[tgt];
             if ((tsh->sh_flags & SHF_ALLOC) == 0) continue;
             if (tsh->sh_type == SHT_NOBITS) die("link-internal: relocation against NOBITS target section");

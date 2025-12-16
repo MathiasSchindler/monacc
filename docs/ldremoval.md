@@ -14,6 +14,28 @@ The goal is **not** to re-create GNU ld. The goal is to link the very specific k
 
 ---
 
+## Status (as of 2025-12-17)
+
+Internal linking is now usable for monacc-style programs and is continuously tested.
+
+- Steps 0–6 are implemented.
+- Steps 0–7 are implemented.
+- `make -j test` is green with internal-link probes enabled.
+- Internal linking is opt-in via `--link-internal` (external `ld` is still the default link path).
+
+Key user-facing switches:
+
+- `--link-internal`: link via monacc’s internal linker.
+- `--keep-shdr`: keep section headers in the final `ET_EXEC` (debug/inspect mode).
+- Default output is size-oriented and strips SHT (`elf_trim_shdr_best_effort()`); this is unchanged.
+
+Key observability helpers:
+
+- `--dump-elfobj <file.o>`: dump an `ET_REL` produced by `--emit-obj` (sections/symbols/relocs).
+- `--dump-elfsec <file>`: dump section headers if present; reports `(none)` when stripped.
+
+---
+
 ## Guiding principles
 
 1. **Constrain the problem aggressively.**
@@ -162,6 +184,9 @@ If possible, instrument `--emit-obj` tests to list relocation types encountered 
 **Tests**
 - Ensure `--link-internal` is parsed and errors clearly if not implemented.
 
+**Progress**
+- Implemented: `--link-internal` is available and used by tests.
+
 
 ### Step 1 — Read and validate ELF64 `ET_REL`
 
@@ -181,6 +206,9 @@ If possible, instrument `--emit-obj` tests to list relocation types encountered 
   - relocation count and types
 - Golden-file style checks are OK (stable output format).
 
+**Progress**
+- Implemented: `--dump-elfobj` and a gating probe that validates the output.
+
 
 ### Step 2 — Single-object “link” without relocations
 
@@ -194,6 +222,9 @@ If possible, instrument `--emit-obj` tests to list relocation types encountered 
 **Tests**
 - A purpose-built example that contains no relocations (or as few as possible).
 - Run and check exit code.
+
+**Progress**
+- Implemented as part of the bring-up of the internal linker (superseded by Step 3+ behavior).
 
 
 ### Step 3 — Implement symbol resolution + `PC32` relocation
@@ -224,6 +255,10 @@ Validate signed 32-bit fit.
 - Add a regression that specifically checks RIP-relative addressing into `.bss` and `.data`.
   - (These were historically sensitive when bringing up `--emit-obj`.)
 
+**Progress**
+- Implemented: symbol resolution plus `R_X86_64_PC32` and `R_X86_64_PLT32`.
+- Smoke tests run several examples and validate exit code.
+
 
 ### Step 4 — Multi-object linking (multiple `.o` inputs)
 
@@ -235,6 +270,10 @@ Validate signed 32-bit fit.
 **Tests**
 - Add a test that compiles two C files that call into each other.
 - Compare output behavior vs external ld (exit code + maybe output).
+
+**Progress**
+- Implemented: multiple input objects with cross-object symbol resolution/relocations.
+- Smoke test includes a two-file call case.
 
 
 ### Step 5 — Support DATA/BSS properly
@@ -251,6 +290,10 @@ Validate signed 32-bit fit.
   - global array stores
   - extern incomplete array / rodata blobs
 
+**Progress**
+- Implemented: correct RW data placement and `.bss` as zero-fill (`p_memsz > p_filesz`).
+- Output uses separate RX and RW PT_LOAD segments.
+
 
 ### Step 6 — Optional: keep/strip section headers + symbols
 
@@ -262,6 +305,13 @@ Validate signed 32-bit fit.
 **Tests**
 - `--keep-shdr` (or similar) produces a file where `readelf -S` works.
 - Default output still runs.
+
+**Progress**
+- Implemented: `--keep-shdr` keeps a minimal section header table plus `.shstrtab` in the output.
+- Implemented: `--dump-elfsec <file>` to validate whether SHT is present.
+- Tests now verify both modes:
+   - default internal-link output reports `sections: (none)`
+   - `--keep-shdr` output contains `.shstrtab` and `.text`
 
 
 ### Step 7 — Size optimizations and `--gc-sections` (later)
@@ -279,6 +329,42 @@ Simplest approach:
 **Tests**
 - Compare binary sizes vs external ld (allow small deltas initially).
 - Ensure no functional regressions.
+
+**Progress**
+- Implemented: internal linker now keeps only sections reachable from `_start` via relocations (gc-sections equivalent).
+- Smoke test covers dropping an unreferenced large global/function by checking output size.
+
+---
+
+## Remaining work (near-term)
+
+1. **Implement Step 7 reachability / garbage-collection of sections**
+    - Goal is to approach `ld --gc-sections` size behavior for monacc’s per-function/per-data-section layout.
+    - Likely implementation: mark/reachability over input sections driven by relocations; include only reachable `.text.*` / `.rodata.*` / `.data.*`.
+
+2. **Decide when to flip defaults**
+    - Expand internal-link testing to cover more/most of `make test` (tools + examples) under internal linking.
+    - Once stable, consider making internal linking the default (with an escape hatch to external `ld`).
+
+3. **Tighten compatibility surface**
+    - Make clear whether internal linker supports only monacc-emitted `ET_REL` or also external-toolchain objects.
+
+---
+
+## Future work (longer-term ideas)
+
+- **More relocation types** as needed by newly supported language features or codegen patterns:
+   - `R_X86_64_64`, `R_X86_64_32`, `R_X86_64_32S`, TLS/other kinds if they ever appear.
+- **Better debug/inspection outputs**:
+   - optional `.symtab`/`.strtab` emission in `--keep-shdr` mode
+   - a “link map” dump (final symbol VAs, section placement, input→output mapping)
+   - optional relocation tracing for hard-to-debug runtime issues
+- **Determinism and diagnostics**:
+   - stable ordering rules for merged sections/symbols
+   - clearer duplicate/undefined symbol error reporting
+- **Broader output modes (optional)**:
+   - PIE (`ET_DYN`) and ASLR-friendly layouts (not needed for the current tools, but useful later)
+   - improved segment permission hygiene and alignment tuning
 
 ---
 

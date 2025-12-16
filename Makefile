@@ -84,6 +84,8 @@ START_LDFLAGS := -nostartfiles -Wl,-e,_start
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_NAMES := $(basename $(notdir $(TOOL_SRCS)))
 TOOL_BINS := $(addprefix bin/,$(TOOL_NAMES))
+TOOL_BINS_LD := $(addprefix bin/ld/,$(TOOL_NAMES))
+TOOL_BINS_INTERNAL := $(addprefix bin/internal/,$(TOOL_NAMES))
 
 # Examples to test (must return exit code 42)
 EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
@@ -98,7 +100,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 # Default goal: build everything
 .DEFAULT_GOAL := all
 
-.PHONY: all test clean debug selfhost
+.PHONY: all all-split tools-ld tools-internal test clean debug selfhost
 
 # === Initramfs image (for booting sysbox) ===
 
@@ -112,6 +114,12 @@ INITRAMFS_GZ := $(INITRAMFS_CPIO).gz
 all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
 	@echo ""
 	@echo "Build complete: bin/monacc + $(words $(TOOL_BINS)) tools + aliases"
+
+# Optional split build: build tools twice, once linked via external ld and once via
+# the internal linker. This is useful for comparison/bring-up.
+all-split: $(MONACC) tools-ld tools-internal
+	@echo ""
+	@echo "Split build complete: bin/ld/* (external ld) + bin/internal/* (internal linker)"
 
 # === Self-hosting probe: build compiler with monacc ===
 
@@ -165,11 +173,27 @@ $(MONACC): $(COMPILER_SRC) | bin
 bin:
 	mkdir -p bin
 
+bin/ld:
+	mkdir -p bin/ld
+
+bin/internal:
+	mkdir -p bin/internal
+
 # === Phase 1: Build tools with monacc ===
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
 	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+
+# External-ld linked toolset (kept separate for comparison)
+bin/ld/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/ld
+	@echo "  ld/$*"
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+
+# Internal-linker toolset
+bin/internal/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/internal
+	@echo "  internal/$*"
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) --link-internal -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Print a header before building tools
 $(TOOL_BINS): | tool-header
@@ -177,11 +201,37 @@ $(TOOL_BINS): | tool-header
 tool-header: $(MONACC)
 	@echo "==> Building tools with monacc"
 
+$(TOOL_BINS_LD): | tool-header-ld
+$(TOOL_BINS_INTERNAL): | tool-header-internal
+
+.PHONY: tool-header-ld tool-header-internal
+tool-header-ld: $(MONACC)
+	@echo "==> Building tools with monacc (external ld)"
+
+tool-header-internal: $(MONACC)
+	@echo "==> Building tools with monacc (internal linker)"
+
+tools-ld: $(TOOL_BINS_LD) bin/ld/realpath bin/ld/[
+
+tools-internal: $(TOOL_BINS_INTERNAL) bin/internal/realpath bin/internal/[
+
 # Tool aliases (readlink serves as realpath, test serves as [)
 bin/realpath: bin/readlink
 	@cp $< $@
 
 bin/[: bin/test
+	@cp $< $@
+
+bin/ld/realpath: bin/ld/readlink | bin/ld
+	@cp $< $@
+
+bin/ld/[: bin/ld/test | bin/ld
+	@cp $< $@
+
+bin/internal/realpath: bin/internal/readlink | bin/internal
+	@cp $< $@
+
+bin/internal/[: bin/internal/test | bin/internal
 	@cp $< $@
 
 # === Testing ===

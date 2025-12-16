@@ -128,7 +128,7 @@ if command -v cc >/dev/null 2>&1; then
 
     set +e
     (
-      "$out_bin" "$ex" -o "$ex_out" 1>/dev/null 2>"$ex_err"
+      "$out_bin" --link-internal "$ex" -o "$ex_out" 1>/dev/null 2>"$ex_err"
     )
     ex_ec=$?
     set -e

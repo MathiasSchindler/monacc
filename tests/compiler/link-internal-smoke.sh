@@ -94,3 +94,33 @@ if [ "$sz" -ge 60000 ]; then
   echo "link-internal-smoke: FAIL (gc: output too large: $sz bytes)"
   exit 1
 fi
+
+# Optional oracle check: if external `ld` is available, build one tool both ways
+# and compare its observable behavior. This catches subtle link/layout regressions
+# without making external ld a hard dependency.
+if command -v ld >/dev/null 2>&1; then
+  oracle_out_ld="build/test/oracle-echo-ld"
+  oracle_out_int="build/test/oracle-echo-int"
+
+  # External ld path (no --link-internal)
+  ./bin/monacc --emit-obj -I core tools/echo.c \
+    core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c \
+    core/mc_start_env.c core/mc_io.c core/mc_regex.c \
+    -o "$oracle_out_ld" >/dev/null 2>&1
+
+  # Internal linker path
+  ./bin/monacc --emit-obj --link-internal -I core tools/echo.c \
+    core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c \
+    core/mc_start_env.c core/mc_io.c core/mc_regex.c \
+    -o "$oracle_out_int" >/dev/null 2>&1
+
+  out_ld="$($oracle_out_ld -n hello 2>/dev/null || true)"
+  out_int="$($oracle_out_int -n hello 2>/dev/null || true)"
+
+  if [ "$out_ld" != "$out_int" ]; then
+    echo "link-internal-smoke: FAIL (oracle: echo output mismatch)"
+    exit 1
+  fi
+else
+  echo "link-internal-smoke: SKIP oracle (no external ld in PATH)"
+fi

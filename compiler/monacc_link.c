@@ -498,8 +498,25 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
     // RX holds headers + .text + .rodata (+ other non-writable alloc PROGBITS).
     // RW holds .data (+ other writable alloc PROGBITS) and .bss as memsz>filesz.
     const mc_u64 base_vaddr = 0x400000ull;
-    const mc_u64 phnum_max = 2;
-    const mc_u64 hdr_end = (mc_u64)sizeof(Elf64_Ehdr) + phnum_max * (mc_u64)sizeof(Elf64_Phdr);
+
+    // Avoid paying for a second program header when we don't have any RW content.
+    // This matters for very small binaries like `true`/`false`.
+    int want_rw = 0;
+    for (int oi = 0; oi < nobj_paths && !want_rw; oi++) {
+        InputObj *in = &ins[oi];
+        for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
+            const Elf64_Shdr *sh = &in->shdrs[si];
+            if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+            if (!in->sec_keep[si]) continue;
+            if (sh->sh_flags & SHF_WRITE) {
+                want_rw = 1;
+                break;
+            }
+        }
+    }
+
+    mc_u16 phnum = (mc_u16)(want_rw ? 2 : 1);
+    const mc_u64 hdr_end = (mc_u64)sizeof(Elf64_Ehdr) + (mc_u64)phnum * (mc_u64)sizeof(Elf64_Phdr);
 
     mc_u64 rx_file = hdr_end;
     mc_u64 rx_mem = hdr_end;

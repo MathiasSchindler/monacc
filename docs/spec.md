@@ -40,7 +40,8 @@ Both components share a common design philosophy: syscall-only, minimal dependen
 
 - **Target ABI**: Linux x86_64 SysV
 - **Data model**: LP64 (`long` is 64-bit)
-- **Output**: AT&T x86_64 assembly; by default assembled internally into an ELF64 relocatable (`--emit-obj`) and linked by host `ld` (external `as` is an optional fallback)
+- **Output**: AT&T x86_64 assembly; by default assembled internally into an ELF64 relocatable (`--emit-obj`) and linked by monacc’s internal linker (`--link-internal`)
+   - Fallbacks exist for bring-up/debugging: external `as` (`EMITOBJ=0`) and external `ld` (`LINKINT=0`).
 - **Runtime model**: freestanding binaries (syscall-only)
 
 ### Compiler Pipeline
@@ -65,7 +66,7 @@ Both components share a common design philosophy: syscall-only, minimal dependen
 
 4. **Codegen (x86_64 SysV)**
    - Emit AT&T assembly
-   - Delegate linking to system `ld`
+   - Link using monacc’s internal linker by default
    - Dead static function elimination (uncalled `static` functions not emitted)
    - Basic inlining for `static inline` functions with trivial bodies
    - Size-focused: skip no-op constructs, inline trivial `main()`

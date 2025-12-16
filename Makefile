@@ -17,6 +17,15 @@ else
 MONACC_EMITOBJ_FLAG :=
 endif
 
+# Use the internal linker by default when building via Makefile.
+# Set LINKINT=0 to force using external `ld`.
+LINKINT ?= 1
+ifeq ($(LINKINT),1)
+MONACC_LINK_FLAG := --link-internal
+else
+MONACC_LINK_FLAG :=
+endif
+
 # Build configuration
 DEBUG ?= 0
 LTO ?= 1
@@ -136,7 +145,7 @@ selfhost: $(MONACC_SELF)
 
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -183,7 +192,7 @@ bin/internal:
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
 
 # External-ld linked toolset (kept separate for comparison)
 bin/ld/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/ld
@@ -199,7 +208,11 @@ bin/internal/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/internal
 $(TOOL_BINS): | tool-header
 .PHONY: tool-header
 tool-header: $(MONACC)
-	@echo "==> Building tools with monacc"
+	@if [ "$(LINKINT)" = "1" ]; then \
+		echo "==> Building tools with monacc (internal linker)"; \
+	else \
+		echo "==> Building tools with monacc (external ld)"; \
+	fi
 
 $(TOOL_BINS_LD): | tool-header-ld
 $(TOOL_BINS_INTERNAL): | tool-header-internal
@@ -246,7 +259,7 @@ test: all
 	emitobj_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
-		$(MONACC) $(MONACC_EMITOBJ_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
+		$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
 		./build/test/$$ex >/dev/null 2>&1; \
 		if [ $$? -eq 42 ]; then \
 			echo "  ok: $$ex"; \

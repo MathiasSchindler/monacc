@@ -17,7 +17,7 @@ The compiler compiles the tools. The tools provide the environment needed to bui
 
 - **Self-hosting**: The compiler can compile itself.
 - **Zero runtime dependencies**: Built binaries talk directly to the Linux kernel via syscalls.
-- **Minimal toolchain**: Reduce reliance on external linker (in progress).
+- **Minimal toolchain**: No external assembler or linker required for the default build (host compiler still needed to bootstrap).
 - **Small and fast**: Size-optimized binaries, single-pass-ish compilation.
 
 ## Project Structure
@@ -121,14 +121,16 @@ All tools:
 
 **To build monacc (Phase 0):**
 - A C compiler (`gcc` or `clang`)
-- GNU linker (`ld`)
+- A working host toolchain capable of linking executables (typically via the compiler driver)
 - Linux x86_64
 
 **After Phase 0 (once you already have `bin/monacc`):**
 - You can build the tools and run `make test` without a host C compiler.
 - The default build uses internal ELF object emission (`--emit-obj`), so an external `as` is not required.
-- You still need the system linker (`ld`) to produce final executables.
-- You can force the external assembler path with `EMITOBJ=0`.
+- The default build links with monacc’s internal linker, so an external `ld` is not required.
+- Fallbacks exist for bring-up/debugging:
+    - Force external assembler with `EMITOBJ=0`
+    - Force external linker with `LINKINT=0`
 
 ## Current Status
 

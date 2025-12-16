@@ -33,8 +33,10 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Toolchain
 
-- By default, monacc uses internal ELF object emission (`--emit-obj`) and then links with `ld`
-- Fallback: external `as` + `ld` (e.g. with `EMITOBJ=0` in the Makefile)
+- By default, monacc uses internal ELF object emission (`--emit-obj`) and then links with the internal linker (`--link-internal`)
+- Fallbacks:
+  - external `as` (set `EMITOBJ=0` in the Makefile)
+  - external `ld` (set `LINKINT=0` in the Makefile)
 - Supports `--toolchain <dir>`, `--as <path>`, `--ld <path>` overrides (note: `--as` is only used in the external-assembler path)
 
 ### Frontend
@@ -82,8 +84,8 @@ This document tracks the current state of the monacc compiler and userland tools
 ### Codegen
 
 - Emits AT&T x86_64 assembly
-- Links with `ld --gc-sections` (unused code/data dropped)
-- Size optimizations: `ld -n`, `-z max-page-size=0x1000`, `-z common-page-size=0x1000`
+- Links with the internal linker by default (GC of unreferenced sections is implemented in-tree)
+- Size optimizations formerly driven by `ld` are now internalized where it matters for monacc outputs
 - Supports multiple `.c` inputs → single binary
 - Dead code elimination: uncalled `static` functions are not emitted
 - Basic inlining: `static inline` functions with single `return expr;` body are inlined at call sites

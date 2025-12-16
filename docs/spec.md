@@ -98,6 +98,10 @@ monacc supports GNU-style inline assembly:
 - Clobber lists (`"rcx"`, `"r11"`, `"memory"`)
 - Operand modifiers: `%0`, `%1`, etc.
 
+Notes:
+- Sized operand modifiers like `%w0` (16-bit) and `%b0` (8-bit) are supported.
+- This is still a pragmatic subset: monacc does not aim to implement the full GNU inline-asm feature set (e.g. complex constraints, constraint alternatives, or exact gcc/clang edge-case behavior).
+
 This allows the `core/mc_syscall.h` syscall wrappers to use inline asm directly, keeping the tools portable between gcc/clang and monacc.
 
 ---

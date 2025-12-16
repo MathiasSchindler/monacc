@@ -14,7 +14,7 @@ MONACC_BIN="${MONACC_BIN:-./bin/monacc}"
 if [[ ! -x "$MONACC_BIN" ]]; then
   echo "selftest-emitobj: missing monacc binary at $MONACC_BIN" >&2
   echo "selftest-emitobj: run 'make' first" >&2
-  exit 0
+  exit 1
 fi
 
 out_dir="build/selftest-emitobj"
@@ -43,6 +43,7 @@ src=(
   # Core helpers used by the compiler.
   core/mc_str.c
   core/mc_snprint.c
+  core/mc_start_env.c
 )
 
 selfhost_inc=(
@@ -77,7 +78,7 @@ if [[ $compile_ec -ne 0 ]]; then
   echo "selftest-emitobj: compile: FAIL (exit: $compile_ec)"
   [[ -n "$first" ]] && echo "selftest-emitobj: first error: $first"
   echo "selftest-emitobj: logs: $err_log"
-  exit 0
+  exit $compile_ec
 fi
 
 echo "selftest-emitobj: compiled objects OK" >>"$out_log"
@@ -93,7 +94,7 @@ if command -v cc >/dev/null 2>&1; then
     echo "selftest-emitobj: compile: OK, link: FAIL (exit: $link_ec)"
     [[ -n "$first" ]] && echo "selftest-emitobj: first link error: $first"
     echo "selftest-emitobj: logs: $link_err"
-    exit 0
+    exit $link_ec
   fi
 
   echo "selftest-emitobj: compile: OK, link: OK"
@@ -106,6 +107,11 @@ if command -v cc >/dev/null 2>&1; then
     examples/pp.c
     examples/ptr.c
     examples/strlit.c
+    examples/sizeof.c
+    examples/struct.c
+    examples/typedef.c
+    examples/enum.c
+    examples/asm_syscall.c
   )
 
   ok=0
@@ -159,6 +165,7 @@ if command -v cc >/dev/null 2>&1; then
   else
     echo "selftest-emitobj: run: FAIL (monacc-self example check failed)"
     [[ -n "$first_msg" ]] && echo "selftest-emitobj: first error: $first_msg"
+    exit 1
   fi
 
   exit 0

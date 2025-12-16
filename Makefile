@@ -13,12 +13,12 @@ DEBUG ?= 0
 LTO ?= 1
 MULTI ?= 0
 
-# Optional, non-blocking compiler probes (off by default)
+# Optional compiler probes.
+# Note: the emit-obj probe is enabled by default and is treated as a normal test.
 SELFTEST ?= 0
-SELFTEST_EMITOBJ ?= 0
+SELFTEST_EMITOBJ ?= 1
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
-
 ifeq ($(DEBUG),1)
 CFLAGS := -O0 -g $(CFLAGS_BASE)
 LDFLAGS :=
@@ -149,9 +149,6 @@ $(MONACC): $(COMPILER_SRC) | bin
 	@echo "==> Building compiler"
 	$(CC) $(CFLAGS) -I core $(LDFLAGS) $(START_LDFLAGS) $(COMPILER_SRC) -o $@
 
-bin:
-	mkdir -p bin
-
 # === Phase 1: Build tools with monacc ===
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
@@ -178,6 +175,7 @@ test: all
 	@echo "==> Testing examples"
 	@mkdir -p build/test
 	@ok=0; fail=0; \
+	emitobj_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
 		$(MONACC) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
@@ -201,8 +199,8 @@ test: all
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_EMITOBJ)" = "1" ]; then \
-		echo "==> Selftest: --emit-obj (informational)"; \
-		bash tests/compiler/selftest-emitobj.sh; \
+		echo "==> Selftest: --emit-obj"; \
+		bash tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(MULTI)" = "1" ]; then \
@@ -220,10 +218,10 @@ test: all
 		echo "Wrote build/matrix/report.html"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, emit-obj: exit $$emitobj_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

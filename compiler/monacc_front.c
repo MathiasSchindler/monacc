@@ -2,6 +2,14 @@
 
 __attribute__((noreturn, format(printf, 1, 2)))
 void die(const char *fmt, ...) {
+#ifdef SELFHOST
+    // SELFHOST builds intentionally avoid varargs/va_list support.
+    // Keep the call sites intact but print the format string literally.
+    (void)fmt;
+    xwrite_best_effort(2, fmt ? fmt : "(null)", fmt ? mc_strlen(fmt) : 6);
+    xwrite_best_effort(2, "\n", 1);
+    _exit(1);
+#else
     // Minimal formatter for common diagnostic patterns.
     // This avoids pulling in full printf while still giving actionable errors.
     va_list ap;
@@ -69,6 +77,7 @@ void die(const char *fmt, ...) {
     va_end(ap);
     xwrite_best_effort(2, "\n", 1);
     _exit(1);
+#endif
 }
 
 __attribute__((noreturn))

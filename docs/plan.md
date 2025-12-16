@@ -127,7 +127,7 @@ These are documented and have workarounds. Fixes would be nice but are not urgen
 Before declaring any phase complete:
 
 - [ ] `make clean && make` succeeds
-- [ ] `make test` passes (all 37 examples + tool tests)
+- [ ] `make test` passes (all 39 examples + tool tests)
 - [ ] `make selfhost` succeeds
 - [ ] `bin/monacc-self examples/asm_syscall.c -o /tmp/test && /tmp/test` works
 - [ ] Binary size tracked (~103 KB baseline)
@@ -135,7 +135,7 @@ Before declaring any phase complete:
 Optional (informational) probes:
 
 - [ ] `SELFTEST=1 make test` runs the compiler self-host probe (host-built `bin/monacc` builds and runs `build/selftest/monacc-self`)
-- [ ] `SELFTEST_EMITOBJ=1 make test` runs the `--emit-obj` probe (expected to fail until Phase 1 is complete)
+- [ ] `SELFTEST_EMITOBJ=1 make test` runs the `--emit-obj` probe (currently expected to pass)
 
 ---
 

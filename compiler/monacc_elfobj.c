@@ -390,20 +390,42 @@ static int parse_int64(const char *p, const char *end, long long *out) {
     } else if (*p == '+') {
         p++;
     }
-    if (p >= end || *p < '0' || *p > '9') return 0;
+    if (p >= end) return 0;
+
+    int base = 10;
+    if ((end - p) >= 2 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        base = 16;
+        p += 2;
+    }
+
     unsigned long long v = 0;
-    while (p < end && *p >= '0' && *p <= '9') {
-        v = v * 10ULL + (unsigned long long)(*p - '0');
-        p++;
+    int nd = 0;
+    for (; p < end; p++) {
+        int d = -1;
+        unsigned char c = (unsigned char)*p;
+        if (c >= '0' && c <= '9') d = (int)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (int)(c - 'a');
+        else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (int)(c - 'A');
+        else break;
+
+        // Overflow check: v*base + d <= ULLONG_MAX
+        if (v > (~0ULL - (unsigned long long)d) / (unsigned long long)base) return 0;
+        v = v * (unsigned long long)base + (unsigned long long)d;
+        nd++;
     }
-    long long sv;
+    if (nd == 0) return 0;
+
+    p = skip_ws(p, end);
+    if (p != end) return 0;
+
     if (neg) {
-        // clamp-ish; our immediates are small enough for toolchain.
-        sv = -(long long)v;
+        // allow -2^63
+        if (v > 0x8000000000000000ULL) return 0;
+        *out = (v == 0x8000000000000000ULL) ? (long long)(-9223372036854775807LL - 1LL) : -(long long)v;
     } else {
-        sv = (long long)v;
+        if (v > 0x7fffffffffffffffULL) return 0;
+        *out = (long long)v;
     }
-    *out = sv;
     return 1;
 }
 
@@ -530,7 +552,7 @@ static void encode_modrm_rm(Str *s, int reg_field, const Mem *m, int w, int op_i
     (void)op_is_byte;
     if (m->riprel) {
         // [rip + disp32] encoded as mod=00 rm=101 disp32
-        emit_modrm(s, 0, reg_field, 5);
+        emit_modrm(s, 0, reg_field & 7, 5);
         bin_put_u32_le(s, (uint32_t)m->disp);
         *out_rex_r |= (reg_field >> 3) & 1;
         return;
@@ -564,10 +586,10 @@ static void encode_modrm_rm(Str *s, int reg_field, const Mem *m, int w, int op_i
     }
 
     if (need_sib) {
-        emit_modrm(s, mod, reg_field, 4);
+        emit_modrm(s, mod, reg_field & 7, 4);
         emit_sib(s, m->scale ? m->scale : 1, index & 7, base & 7);
     } else {
-        emit_modrm(s, mod, reg_field, rm_field);
+        emit_modrm(s, mod, reg_field & 7, rm_field);
     }
 
     if (mod == 1) {
@@ -622,8 +644,30 @@ static int parse_mem(const char *p, const char *end, Mem *out) {
         if (parse_int64(before, before_end, &disp)) {
             out->disp = (int32_t)disp;
         } else {
-            // symbol
-            out->sym = xstrdup_n(before, (unsigned long)(before_end - before));
+            // symbol or symbol+disp
+            const char *split = NULL;
+            for (const char *q = before_end; q > before; q--) {
+                char c = q[-1];
+                if (c == '+' || c == '-') {
+                    split = q - 1;
+                    break;
+                }
+            }
+            if (split) {
+                long long d2 = 0;
+                if (parse_int64(split, before_end, &d2)) {
+                    const char *sym0 = before;
+                    const char *sym1 = rskip_ws(sym0, split);
+                    sym0 = skip_ws(sym0, sym1);
+                    if (sym0 >= sym1) die("asm: bad mem sym");
+                    out->sym = xstrdup_n(sym0, (unsigned long)(sym1 - sym0));
+                    out->disp = (int32_t)d2;
+                } else {
+                    out->sym = xstrdup_n(before, (unsigned long)(before_end - before));
+                }
+            } else {
+                out->sym = xstrdup_n(before, (unsigned long)(before_end - before));
+            }
         }
     }
 
@@ -655,7 +699,7 @@ static int parse_mem(const char *p, const char *end, Mem *out) {
         const char *be = rskip_ws(b, parts_end[0]);
         if (b < be) {
             Reg r = {0};
-            if (!parse_reg_name(b, be, &r)) die("asm: bad base reg");
+            if (!parse_reg_name(b, be, &r)) die("asm: bad base reg '%.*s'", (int)(be - b), b);
             if (r.reg == -1) {
                 // %rip
                 out->riprel = 1;
@@ -673,7 +717,7 @@ static int parse_mem(const char *p, const char *end, Mem *out) {
         const char *be = rskip_ws(b, parts_end[1]);
         if (b < be) {
             Reg r = {0};
-            if (!parse_reg_name(b, be, &r)) die("asm: bad index reg");
+            if (!parse_reg_name(b, be, &r)) die("asm: bad index reg '%.*s'", (int)(be - b), b);
             out->has_index = 1;
             out->index = r.reg;
         }
@@ -683,11 +727,6 @@ static int parse_mem(const char *p, const char *end, Mem *out) {
         if (!parse_int64(parts[2], parts_end[2], &sc)) die("asm: bad scale");
         if (!(sc == 1 || sc == 2 || sc == 4 || sc == 8)) die("asm: bad scale");
         out->scale = (int)sc;
-    }
-
-    // For riprel, disp field is 0 and we rely on relocation.
-    if (out->riprel) {
-        out->disp = 0;
     }
 
     return 1;
@@ -722,7 +761,7 @@ static Operand parse_operand(AsmState *st, const char *p, const char *end) {
 
     if (*p == '%') {
         Reg r = {0};
-        if (!parse_reg_name(p, end, &r)) die("asm: bad register");
+        if (!parse_reg_name(p, end, &r)) die("asm: bad register '%.*s'", (int)(end - p), p);
         if (r.reg == -1) die("asm: rip register not allowed here");
         op.kind = OP_REG;
         op.reg = r;
@@ -821,22 +860,27 @@ static void encode_mov_reg_rm(Str *s, const Reg *src, const Operand *dst) {
     }
 
     Mem *m = (Mem *)&dst->mem;
-    // riprel store not emitted by codegen.
-    if (m->riprel) die("asm: riprel store unsupported");
-    // Emit REX later; we need rm bits.
-    Str tmp = {0};
-    // Encode opcode and ModRM/SIB/disp into tmp after rex.
-    (void)tmp;
+    if (m->riprel) {
+        // Encode rip-relative store with disp32=0; relocation (if any) is handled by the caller.
+        emit_rex(s, w, rex_r, 0, 0, force);
+        bin_put_u8(s, op8 ? 0x88 : 0x89);
+        emit_modrm(s, 0, src->reg & 7, 5);
+        bin_put_u32_le(s, 0);
+        return;
+    }
 
-    // Build REX bits and ModRM into main buffer.
-    emit_rex(s, w, rex_r, 0, 0, force);
+    int base = m->has_base ? m->base : 5;
+    int index = m->has_index ? m->index : 4;
+    int rex_x = (index >> 3) & 1;
+    int rex_b = (base >> 3) & 1;
+
+    emit_rex(s, w, rex_r, rex_x, rex_b, force);
     bin_put_u8(s, op8 ? 0x88 : 0x89);
 
     // Now ModRM/SIB/disp
     int rr = 0, rx = 0, rb = 0, fr = force;
     (void)fr;
-    encode_modrm_rm(s, src->reg & 7, m, w, op8, &rr, &rx, &rb, &force);
-    // Patch REX bits we might have missed? For simplicity, require regs < 8 in mem operands except r8.. which we do support.
+    encode_modrm_rm(s, src->reg, m, w, op8, &rr, &rx, &rb, &force);
     (void)rr; (void)rx; (void)rb;
 }
 
@@ -863,16 +907,25 @@ static void encode_mov_rm_reg(Str *s, const Operand *src, const Reg *dst) {
 
     const Mem *m = &src->mem;
     if (m->riprel) {
-        // lea handles riprel; loads with riprel not emitted by codegen today.
-        die("asm: riprel load unsupported");
+        // Encode rip-relative load with disp32=0; relocation (if any) is handled by the caller.
+        emit_rex(s, w, rex_r, 0, 0, force);
+        bin_put_u8(s, op8 ? 0x8A : 0x8B);
+        emit_modrm(s, 0, dst->reg & 7, 5);
+        bin_put_u32_le(s, 0);
+        return;
     }
 
-    emit_rex(s, w, rex_r, 0, 0, force);
+    int base = m->has_base ? m->base : 5;
+    int index = m->has_index ? m->index : 4;
+    int rex_x = (index >> 3) & 1;
+    int rex_b = (base >> 3) & 1;
+
+    emit_rex(s, w, rex_r, rex_x, rex_b, force);
     bin_put_u8(s, op8 ? 0x8A : 0x8B);
 
     int rr = 0, rx = 0, rb = 0, fr = force;
     (void)fr;
-    encode_modrm_rm(s, dst->reg & 7, m, w, op8, &rr, &rx, &rb, &force);
+    encode_modrm_rm(s, dst->reg, m, w, op8, &rr, &rx, &rb, &force);
     (void)rr; (void)rx; (void)rb;
 }
 
@@ -958,6 +1011,23 @@ static void encode_shift_cl(Str *s, const char *mnem, const Reg *dst) {
     emit_modrm(s, 3, (int)subop, dst->reg & 7);
 }
 
+static void encode_shift_imm(Str *s, const char *mnem, long long imm, const Reg *dst) {
+    if (dst->width != 64 && dst->width != 32) die("asm: shift expects 32/64-bit");
+    if (imm < 0 || imm > 255) die("asm: shift imm out of range");
+    unsigned int subop = 0;
+    if (!mc_strcmp(mnem, "shl")) subop = 4;
+    else if (!mc_strcmp(mnem, "shr")) subop = 5;
+    else if (!mc_strcmp(mnem, "sar")) subop = 7;
+    else die("asm: shift");
+
+    int w = (dst->width == 64);
+    int rex_b = (dst->reg >> 3) & 1;
+    emit_rex(s, w, 0, 0, rex_b, 0);
+    bin_put_u8(s, 0xC1);
+    emit_modrm(s, 3, (int)subop, dst->reg & 7);
+    bin_put_u8(s, (unsigned char)(imm & 0xff));
+}
+
 static void encode_unop(Str *s, const char *mnem, const Reg *dst) {
     int w = (dst->width == 64);
     if (!w) die("asm: unop expects 64-bit");
@@ -968,6 +1038,19 @@ static void encode_unop(Str *s, const char *mnem, const Reg *dst) {
     int rex_b = (dst->reg >> 3) & 1;
     emit_rex(s, 1, 0, 0, rex_b, 0);
     bin_put_u8(s, 0xF7);
+    emit_modrm(s, 3, (int)subop, dst->reg & 7);
+}
+
+static void encode_incdec(Str *s, const char *mnem, const Reg *dst) {
+    int w = (dst->width == 64);
+    if (!w) die("asm: inc/dec expects 64-bit");
+    unsigned int subop = 0;
+    if (!mc_strcmp(mnem, "inc")) subop = 0;
+    else if (!mc_strcmp(mnem, "dec")) subop = 1;
+    else die("asm: inc/dec");
+    int rex_b = (dst->reg >> 3) & 1;
+    emit_rex(s, 1, 0, 0, rex_b, 0);
+    bin_put_u8(s, 0xFF);
     emit_modrm(s, 3, (int)subop, dst->reg & 7);
 }
 
@@ -982,14 +1065,10 @@ static void encode_div(Str *s, int is_signed, const Reg *src) {
 static void encode_lea(Str *s, const Mem *m, const Reg *dst) {
     if (dst->width != 64) die("asm: lea dest must be 64-bit");
     int rex_r = (dst->reg >> 3) & 1;
-    int rex_x = 0;
-    int rex_b = 0;
-    int force = 0;
-
-    emit_rex(s, 1, rex_r, 0, 0, 0);
-    bin_put_u8(s, 0x8D);
 
     if (m->riprel) {
+        emit_rex(s, 1, rex_r, 0, 0, 0);
+        bin_put_u8(s, 0x8D);
         // modrm: reg=dst, rm=101, disp32=0; relocation fills disp32.
         emit_modrm(s, 0, dst->reg & 7, 5);
         bin_put_u32_le(s, 0);
@@ -997,9 +1076,16 @@ static void encode_lea(Str *s, const Mem *m, const Reg *dst) {
     }
 
     Mem mm = *m;
+    int base = mm.has_base ? mm.base : 5;
+    int index = mm.has_index ? mm.index : 4;
+    int rex_x = (index >> 3) & 1;
+    int rex_b = (base >> 3) & 1;
+    int force = 0;
+
+    emit_rex(s, 1, rex_r, rex_x, rex_b, force);
+    bin_put_u8(s, 0x8D);
     // use encode_modrm_rm but need to set reg_field=dst
-    encode_modrm_rm(s, dst->reg & 7, &mm, 1, 0, &rex_r, &rex_x, &rex_b, &force);
-    (void)rex_x; (void)rex_b; (void)force;
+    encode_modrm_rm(s, dst->reg, &mm, 1, 0, &rex_r, &rex_x, &rex_b, &force);
 }
 
 static void encode_setcc(Str *s, const char *mnem, const Reg *dst) {
@@ -1028,32 +1114,59 @@ static void encode_setcc(Str *s, const char *mnem, const Reg *dst) {
 static void encode_movzx(Str *s, int is_word, const Operand *src, const Reg *dst) {
     if (dst->width != 32) die("asm: movz expects 32-bit dst");
     int rex_r = (dst->reg >> 3) & 1;
-    if (is_word) {
-        emit_rex(s, 0, rex_r, 0, 0, 0);
-        bin_put_u8(s, 0x0F);
-        bin_put_u8(s, 0xB7);
+
+    int rex_x = 0;
+    int rex_b = 0;
+    int force = 0;
+
+    if (src->kind == OP_REG) {
+        rex_b = (src->reg.reg >> 3) & 1;
+        // spl/bpl/sil/dil need a REX prefix even if all bits are zero.
+        force = src->reg.needs_rex_byte;
+    } else if (src->kind == OP_MEM) {
+        int base = src->mem.has_base ? src->mem.base : 5;
+        int index = src->mem.has_index ? src->mem.index : 4;
+        rex_x = (index >> 3) & 1;
+        rex_b = (base >> 3) & 1;
     } else {
-        emit_rex(s, 0, rex_r, 0, 0, 0);
-        bin_put_u8(s, 0x0F);
-        bin_put_u8(s, 0xB6);
+        die("asm: movz src");
     }
+
+    emit_rex(s, 0, rex_r, rex_x, rex_b, force);
+    bin_put_u8(s, 0x0F);
+    bin_put_u8(s, (unsigned int)(is_word ? 0xB7 : 0xB6));
 
     if (src->kind == OP_REG) {
         emit_modrm(s, 3, dst->reg & 7, src->reg.reg & 7);
         return;
     }
-    if (src->kind == OP_MEM) {
+    {
         int rr = 0, rx = 0, rb = 0, fr = 0;
-        encode_modrm_rm(s, dst->reg & 7, &src->mem, 0, 1, &rr, &rx, &rb, &fr);
+        encode_modrm_rm(s, dst->reg, &src->mem, 0, 1, &rr, &rx, &rb, &fr);
         return;
     }
-    die("asm: movz src");
 }
 
 static void encode_movsx(Str *s, int src_width, const Operand *src, const Reg *dst) {
     if (dst->width != 64) die("asm: movs* expects 64-bit dst");
     int rex_r = (dst->reg >> 3) & 1;
-    emit_rex(s, 1, rex_r, 0, 0, 0);
+
+    int rex_x = 0;
+    int rex_b = 0;
+    int force = 0;
+    if (src->kind == OP_REG) {
+        rex_b = (src->reg.reg >> 3) & 1;
+        if (src_width == 8) force = src->reg.needs_rex_byte;
+    } else if (src->kind == OP_MEM) {
+        int base = src->mem.has_base ? src->mem.base : 5;
+        int index = src->mem.has_index ? src->mem.index : 4;
+        rex_x = (index >> 3) & 1;
+        rex_b = (base >> 3) & 1;
+    } else {
+        die("asm: movsx src");
+    }
+
+    emit_rex(s, 1, rex_r, rex_x, rex_b, force);
 
     if (src_width == 8) {
         bin_put_u8(s, 0x0F);
@@ -1072,30 +1185,30 @@ static void encode_movsx(Str *s, int src_width, const Operand *src, const Reg *d
         emit_modrm(s, 3, dst->reg & 7, src->reg.reg & 7);
         return;
     }
-    if (src->kind == OP_MEM) {
+    {
         int rr = 0, rx = 0, rb = 0, fr = 0;
-        encode_modrm_rm(s, dst->reg & 7, &src->mem, 1, 0, &rr, &rx, &rb, &fr);
+        encode_modrm_rm(s, dst->reg, &src->mem, 1, (src_width == 8), &rr, &rx, &rb, &fr);
         return;
     }
-    die("asm: movsx src");
 }
 
-static void encode_imul_imm(Str *s, long long imm, const Reg *dst) {
+static void encode_imul_imm(Str *s, long long imm, const Reg *src, const Reg *dst) {
     if (dst->width != 64) die("asm: imul imm expects 64-bit dst");
+    if (src->width != 64) die("asm: imul imm expects 64-bit src");
     int rex_r = (dst->reg >> 3) & 1;
-    int rex_b = rex_r;
+    int rex_b = (src->reg >> 3) & 1;
 
     if (imm >= -128 && imm <= 127) {
         emit_rex(s, 1, rex_r, 0, rex_b, 0);
         bin_put_u8(s, 0x6B);
-        emit_modrm(s, 3, dst->reg & 7, dst->reg & 7);
+        emit_modrm(s, 3, dst->reg & 7, src->reg & 7);
         bin_put_u8(s, (unsigned char)(imm & 0xff));
         return;
     }
 
     emit_rex(s, 1, rex_r, 0, rex_b, 0);
     bin_put_u8(s, 0x69);
-    emit_modrm(s, 3, dst->reg & 7, dst->reg & 7);
+    emit_modrm(s, 3, dst->reg & 7, src->reg & 7);
     emit_imm32(s, imm);
 }
 
@@ -1175,30 +1288,70 @@ static void parse_byte_directive(AsmState *st, const char *p, const char *end) {
     }
 }
 
-static void parse_operands_top(const char *p, const char *end, const char **out_a, const char **out_ae, const char **out_b, const char **out_be) {
-    *out_a = *out_ae = *out_b = *out_be = NULL;
+static void parse_align_directive(AsmState *st, const char *p, const char *end) {
+    if (!st->cur) die("asm: .align outside section");
+    p += mc_strlen(".align");
+    p = skip_ws(p, end);
+    long long a = 0;
+    if (!parse_int64(p, end, &a) || a <= 0) die("asm: bad .align");
+    uint64_t align = (uint64_t)a;
+    if (align > st->cur->sh_addralign) st->cur->sh_addralign = align;
+
+    uint64_t off = (uint64_t)st->cur->data.len;
+    uint64_t pad = (align - (off % align)) % align;
+    while (pad--) bin_put_u8(&st->cur->data, 0);
+}
+
+static void parse_zero_directive(AsmState *st, const char *p, const char *end) {
+    if (!st->cur) die("asm: .zero outside section");
+    p += mc_strlen(".zero");
+    p = skip_ws(p, end);
+    long long n = 0;
+    if (!parse_int64(p, end, &n) || n < 0) die("asm: bad .zero");
+    while (n--) bin_put_u8(&st->cur->data, 0);
+}
+
+static void parse_operands_top(const char *p, const char *end,
+                               const char **out_a, const char **out_ae,
+                               const char **out_b, const char **out_be,
+                               const char **out_c, const char **out_ce) {
+    *out_a = *out_ae = *out_b = *out_be = *out_c = *out_ce = NULL;
     p = skip_ws(p, end);
     if (p >= end) return;
 
+    const char *commas[2] = {0};
+    int ncommas = 0;
     int depth = 0;
-    const char *comma = NULL;
     for (const char *q = p; q < end; q++) {
-        if (*q == '(') depth++;
-        else if (*q == ')') depth--;
-        else if (*q == ',' && depth == 0) {
-            comma = q;
-            break;
+        char c = *q;
+        if (c == '(') {
+            depth++;
+        } else if (c == ')') {
+            if (depth > 0) depth--;
+        } else if (c == ',' && depth == 0) {
+            if (ncommas < 2) commas[ncommas++] = q;
         }
     }
-    if (!comma) {
+
+    if (ncommas == 0) {
         *out_a = p;
         *out_ae = end;
         return;
     }
+    if (ncommas == 1) {
+        *out_a = p;
+        *out_ae = commas[0];
+        *out_b = commas[0] + 1;
+        *out_be = end;
+        return;
+    }
+
     *out_a = p;
-    *out_ae = comma;
-    *out_b = comma + 1;
-    *out_be = end;
+    *out_ae = commas[0];
+    *out_b = commas[0] + 1;
+    *out_be = commas[1];
+    *out_c = commas[1] + 1;
+    *out_ce = end;
 }
 
 static void assemble_insn(AsmState *st, const char *p, const char *end) {
@@ -1238,8 +1391,10 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     mc_memcpy(mnem, m0, mn);
     mnem[mn] = 0;
 
-    const char *op_a = NULL, *op_ae = NULL, *op_b = NULL, *op_be = NULL;
-    parse_operands_top(p, end, &op_a, &op_ae, &op_b, &op_be);
+    const char *op_a = NULL, *op_ae = NULL;
+    const char *op_b = NULL, *op_be = NULL;
+    const char *op_c = NULL, *op_ce = NULL;
+    parse_operands_top(p, end, &op_a, &op_ae, &op_b, &op_be, &op_c, &op_ce);
 
     if (!mc_strcmp(mnem, "syscall")) {
         bin_put_u8(&st->cur->data, 0x0F);
@@ -1286,6 +1441,11 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             encode_push_pop(&st->cur->data, 0, &a.reg);
             return;
         }
+        if (!mc_strcmp(mnem, "inc") || !mc_strcmp(mnem, "dec")) {
+            if (a.kind != OP_REG) die("asm: inc/dec expects reg");
+            encode_incdec(&st->cur->data, mnem, &a.reg);
+            return;
+        }
         if (!mc_strcmp(mnem, "neg") || !mc_strcmp(mnem, "not")) {
             if (a.kind != OP_REG) die("asm: unop expects reg");
             encode_unop(&st->cur->data, mnem, &a.reg);
@@ -1329,23 +1489,73 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PLT32, -4);
             return;
         }
-        if (!mc_strcmp(mnem, "je") || !mc_strcmp(mnem, "jz") || !mc_strcmp(mnem, "jne")) {
-            if (a.kind != OP_SYM) die("asm: jcc expects label");
-            bin_put_u8(&st->cur->data, 0x0F);
-            bin_put_u8(&st->cur->data, (!mc_strcmp(mnem, "jne")) ? 0x85 : 0x84);
-            mc_usize disp_off = st->cur->data.len;
-            bin_put_u32_le(&st->cur->data, 0);
-            add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 1, (!mc_strcmp(mnem, "jne")) ? 1 : 0);
-            return;
+        {
+            // Common Jcc forms emitted by monacc_codegen.
+            // Encode the near rel32 form: 0F 8* disp32.
+            int jcc = -1;
+            if (!mc_strcmp(mnem, "je") || !mc_strcmp(mnem, "jz")) jcc = 0x84;
+            else if (!mc_strcmp(mnem, "jne") || !mc_strcmp(mnem, "jnz")) jcc = 0x85;
+            else if (!mc_strcmp(mnem, "jb")) jcc = 0x82;
+            else if (!mc_strcmp(mnem, "jae")) jcc = 0x83;
+            else if (!mc_strcmp(mnem, "jbe")) jcc = 0x86;
+            else if (!mc_strcmp(mnem, "ja")) jcc = 0x87;
+            else if (!mc_strcmp(mnem, "jl")) jcc = 0x8C;
+            else if (!mc_strcmp(mnem, "jge")) jcc = 0x8D;
+            else if (!mc_strcmp(mnem, "jle")) jcc = 0x8E;
+            else if (!mc_strcmp(mnem, "jg")) jcc = 0x8F;
+
+            if (jcc >= 0) {
+                if (a.kind != OP_SYM) die("asm: jcc expects label");
+                bin_put_u8(&st->cur->data, 0x0F);
+                bin_put_u8(&st->cur->data, (unsigned int)jcc);
+                mc_usize disp_off = st->cur->data.len;
+                bin_put_u32_le(&st->cur->data, 0);
+                add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 1, 0);
+                return;
+            }
         }
         die("asm: unsupported 1-op insn '%s'", mnem);
     }
 
     // Two-operand
+    if (op_c) {
+        Operand a = parse_operand(st, op_a, op_ae);
+        Operand b = parse_operand(st, op_b, op_be);
+        Operand c = parse_operand(st, op_c, op_ce);
+
+        if (!mc_strcmp(mnem, "imul")) {
+            if (a.kind == OP_IMM && b.kind == OP_REG && c.kind == OP_REG) {
+                encode_imul_imm(&st->cur->data, a.imm, &b.reg, &c.reg);
+                return;
+            }
+            die("asm: imul form");
+        }
+
+        die("asm: unsupported 3-operand insn");
+    }
+
     Operand a = parse_operand(st, op_a, op_ae);
     Operand b = parse_operand(st, op_b, op_be);
 
     if (!mc_strcmp(mnem, "mov")) {
+        // RIP-relative loads need relocation if symbolic.
+        if (a.kind == OP_MEM && b.kind == OP_REG && a.mem.riprel && a.mem.sym) {
+            encode_mov_rm_reg(&st->cur->data, &a, &b.reg);
+            // relocation is at the disp32 field (end-4)
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+            return;
+        }
+        // RIP-relative stores need relocation if symbolic.
+        if (a.kind == OP_REG && b.kind == OP_MEM && b.mem.riprel && b.mem.sym) {
+            encode_mov_reg_rm(&st->cur->data, &a.reg, &b);
+            // relocation is at the disp32 field (end-4)
+            mc_usize disp_off = st->cur->data.len - 4;
+            ObjSym *sym = get_or_add_sym(st, b.mem.sym, mc_strlen(b.mem.sym));
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)b.mem.disp - 4);
+            return;
+        }
         if (a.kind == OP_IMM && b.kind == OP_REG) {
             encode_mov_imm_reg(&st->cur->data, a.imm, &b.reg);
             return;
@@ -1369,7 +1579,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             // relocation is at the disp32 field (end-4)
             mc_usize disp_off = st->cur->data.len - 4;
             ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
-            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, -4);
+            sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
             return;
         }
         encode_lea(&st->cur->data, &a.mem, &b.reg);
@@ -1391,7 +1601,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 
     if (!mc_strcmp(mnem, "imul")) {
         if (a.kind == OP_IMM && b.kind == OP_REG) {
-            encode_imul_imm(&st->cur->data, a.imm, &b.reg);
+            encode_imul_imm(&st->cur->data, a.imm, &b.reg, &b.reg);
             return;
         }
         if (a.kind == OP_REG && b.kind == OP_REG) {
@@ -1402,11 +1612,18 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     }
 
     if (!mc_strcmp(mnem, "shl") || !mc_strcmp(mnem, "shr") || !mc_strcmp(mnem, "sar")) {
-        if (a.kind != OP_REG || b.kind != OP_REG) die("asm: shift form");
-        // only %cl is supported as the shift count
-        if (!(a.reg.reg == 1 && a.reg.width == 8)) die("asm: shift count must be cl");
-        encode_shift_cl(&st->cur->data, mnem, &b.reg);
-        return;
+        if (b.kind != OP_REG) die("asm: shift form");
+        if (a.kind == OP_REG) {
+            // only %cl is supported as the shift count
+            if (!(a.reg.reg == 1 && a.reg.width == 8)) die("asm: shift count must be cl");
+            encode_shift_cl(&st->cur->data, mnem, &b.reg);
+            return;
+        }
+        if (a.kind == OP_IMM) {
+            encode_shift_imm(&st->cur->data, mnem, a.imm, &b.reg);
+            return;
+        }
+        die("asm: shift form");
     }
 
     if (!mc_strcmp(mnem, "movzb")) {
@@ -1829,8 +2046,16 @@ void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *o
                 parse_globl_directive(&st, a, b);
                 continue;
             }
+            if (starts_with(a, b, ".align")) {
+                parse_align_directive(&st, a, b);
+                continue;
+            }
             if (starts_with(a, b, ".byte")) {
                 parse_byte_directive(&st, a, b);
+                continue;
+            }
+            if (starts_with(a, b, ".zero")) {
+                parse_zero_directive(&st, a, b);
                 continue;
             }
             const char *q = a;

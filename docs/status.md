@@ -221,7 +221,7 @@ All 70 tools compile and link successfully with monacc.
 ### Test Suite
 
 `make test` runs:
-1. **Example programs** (37 tests) — compiler correctness
+1. **Example programs** (39 tests) — compiler correctness
 2. **Tool smoke tests** — basic functionality
 3. **Tool integration tests** — realistic usage
 4. **Tool realworld tests** — recipe-style scenarios
@@ -230,11 +230,13 @@ All 70 tools compile and link successfully with monacc.
 
 | Suite | Status |
 |-------|--------|
-| Compiler examples | ✅ 37/37 pass |
+| Compiler examples | ✅ 39/39 pass |
 | Tool tests | ✅ All pass |
 | Self-hosting | ✅ monacc-self builds and runs simple examples |
 
-**Note:** The selfhosted compiler (`monacc-self`) has a known bug generating broken assembly for inline asm. See `plan.md` P0 priority issue.
+**Note:** The previously reported selfhosted inline-asm breakage is no longer reproducible on current `main`: `bin/monacc-self` can compile+run `examples/asm_syscall.c` and `examples/inline_asm.c`. The earlier failure was due to SELFHOST varargs handling (missing `va_list`), which is now fixed.
+
+**Note:** The `--emit-obj` test runs as part of `make test` by default and is treated like a normal test (it will fail `make test` if it fails). You can skip it with `SELFTEST_EMITOBJ=0 make test`.
 
 ---
 
@@ -246,8 +248,8 @@ All 70 tools compile and link successfully with monacc.
 | All 70 tools compile | ✅ |
 | Tools pass tests | ✅ |
 | Self-hosting works | ✅ (simple examples) |
-| Selfhost inline asm | ⚠️ Bug: empty registers |
-| Internal ELF emission | 🔄 ~50% examples work |
+| Selfhost inline asm | ✅ Works on current `main` |
+| Internal ELF emission | ✅ SELFTEST_EMITOBJ probe passes (still incomplete overall) |
 | No external assembler | 🔜 Planned |
 | No external linker | 🔜 Planned |
 

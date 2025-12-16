@@ -31,10 +31,12 @@ link_err="$out_dir/monacc-self.link.err"
 src=(
   compiler/monacc_front.c
   compiler/monacc_fmt.c
+  compiler/monacc_elfread.c
   compiler/monacc_str.c
   compiler/monacc_sys.c
   compiler/monacc_ast.c
   compiler/monacc_parse.c
+  compiler/monacc_link.c
   compiler/monacc_codegen.c
   compiler/monacc_pp.c
   compiler/monacc_elfobj.c

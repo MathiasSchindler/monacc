@@ -26,6 +26,8 @@ MULTI ?= 0
 # Note: the emit-obj probe is enabled by default and is treated as a normal test.
 SELFTEST ?= 0
 SELFTEST_EMITOBJ ?= 1
+SELFTEST_ELFREAD ?= 1
+SELFTEST_LINKINT ?= 1
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
 ifeq ($(DEBUG),1)
@@ -64,6 +66,8 @@ CORE_COMPILER_SRC := $(CORE_COMMON_SRC) $(CORE_HOSTED_SRC)
 COMPILER_SRC := \
 	compiler/monacc_front.c \
 	compiler/monacc_fmt.c \
+	compiler/monacc_elfread.c \
+	compiler/monacc_link.c \
 	compiler/monacc_elfobj.c \
 	compiler/monacc_sys.c \
 	compiler/monacc_ast.c \
@@ -187,6 +191,8 @@ test: all
 	@echo "==> Testing examples"
 	@mkdir -p build/test
 	@ok=0; fail=0; \
+	elfread_rc=0; \
+	linkint_rc=0; \
 	emitobj_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
@@ -205,6 +211,16 @@ test: all
 	SB_TEST_BIN="$$(pwd)/bin" sh tests/tools/run.sh; \
 	tool_rc=$$?; \
 	echo ""; \
+	if [ "$(SELFTEST_ELFREAD)" = "1" ]; then \
+		echo "==> Probe: ELF ET_REL reader"; \
+		bash tests/compiler/elfobj-dump.sh; elfread_rc=$$?; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_LINKINT)" = "1" ]; then \
+		echo "==> Probe: --link-internal"; \
+		bash tests/compiler/link-internal-smoke.sh; linkint_rc=$$?; \
+		echo ""; \
+	fi; \
 	if [ "$(SELFTEST)" = "1" ]; then \
 		echo "==> Selftest: host-built monacc -> monacc-self"; \
 		bash tests/compiler/selftest.sh; \
@@ -230,10 +246,10 @@ test: all
 		echo "Wrote build/matrix/report.html"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, emit-obj: exit $$emitobj_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

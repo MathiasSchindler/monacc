@@ -113,10 +113,10 @@ static void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
 #endif
     _exit(2);
 }
@@ -244,6 +244,8 @@ int main(int argc, char **argv) {
     int nin_paths = 0;
     const char *out_path = NULL;
     const char *dump_pp_path = NULL;
+    const char *dump_elfobj_path = NULL;
+    const char *dump_elfsec_path = NULL;
     const char *as_prog = "as";
     const char *ld_prog = "ld";
     char *as_prog_alloc = NULL;
@@ -251,6 +253,7 @@ int main(int argc, char **argv) {
     int compile_only = 0;
     int use_nmagic = 1;
     int emit_obj = 0;
+    int link_internal = 0;
     int keep_shdr = 0;
     PPConfig cfg;
     mc_memset(&cfg, 0, sizeof(cfg));
@@ -287,6 +290,16 @@ int main(int argc, char **argv) {
                 dump_pp_path = argv[++i];
                 continue;
             }
+            if (!mc_strcmp(argv[i], "--dump-elfobj")) {
+                if (i + 1 >= argc) usage(argv[0]);
+                dump_elfobj_path = argv[++i];
+                continue;
+            }
+            if (!mc_strcmp(argv[i], "--dump-elfsec")) {
+                if (i + 1 >= argc) usage(argv[0]);
+                dump_elfsec_path = argv[++i];
+                continue;
+            }
             if (!mc_strcmp(argv[i], "--no-nmagic")) {
                 use_nmagic = 0;
                 continue;
@@ -297,6 +310,10 @@ int main(int argc, char **argv) {
             }
             if (!mc_strcmp(argv[i], "--emit-obj")) {
                 emit_obj = 1;
+                continue;
+            }
+            if (!mc_strcmp(argv[i], "--link-internal")) {
+                link_internal = 1;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--toolchain")) {
@@ -334,6 +351,16 @@ int main(int argc, char **argv) {
             if (!in_paths) die("oom");
             in_paths[nin_paths++] = argv[i];
         }
+    }
+
+    if (dump_elfobj_path) {
+        elfobj_dump(dump_elfobj_path);
+        return 0;
+    }
+
+    if (dump_elfsec_path) {
+        elfsec_dump(dump_elfsec_path);
+        return 0;
     }
 
     if (nin_paths < 1 || !out_path) usage(argv[0]);
@@ -393,49 +420,53 @@ int main(int argc, char **argv) {
     // Link all objects.
     // Size-oriented defaults: we emit per-function/per-string sections and link with --gc-sections.
     {
-        int base = 0;
-        // Allocate with slack to keep this robust as flags change.
-        int argc_ld = nin_paths + 32;
-        char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
-        if (!ld_argv) die("oom");
-        ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
-        ld_argv[base++] = "-nostdlib";
-        ld_argv[base++] = "-static";
-        ld_argv[base++] = "-s";
-        ld_argv[base++] = "--gc-sections";
-        ld_argv[base++] = "--build-id=none";
-        // Reduce file-size padding by avoiding page alignment between segments (nmagic).
-        // This is slightly less conventional; can be disabled with --no-nmagic.
-        if (use_nmagic) {
-            ld_argv[base++] = "-n";
-        }
-        ld_argv[base++] = "-z";
-        ld_argv[base++] = "noseparate-code";
-        // Use 4K page sizes to reduce alignment padding in the output file.
-        ld_argv[base++] = "-z";
-        ld_argv[base++] = "max-page-size=0x1000";
-        ld_argv[base++] = "-z";
-        ld_argv[base++] = "common-page-size=0x1000";
-        ld_argv[base++] = "-e";
-        ld_argv[base++] = "_start";
+        if (link_internal) {
+            link_internal_exec_objs((const char **)obj_paths, nin_paths, out_path, keep_shdr);
+        } else {
+            int base = 0;
+            // Allocate with slack to keep this robust as flags change.
+            int argc_ld = nin_paths + 32;
+            char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
+            if (!ld_argv) die("oom");
+            ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+            ld_argv[base++] = "-nostdlib";
+            ld_argv[base++] = "-static";
+            ld_argv[base++] = "-s";
+            ld_argv[base++] = "--gc-sections";
+            ld_argv[base++] = "--build-id=none";
+            // Reduce file-size padding by avoiding page alignment between segments (nmagic).
+            // This is slightly less conventional; can be disabled with --no-nmagic.
+            if (use_nmagic) {
+                ld_argv[base++] = "-n";
+            }
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "noseparate-code";
+            // Use 4K page sizes to reduce alignment padding in the output file.
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "max-page-size=0x1000";
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "common-page-size=0x1000";
+            ld_argv[base++] = "-e";
+            ld_argv[base++] = "_start";
 
-        // Prefer the repo's minimal linker script when available: it keeps a single
-        // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
-        // This also makes small initialized data (e.g. static-local string init) affordable.
-        if (xpath_exists("scripts/minimal.ld")) {
-            ld_argv[base++] = "-T";
-            ld_argv[base++] = "scripts/minimal.ld";
-        }
+            // Prefer the repo's minimal linker script when available: it keeps a single
+            // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
+            // This also makes small initialized data (e.g. static-local string init) affordable.
+            if (xpath_exists("scripts/minimal.ld")) {
+                ld_argv[base++] = "-T";
+                ld_argv[base++] = "scripts/minimal.ld";
+            }
 
-        for (int i = 0; i < nin_paths; i++) {
-            ld_argv[base++] = obj_paths[i];
+            for (int i = 0; i < nin_paths; i++) {
+                ld_argv[base++] = obj_paths[i];
+            }
+            ld_argv[base++] = "-o";
+            ld_argv[base++] = (char *)out_path;
+            ld_argv[base] = NULL;
+            int rc = run_cmd(ld_argv);
+            monacc_free(ld_argv);
+            if (rc != 0) die_i64("ld failed (", rc, ")");
         }
-        ld_argv[base++] = "-o";
-        ld_argv[base++] = (char *)out_path;
-        ld_argv[base] = NULL;
-        int rc = run_cmd(ld_argv);
-        monacc_free(ld_argv);
-        if (rc != 0) die_i64("ld failed (", rc, ")");
     }
 
     if (!keep_shdr) {

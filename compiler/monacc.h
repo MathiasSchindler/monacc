@@ -15,6 +15,16 @@ void *monacc_calloc(mc_usize nmemb, mc_usize size);
 void *monacc_realloc(void *ptr, mc_usize size);
 void monacc_free(void *ptr);
 
+// ELF utilities (bring-up for internal linker)
+void elfobj_dump(const char *path);
+void elfsec_dump(const char *path);
+
+// Minimal internal linker (Step 2): link a single .o into an ET_EXEC without relocations.
+void link_internal_exec_single_obj(const char *obj_path, const char *out_path);
+
+// Step 4: link multiple objects into a single executable.
+void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr);
+
 // ===== Shared core types =====
 
 typedef struct {

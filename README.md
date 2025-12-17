@@ -9,7 +9,7 @@ monacc is a small C compiler that can compile itself and a full suite of Unix co
 This project combines two pieces:
 
 1. **monacc** — A C compiler targeting Linux x86_64 (SysV ABI)
-2. **A userland toolkit** — 70 Unix utilities (`cat`, `ls`, `grep`, `sh`, `awk`, etc.)
+2. **A userland toolkit** — 85 syscall-only command-line tools (`cat`, `ls`, `grep`, `sh`, `awk`, plus crypto + net tools)
 
 The compiler compiles the tools. The tools provide the environment needed to build and test the compiler. It's a closed loop.
 
@@ -26,7 +26,7 @@ The compiler compiles the tools. The tools provide the environment needed to bui
 monacc-unified/
 ├── compiler/       # C compiler implementation
 ├── core/           # Shared core library (mc_*) used by compiler + tools
-├── tools/          # 70 Unix command-line utilities
+├── tools/          # 85 syscall-only command-line tools
 ├── examples/       # Compiler test programs
 ├── tests/          # Unified test suite
 ├── scripts/        # Build helpers
@@ -61,7 +61,7 @@ After `make`, the `bin/` directory contains:
 | `grep`, `sed`, `awk`, ... | Text processing |
 | `sh` | A minimal POSIX-ish shell |
 | `find`, `xargs`, `test`, ... | Scripting utilities |
-| ... | 70 tools total |
+| ... | 85 tools total |
 
 ## Bootstrapping Sequence
 
@@ -99,7 +99,7 @@ monacc implements a subset of C sufficient for systems programming:
 
 ## Userland Tools
 
-70 utilities covering common Unix operations:
+85 syscall-only utilities covering common Unix operations (plus a small set of crypto + network tools):
 
 | Category | Tools |
 |----------|-------|
@@ -137,7 +137,7 @@ All tools:
 | Milestone | Status |
 |-----------|--------|
 | Compiler builds | ✅ |
-| All 70 tools compile with monacc | ✅ |
+| All tools compile with monacc | ✅ |
 | Tools pass test suite | ✅ |
 | Compiler self-hosts (compiles itself) | ✅ |
 | Self-hosted compiler runs examples | ✅ |

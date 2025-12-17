@@ -10,7 +10,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Build
 
-- `make` produces a size-optimized stripped binary (~125 KB) + all 70 tools
+- `make` produces a size-optimized stripped binary (~125 KB) + all tools (currently 85)
 - `make test` runs the full test suite (39 examples + tool tests)
 - `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
@@ -106,7 +106,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ## Part 2: Tool Status
 
-All 70 tools compile and link successfully with monacc.
+All tools compile and link successfully with monacc (currently 85).
 
 ### Tool Feature Matrix
 
@@ -248,7 +248,7 @@ All 70 tools compile and link successfully with monacc.
 | Milestone | Status |
 |-----------|--------|
 | Compiler builds | ✅ |
-| All 70 tools compile | ✅ |
+| All tools compile (currently 85) | ✅ |
 | Tools pass tests | ✅ |
 | Self-hosting works | ✅ (simple examples) |
 | Selfhost inline asm | ✅ Works on current `main` |

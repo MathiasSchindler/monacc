@@ -9,7 +9,7 @@ This document captures the goals, constraints, and design decisions for monacc: 
 monacc is two things in one:
 
 1. **A C compiler** — small, fast, self-hosting
-2. **A userland toolkit** — 70 Unix utilities built with that compiler
+2. **A userland toolkit** — 85 syscall-only command-line tools built with that compiler
 
 Both components share a common design philosophy: syscall-only, minimal dependencies, Linux x86_64 only.
 

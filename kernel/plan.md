@@ -4,7 +4,7 @@ A minimal kernel for Linux x86_64 syscall-compatible userland, designed to run m
 
 ## Goals
 
-1. **Run monacc userland** — Execute the existing 70 tools without modification
+1. **Run monacc userland** — Execute the existing tool suite (currently 85 tools) without modification
 2. **Minimal footprint** — Target <100KB kernel binary
 3. **Self-hosted** — Compile kernel C code with monacc ✓ (achieved as of Phase 2!)
 4. **QEMU-first** — No real hardware support required
@@ -522,7 +522,7 @@ kernel/
 | 5 | execve | ~2000 | `init` → `sh` transition |
 | 6 | fork/wait | ~2500 | `sh` running commands |
 | 7 | pipes | ~2800 | Pipelines work |
-| 8 | Full syscalls | ~3500 | All 70 tools |
+| 8 | Full syscalls | ~3500 | All tools (currently 85) |
 | 9 | Self-host | - | Compile kernel with monacc |
 
 ---

@@ -1,4 +1,5 @@
 #include "monacc.h"
+#include "monacc_sys.h"
 
 // Step 2 (docs/ldremoval.md): Minimal internal link of a single ELF64 ET_REL object
 // into a runnable ELF64 ET_EXEC, without applying relocations.
@@ -683,8 +684,58 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
 
                 if (rtype == R_X86_64_PC32 || rtype == R_X86_64_PLT32) {
                     mc_i64 disp = (mc_i64)((mc_i64)S + (mc_i64)rels[i].r_addend - (mc_i64)P);
-                    if (disp < (mc_i64)-2147483648ll || disp > (mc_i64)2147483647ll) {
+                    mc_i64 pc32_min = -((mc_i64)1 << 31);
+                    mc_i64 pc32_max = (((mc_i64)1 << 31) - 1);
+                    if (disp < pc32_min || disp > pc32_max) {
+                        const char *tgt_nm = "";
+                        if (tsh->sh_name < (mc_u32)in->shstr_sz) tgt_nm = in->shstrtab + tsh->sh_name;
+
+#ifdef SELFHOST
+                        char nbuf[64];
+                        xwrite_best_effort(2, "link-internal: PC32 relocation overflow: obj=", 45);
+                        xwrite_best_effort(2, in->path ? in->path : "<obj>", mc_strlen(in->path ? in->path : "<obj>"));
+                        xwrite_best_effort(2, " sec=", 5);
+                        xwrite_best_effort(2, (tgt_nm && *tgt_nm) ? tgt_nm : "<sec>", mc_strlen((tgt_nm && *tgt_nm) ? tgt_nm : "<sec>"));
+                        xwrite_best_effort(2, " off=", 5);
+                        {
+                            int nn = mc_snprint_cstr_u64_cstr(nbuf, sizeof(nbuf), "", (mc_u64)rels[i].r_offset, "");
+                            if (nn > 0) xwrite_best_effort(2, nbuf, (mc_usize)nn);
+                        }
+                        xwrite_best_effort(2, " sym=", 5);
+                        xwrite_best_effort(2, (nm && *nm) ? nm : "<sym>", mc_strlen((nm && *nm) ? nm : "<sym>"));
+                        xwrite_best_effort(2, " S=", 3);
+                        {
+                            int nn = mc_snprint_cstr_u64_cstr(nbuf, sizeof(nbuf), "", (mc_u64)S, "");
+                            if (nn > 0) xwrite_best_effort(2, nbuf, (mc_usize)nn);
+                        }
+                        xwrite_best_effort(2, " P=", 3);
+                        {
+                            int nn = mc_snprint_cstr_u64_cstr(nbuf, sizeof(nbuf), "", (mc_u64)P, "");
+                            if (nn > 0) xwrite_best_effort(2, nbuf, (mc_usize)nn);
+                        }
+                        xwrite_best_effort(2, " add=", 5);
+                        {
+                            int nn = mc_snprint_cstr_i64_cstr(nbuf, sizeof(nbuf), "", (mc_i64)rels[i].r_addend, "");
+                            if (nn > 0) xwrite_best_effort(2, nbuf, (mc_usize)nn);
+                        }
+                        xwrite_best_effort(2, " disp=", 6);
+                        {
+                            int nn = mc_snprint_cstr_i64_cstr(nbuf, sizeof(nbuf), "", (mc_i64)disp, "");
+                            if (nn > 0) xwrite_best_effort(2, nbuf, (mc_usize)nn);
+                        }
+                        xwrite_best_effort(2, "\n", 1);
                         die("link-internal: PC32 relocation overflow");
+#else
+                        die("link-internal: PC32 relocation overflow: obj=%s sec=%s off=0x%llx sym=%s S=0x%llx P=0x%llx add=%lld disp=%lld",
+                            in->path ? in->path : "<obj>",
+                            (tgt_nm && *tgt_nm) ? tgt_nm : "<sec>",
+                            (unsigned long long)rels[i].r_offset,
+                            (nm && *nm) ? nm : "<sym>",
+                            (unsigned long long)S,
+                            (unsigned long long)P,
+                            (long long)rels[i].r_addend,
+                            (long long)disp);
+#endif
                     }
                     put_u32_le(out + (mc_usize)out_off, (mc_u32)(mc_i32)disp);
                 } else {

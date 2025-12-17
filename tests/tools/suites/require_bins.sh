@@ -81,5 +81,9 @@ require_bin hexdump
 require_bin sha256
 require_bin hkdf
 require_bin aes128
+require_bin gcm128
+require_bin x25519
+require_bin tlsrec
+require_bin tls13kdf
 
 exit 0

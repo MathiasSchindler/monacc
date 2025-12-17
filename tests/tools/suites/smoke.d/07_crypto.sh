@@ -47,4 +47,35 @@ OUT=$("$BIN/aes128" --fips197)
 EXP="69c4e0d86a7b0430d8cdb78070b4c55a"
 assert_eq "aes128 fips197" "$EXP" "$OUT"
 
+# --- gcm128: NIST SP 800-38D test case 3 (no AAD) ---
+OUT=$("$BIN/gcm128" --nist-sp800-38d-tc3)
+EXP=$(printf '%s\n%s' \
+  "ct 42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985" \
+  "tag 4d5c2af327cd64a62cf35abd2ba6fab4")
+assert_eq "gcm128 nist sp800-38d tc3" "$EXP" "$OUT"
+
+# --- x25519: RFC 7748 test vector ---
+OUT=$("$BIN/x25519" --rfc7748-1)
+EXP="shared 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+assert_eq "x25519 rfc7748" "$EXP" "$OUT"
+
+# --- tlsrec: TLS 1.3 record layer smoke ---
+OUT=$("$BIN/tlsrec" --smoke)
+EXP="1703030016ed7598c33eea12a40329c24d134846df5a506994539d"
+assert_eq "tlsrec record smoke" "$EXP" "$OUT"
+
+# --- tls13kdf: TLS 1.3 key schedule (RFC 8448 sample) ---
+OUT=$("$BIN/tls13kdf" --rfc8448-1rtt)
+EXP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+  "early 33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a" \
+  "derived 6f2615a108c702c5678f54fc9dbab69716c076189c48250cebeac3576c3611ba" \
+  "handshake 1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac" \
+  "c_hs b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21" \
+  "s_hs b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38" \
+  "c_key dbfaa693d1762c5b666af5d950258d01" \
+  "c_iv 5bd3c71b836e0b76bb73265f" \
+  "s_key 3fce516009c21727d0f2e4e86ee403bc" \
+  "s_iv 5d313eb2671276ee13000b30")
+assert_eq "tls13kdf rfc8448 1rtt" "$EXP" "$OUT"
+
 exit 0

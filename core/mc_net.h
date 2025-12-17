@@ -26,6 +26,9 @@
 #define MC_SOL_SOCKET 1
 #define MC_IPPROTO_IPV6 41
 
+// SOL_SOCKET options (subset)
+#define MC_SO_REUSEADDR 2
+
 // IPv6 socket options (subset)
 #define MC_IPV6_UNICAST_HOPS 16
 
@@ -35,6 +38,11 @@
 
 // open(2) flags reused by fcntl(F_SETFL)
 #define MC_O_NONBLOCK 00004000
+
+// shutdown(2)
+#define MC_SHUT_RD 0
+#define MC_SHUT_WR 1
+#define MC_SHUT_RDWR 2
 
 // poll(2)
 struct mc_pollfd {

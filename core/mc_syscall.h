@@ -5,6 +5,7 @@
 #define MC_SYS_nanosleep 35
 #define MC_SYS_read 0
 #define MC_SYS_write 1
+#define MC_SYS_ioctl 16
 #define MC_SYS_fstat 5
 #define MC_SYS_lseek 8
 #define MC_SYS_mmap 9
@@ -47,7 +48,9 @@
 #define MC_SYS_accept 43
 #define MC_SYS_sendto 44
 #define MC_SYS_recvfrom 45
+#define MC_SYS_shutdown 48
 #define MC_SYS_bind 49
+#define MC_SYS_listen 50
 #define MC_SYS_getsockname 51
 #define MC_SYS_setsockopt 54
 #define MC_SYS_getsockopt 55
@@ -261,6 +264,10 @@ static inline mc_i64 mc_sys_write(mc_i32 fd, const void *buf, mc_usize len) {
 	return mc_syscall3(MC_SYS_write, (mc_i64)fd, (mc_i64)buf, (mc_i64)len);
 }
 
+static inline mc_i64 mc_sys_ioctl(mc_i32 fd, mc_u64 req, void *arg) {
+	return mc_syscall3(MC_SYS_ioctl, (mc_i64)fd, (mc_i64)req, (mc_i64)arg);
+}
+
 static inline mc_i64 mc_sys_getuid(void) {
 	return mc_syscall0(MC_SYS_getuid);
 }
@@ -425,6 +432,18 @@ static inline mc_i64 mc_sys_connect(mc_i32 sockfd, const void *addr, mc_u32 addr
 
 static inline mc_i64 mc_sys_bind(mc_i32 sockfd, const void *addr, mc_u32 addrlen) {
 	return mc_syscall3(MC_SYS_bind, (mc_i64)sockfd, (mc_i64)addr, (mc_i64)addrlen);
+}
+
+static inline mc_i64 mc_sys_listen(mc_i32 sockfd, mc_i32 backlog) {
+	return mc_syscall2(MC_SYS_listen, (mc_i64)sockfd, (mc_i64)backlog);
+}
+
+static inline mc_i64 mc_sys_accept(mc_i32 sockfd, void *addr, mc_u32 *addrlen_inout) {
+	return mc_syscall3(MC_SYS_accept, (mc_i64)sockfd, (mc_i64)addr, (mc_i64)addrlen_inout);
+}
+
+static inline mc_i64 mc_sys_shutdown(mc_i32 sockfd, mc_i32 how) {
+	return mc_syscall2(MC_SYS_shutdown, (mc_i64)sockfd, (mc_i64)how);
 }
 
 static inline mc_i64 mc_sys_getsockname(mc_i32 sockfd, void *addr, mc_u32 *addrlen_inout) {

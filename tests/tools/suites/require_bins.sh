@@ -84,5 +84,6 @@ require_bin aes128
 require_bin gcm128
 require_bin x25519
 require_bin tls13
+require_bin wtf
 
 exit 0

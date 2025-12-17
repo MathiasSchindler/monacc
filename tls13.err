@@ -1,0 +1,15 @@
+hs_type 8 hs_len 6
+hs_type 11 hs_len 2763
+hs_type 15 hs_len 75
+hs_type 20 hs_len 32
+sent_client_finished 1
+selected_ap_keys master=0 th=0 seq_mode=0
+post_hs_type 4 post_hs_len 229
+sent_http_request 1
+post_hs_type 4 post_hs_len 229
+got_encrypted_alert 1
+server_version 0x304
+cipher_suite 0x1301
+key_share_group 0x1d
+server_key_share 071fc275d4dab17538410e331921cbdddc08c365e458769f026d61a73c069f48
+chsh_hash aaaedd9fc7bd740ef1d8894ad3eb0bf81dc3fee0bcb93ff0174645d47571ceff

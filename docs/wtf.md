@@ -197,9 +197,9 @@ https://{lang}.wikipedia.org/w/api.php?action=opensearch&search={query}&limit=1&
 
 ### HTTPS Challenge
 
-Wikipedia enforces HTTPS. In practice, Wikipedia currently redirects plain HTTP to HTTPS (e.g. `http://en.wikipedia.org/w/api.php?...` → `301` with `Location: https://...`).
+Wikipedia enforces HTTPS. In practice, Wikipedia redirects plain HTTP to HTTPS (e.g. `http://en.wikipedia.org/w/api.php?...` → `301` with `Location: https://...`).
 
-**Implication:** A syscall-only HTTP client (like `wget6`) cannot fetch Wikipedia API responses reliably until monacc gains TLS client support.
+**Status:** monacc now has a working TLS 1.3 client (see `docs/tls.md` and the `tls13 hs` tooling). `wtf` can therefore use HTTPS directly.
 
 Options:
 
@@ -209,7 +209,7 @@ Options:
 | **B. Follow HTTP redirect** | Small change if redirect stays same-host | Still requires HTTPS after redirect → TLS needed anyway |
 | **C. Use HTTP API** | Simplest client-side | Not viable if endpoints redirect to HTTPS |
 
-**Recommended approach:** Implement Option A (TLS 1.3 client) first, then build `wtf` on top of HTTPS.
+**Recommended approach:** Use the TLS 1.3 client and build `wtf` on top of HTTPS.
 
 `wtf` can still be developed incrementally without TLS by:
 - implementing parsing/formatting logic against recorded JSON responses (fixtures), and
@@ -229,7 +229,7 @@ Following monacc's networking philosophy (see `wget6.c`, `dns6.c`):
 
 ### Prerequisite: HTTPS Support
 
-`wtf` depends on HTTPS access to Wikipedia endpoints. Implement TLS first (see `docs/tls.md`), then build `wtf` on top of a shared `mc_tls` API that can back `wget6` and future tools.
+`wtf` depends on HTTPS access to Wikipedia endpoints. The TLS 1.3 client is implemented (see `docs/tls.md`), so `wtf` can connect to `:443` and fetch the Wikipedia REST API responses.
 
 ### Phase 0: Preparation
 
@@ -439,7 +439,7 @@ static int wiki_get_summary(const char *argv0, const char *lang,
     // 4. HTTP GET
     char response[32768];
     int status = 0;
-    if (!http_get(argv0, host, ip6, 80, path, response, 
+    if (!http_get(argv0, host, ip6, 443, path, response, 
                   sizeof(response), &status)) {
         return -1;
     }

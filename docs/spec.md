@@ -1,6 +1,6 @@
 # monacc specification
 
-Date: 2025-12-16
+Date: 2025-12-17
 
 This document captures the goals, constraints, and design decisions for monacc: a self-hosting C compiler for Linux x86_64 with an integrated syscall-only userland.
 
@@ -164,6 +164,14 @@ This is explicitly **not** trying to be POSIX-complete or portable.
 
 ## Part 3: Shared Principles
 
+### Development Principles
+
+These principles guide day-to-day changes across compiler + tools:
+
+1. **Test-driven changes**: every change must pass `make test`.
+2. **Priority order: Run → Small → Fast**: correctness first, then size, then performance.
+3. **Self-contained ecosystem**: prefer solutions that reduce external toolchain assumptions.
+
 ### Security Model
 
 - Not intended to be setuid/setgid
@@ -196,7 +204,7 @@ Because both the compiler and the tools are in-tree, we can choose between:
 Policy:
 - Prefer shared `mc_*` APIs
 - Keep tools and compiler buildable with gcc/clang as the reference
-- No `#ifdef MONACC` blocks remain in tools (as of 2025-12-16)
+- No `#ifdef MONACC` blocks remain in tools (as of 2025-12-17)
 
 ---
 

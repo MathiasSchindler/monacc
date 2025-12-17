@@ -42,6 +42,18 @@
 #define MC_SYS_statfs 137
 #define MC_SYS_rt_sigaction 13
 #define MC_SYS_utimensat 280
+#define MC_SYS_socket 41
+#define MC_SYS_connect 42
+#define MC_SYS_accept 43
+#define MC_SYS_sendto 44
+#define MC_SYS_recvfrom 45
+#define MC_SYS_bind 49
+#define MC_SYS_getsockname 51
+#define MC_SYS_setsockopt 54
+#define MC_SYS_getsockopt 55
+#define MC_SYS_poll 7
+#define MC_SYS_fcntl 72
+#define MC_SYS_getrandom 318
 #define MC_SYS_exit 60
 #define MC_SYS_exit_group 231
 
@@ -77,13 +89,21 @@
 // Minimal errno values (Linux)
 #define MC_ENOENT 2
 #define MC_EPERM 1
+#define MC_EAGAIN 11
 #define MC_EINTR 4
 #define MC_EEXIST 17
+#define MC_EINPROGRESS 115
 #define MC_EPIPE 32
 #define MC_EXDEV 18
+#define MC_EADDRNOTAVAIL 99
 #define MC_ENOTDIR 20
 #define MC_EISDIR 21
 #define MC_EINVAL 22
+#define MC_ENETUNREACH 101
+#define MC_EHOSTUNREACH 113
+#define MC_ECONNREFUSED 111
+#define MC_ETIMEDOUT 110
+#define MC_EISCONN 106
 #define MC_ESPIPE 29
 #define MC_ELOOP 40
 #define MC_ENOTEMPTY 39
@@ -392,4 +412,52 @@ static inline mc_i64 mc_sys_fork(void) {
 
 static inline mc_i64 mc_sys_wait4(mc_i32 pid, mc_i32 *wstatus, mc_i32 options, void *rusage) {
 	return mc_syscall4(MC_SYS_wait4, (mc_i64)pid, (mc_i64)wstatus, (mc_i64)options, (mc_i64)rusage);
+}
+
+// Networking / polling
+static inline mc_i64 mc_sys_socket(mc_i32 domain, mc_i32 type, mc_i32 protocol) {
+	return mc_syscall3(MC_SYS_socket, (mc_i64)domain, (mc_i64)type, (mc_i64)protocol);
+}
+
+static inline mc_i64 mc_sys_connect(mc_i32 sockfd, const void *addr, mc_u32 addrlen) {
+	return mc_syscall3(MC_SYS_connect, (mc_i64)sockfd, (mc_i64)addr, (mc_i64)addrlen);
+}
+
+static inline mc_i64 mc_sys_bind(mc_i32 sockfd, const void *addr, mc_u32 addrlen) {
+	return mc_syscall3(MC_SYS_bind, (mc_i64)sockfd, (mc_i64)addr, (mc_i64)addrlen);
+}
+
+static inline mc_i64 mc_sys_getsockname(mc_i32 sockfd, void *addr, mc_u32 *addrlen_inout) {
+	return mc_syscall3(MC_SYS_getsockname, (mc_i64)sockfd, (mc_i64)addr, (mc_i64)addrlen_inout);
+}
+
+static inline mc_i64 mc_sys_sendto(mc_i32 sockfd, const void *buf, mc_usize len, mc_i32 flags, const void *dest_addr,
+	mc_u32 addrlen) {
+	return mc_syscall6(MC_SYS_sendto, (mc_i64)sockfd, (mc_i64)buf, (mc_i64)len, (mc_i64)flags, (mc_i64)dest_addr,
+		(mc_i64)addrlen);
+}
+
+static inline mc_i64 mc_sys_recvfrom(mc_i32 sockfd, void *buf, mc_usize len, mc_i32 flags, void *src_addr, mc_u32 *addrlen_inout) {
+	return mc_syscall6(MC_SYS_recvfrom, (mc_i64)sockfd, (mc_i64)buf, (mc_i64)len, (mc_i64)flags, (mc_i64)src_addr,
+		(mc_i64)addrlen_inout);
+}
+
+static inline mc_i64 mc_sys_setsockopt(mc_i32 sockfd, mc_i32 level, mc_i32 optname, const void *optval, mc_u32 optlen) {
+	return mc_syscall5(MC_SYS_setsockopt, (mc_i64)sockfd, (mc_i64)level, (mc_i64)optname, (mc_i64)optval, (mc_i64)optlen);
+}
+
+static inline mc_i64 mc_sys_getsockopt(mc_i32 sockfd, mc_i32 level, mc_i32 optname, void *optval, mc_u32 *optlen_inout) {
+	return mc_syscall5(MC_SYS_getsockopt, (mc_i64)sockfd, (mc_i64)level, (mc_i64)optname, (mc_i64)optval, (mc_i64)optlen_inout);
+}
+
+static inline mc_i64 mc_sys_poll(void *fds, mc_u64 nfds, mc_i32 timeout_ms) {
+	return mc_syscall3(MC_SYS_poll, (mc_i64)fds, (mc_i64)nfds, (mc_i64)timeout_ms);
+}
+
+static inline mc_i64 mc_sys_fcntl(mc_i32 fd, mc_i32 cmd, mc_i64 arg) {
+	return mc_syscall3(MC_SYS_fcntl, (mc_i64)fd, (mc_i64)cmd, (mc_i64)arg);
+}
+
+static inline mc_i64 mc_sys_getrandom(void *buf, mc_usize buflen, mc_u32 flags) {
+	return mc_syscall3(MC_SYS_getrandom, (mc_i64)buf, (mc_i64)buflen, (mc_i64)flags);
 }

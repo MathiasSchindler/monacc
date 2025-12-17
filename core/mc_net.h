@@ -28,6 +28,7 @@
 
 // SOL_SOCKET options (subset)
 #define MC_SO_REUSEADDR 2
+#define MC_SO_ERROR 4
 
 // IPv6 socket options (subset)
 #define MC_IPV6_UNICAST_HOPS 16

@@ -33,6 +33,21 @@ All TLS implementation work follows monacc's core philosophy:
 
 ---
 
+## Tooling (Current)
+
+TLS bring-up uses small standalone tools for deterministic regression (pinned vectors) and for live network testing.
+
+- `sha256`, `hkdf`, `aes128`, `gcm128`, `x25519`: primitive-level smoke tools.
+- `tls13`: consolidated TLS 1.3 tool with subcommands:
+  - `tls13 rec --smoke` — record-layer encrypt/decrypt smoke (stable hex output)
+  - `tls13 kdf --rfc8448-1rtt` — RFC 8448 key schedule intermediate values
+  - `tls13 hello --rfc8448-1rtt` — RFC 8448 ClientHello/ServerHello + transcript hash
+  - `tls13 hs [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT` — live TLS 1.3 handshake and HTTPS GET (prints decrypted response)
+
+The deterministic subcommands (`rec`, `kdf`, `hello`) are exercised by the tools smoke suite.
+
+---
+
 ## Target: Wikipedia's TLS Configuration
 
 Based on Qualys SSL Labs analysis of `en.wikipedia.org`:

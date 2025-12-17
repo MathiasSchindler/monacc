@@ -59,13 +59,13 @@ OUT=$("$BIN/x25519" --rfc7748-1)
 EXP="shared 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
 assert_eq "x25519 rfc7748" "$EXP" "$OUT"
 
-# --- tlsrec: TLS 1.3 record layer smoke ---
-OUT=$("$BIN/tlsrec" --smoke)
+# --- tls13 rec: TLS 1.3 record layer smoke ---
+OUT=$("$BIN/tls13" rec --smoke)
 EXP="1703030016ed7598c33eea12a40329c24d134846df5a506994539d"
 assert_eq "tlsrec record smoke" "$EXP" "$OUT"
 
-# --- tls13kdf: TLS 1.3 key schedule (RFC 8448 sample) ---
-OUT=$("$BIN/tls13kdf" --rfc8448-1rtt)
+# --- tls13 kdf: TLS 1.3 key schedule (RFC 8448 sample) ---
+OUT=$("$BIN/tls13" kdf --rfc8448-1rtt)
 EXP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   "early 33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a" \
   "derived 6f2615a108c702c5678f54fc9dbab69716c076189c48250cebeac3576c3611ba" \
@@ -78,8 +78,8 @@ EXP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   "s_iv 5d313eb2671276ee13000b30")
 assert_eq "tls13kdf rfc8448 1rtt" "$EXP" "$OUT"
 
-# --- tls13hello: TLS 1.3 ClientHello/ServerHello + transcript hash (RFC 8448) ---
-OUT=$("$BIN/tls13hello" --rfc8448-1rtt)
+# --- tls13 hello: TLS 1.3 ClientHello/ServerHello + transcript hash (RFC 8448) ---
+OUT=$("$BIN/tls13" hello --rfc8448-1rtt)
 EXP="chsh_hash 860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8"
 assert_eq "tls13hello rfc8448 ch+sh transcript" "$EXP" "$OUT"
 

@@ -83,8 +83,6 @@ require_bin hkdf
 require_bin aes128
 require_bin gcm128
 require_bin x25519
-require_bin tlsrec
-require_bin tls13kdf
-require_bin tls13hello
+require_bin tls13
 
 exit 0

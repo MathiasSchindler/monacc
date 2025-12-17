@@ -110,7 +110,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 			i++;
 			if (i >= argc) tcp6_usage(argv0);
 			mc_u32 v = 0;
-			if (!mc_parse_u32_dec(argv[i], &v)) tcp6_usage(argv0);
+			if (mc_parse_u32_dec(argv[i], &v) != 0) tcp6_usage(argv0);
 			timeout_ms = (mc_i32)v;
 			continue;
 		}
@@ -125,7 +125,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	const char *port_s = argv[i + 1];
 
 	mc_u32 port_u32 = 0;
-	if (!mc_parse_u32_dec(port_s, &port_u32) || port_u32 == 0 || port_u32 > 65535u) {
+	if (mc_parse_u32_dec(port_s, &port_u32) != 0 || port_u32 == 0 || port_u32 > 65535u) {
 		tcp6_usage(argv0);
 	}
 

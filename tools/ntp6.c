@@ -5,20 +5,12 @@ static mc_u16 mc_bswap16(mc_u16 x) {
 	return (mc_u16)((mc_u16)(x << 8) | (mc_u16)(x >> 8));
 }
 
-static mc_u32 mc_bswap32(mc_u32 x) {
-	return ((x & 0x000000FFu) << 24) | ((x & 0x0000FF00u) << 8) | ((x & 0x00FF0000u) >> 8) | ((x & 0xFF000000u) >> 24);
-}
-
 static mc_u16 mc_htons(mc_u16 x) {
 	return mc_bswap16(x);
 }
 
 static mc_u16 mc_ntohs(mc_u16 x) {
 	return mc_bswap16(x);
-}
-
-static mc_u32 mc_ntohl(mc_u32 x) {
-	return mc_bswap32(x);
 }
 
 static int mc_hexval(mc_u8 c) {
@@ -251,20 +243,17 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 			(void)mc_sys_close((mc_i32)fd);
 			return 0;
 		}
-		mc_u16 qt = mc_htons(28);
-		mc_u16 qc = mc_htons(1);
-		q[qn++] = (mc_u8)(qt >> 8);
-		q[qn++] = (mc_u8)(qt & 0xFFu);
-		q[qn++] = (mc_u8)(qc >> 8);
-		q[qn++] = (mc_u8)(qc & 0xFFu);
+		q[qn++] = 0x00;
+		q[qn++] = 0x1c;
+		q[qn++] = 0x00;
+		q[qn++] = 0x01;
 
 		mc_u8 tcpbuf[2 + sizeof(q)];
 		const void *sendbuf = q;
 		mc_usize sendlen = qn;
 		if (use_tcp) {
-			mc_u16 l = mc_htons((mc_u16)qn);
-			tcpbuf[0] = (mc_u8)(l >> 8);
-			tcpbuf[1] = (mc_u8)(l & 0xFFu);
+			tcpbuf[0] = (mc_u8)((qn >> 8) & 0xFFu);
+			tcpbuf[1] = (mc_u8)(qn & 0xFFu);
 			for (mc_usize i = 0; i < qn; i++) tcpbuf[2 + i] = q[i];
 			sendbuf = tcpbuf;
 			sendlen = 2 + qn;
@@ -308,6 +297,8 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 
 		mc_u16 qd = (mc_u16)(((mc_u16)ans[4] << 8) | (mc_u16)ans[5]);
 		mc_u16 an = (mc_u16)(((mc_u16)ans[6] << 8) | (mc_u16)ans[7]);
+		mc_u16 ns = (mc_u16)(((mc_u16)ans[8] << 8) | (mc_u16)ans[9]);
+		mc_u16 ar = (mc_u16)(((mc_u16)ans[10] << 8) | (mc_u16)ans[11]);
 
 		mc_usize off = 12;
 		for (mc_u16 qi = 0; qi < qd; qi++) {
@@ -318,13 +309,14 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 			off += 4;
 		}
 
-		for (mc_u16 ai = 0; ai < an; ai++) {
+		mc_u32 total = (mc_u32)an + (mc_u32)ns + (mc_u32)ar;
+		for (mc_u32 ai = 0; ai < total; ai++) {
 			mc_usize noff;
 			if (!dns_name_skip(ans, msglen, off, &noff)) return 0;
 			off = noff;
 			if (off + 10 > msglen) return 0;
-			mc_u16 atype = mc_ntohs((mc_u16)(((mc_u16)ans[off] << 8) | (mc_u16)ans[off + 1]));
-			mc_u16 rdlen = mc_ntohs((mc_u16)(((mc_u16)ans[off + 8] << 8) | (mc_u16)ans[off + 9]));
+			mc_u16 atype = (mc_u16)(((mc_u16)ans[off] << 8) | (mc_u16)ans[off + 1]);
+			mc_u16 rdlen = (mc_u16)(((mc_u16)ans[off + 8] << 8) | (mc_u16)ans[off + 9]);
 			off += 10;
 			if (off + rdlen > msglen) return 0;
 			if (atype == 28 && rdlen == 16) {
@@ -413,10 +405,8 @@ static int ntp6_query_once(const char *argv0, const mc_u8 ip6[16], mc_u32 timeou
 	}
 
 	// Transmit Timestamp (server time): bytes 40..47
-	mc_u32 sec_be = (mc_u32)((mc_u32)resp[40] << 24) | (mc_u32)((mc_u32)resp[41] << 16) | (mc_u32)((mc_u32)resp[42] << 8) | (mc_u32)resp[43];
-	mc_u32 frac_be = (mc_u32)((mc_u32)resp[44] << 24) | (mc_u32)((mc_u32)resp[45] << 16) | (mc_u32)((mc_u32)resp[46] << 8) | (mc_u32)resp[47];
-	mc_u32 sec = mc_ntohl(sec_be);
-	mc_u32 frac = mc_ntohl(frac_be);
+	mc_u32 sec = (mc_u32)((mc_u32)resp[40] << 24) | (mc_u32)((mc_u32)resp[41] << 16) | (mc_u32)((mc_u32)resp[42] << 8) | (mc_u32)resp[43];
+	mc_u32 frac = (mc_u32)((mc_u32)resp[44] << 24) | (mc_u32)((mc_u32)resp[45] << 16) | (mc_u32)((mc_u32)resp[46] << 8) | (mc_u32)resp[47];
 
 	// NTP epoch (1900) -> Unix epoch (1970)
 	const mc_u64 NTP_UNIX_EPOCH_DELTA = 2208988800ull;
@@ -466,9 +456,11 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	}
 
 	const char *server = "pool.ntp.org";
+	int server_is_default = 1;
 	if (i < argc) {
 		if (i + 1 != argc) ntp6_usage(argv0);
 		server = argv[i];
+		server_is_default = 0;
 	}
 
 	mc_u8 ip6[16];
@@ -487,14 +479,49 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 				mc_u8 dns2[16];
 				(void)parse_ipv6_literal("2001:4860:4860::8844", dns2);
 				if (!dns6_resolve_first_aaaa(argv0, dns2, 53, server, timeout_ms, ip6)) {
+					if (!server_is_default) {
+						(void)mc_write_str(2, argv0);
+						(void)mc_write_str(2, ": resolve failed\n");
+						return 1;
+					}
+					// pool.ntp.org may not publish AAAA; try numbered pool names.
+					static const char *alts[] = { "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org" };
+					int ok = 0;
+					for (mc_usize ai = 0; ai < (mc_usize)(sizeof(alts) / sizeof(alts[0])); ai++) {
+						if (dns6_resolve_first_aaaa(argv0, dns2, 53, alts[ai], timeout_ms, ip6)) {
+							ok = 1;
+							break;
+						}
+						if (dns6_resolve_first_aaaa(argv0, dns_server, 53, alts[ai], timeout_ms, ip6)) {
+							ok = 1;
+							break;
+						}
+					}
+					if (!ok) {
+						(void)mc_write_str(2, argv0);
+						(void)mc_write_str(2, ": resolve failed\n");
+						return 1;
+					}
+				}
+			} else {
+				if (!server_is_default) {
 					(void)mc_write_str(2, argv0);
 					(void)mc_write_str(2, ": resolve failed\n");
 					return 1;
 				}
-			} else {
-				(void)mc_write_str(2, argv0);
-				(void)mc_write_str(2, ": resolve failed\n");
-				return 1;
+				static const char *alts[] = { "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org" };
+				int ok = 0;
+				for (mc_usize ai = 0; ai < (mc_usize)(sizeof(alts) / sizeof(alts[0])); ai++) {
+					if (dns6_resolve_first_aaaa(argv0, dns_server, 53, alts[ai], timeout_ms, ip6)) {
+						ok = 1;
+						break;
+					}
+				}
+				if (!ok) {
+					(void)mc_write_str(2, argv0);
+					(void)mc_write_str(2, ": resolve failed\n");
+					return 1;
+				}
 			}
 		}
 	}

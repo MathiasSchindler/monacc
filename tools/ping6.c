@@ -350,20 +350,17 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 			(void)mc_sys_close((mc_i32)fd);
 			return 0;
 		}
-		mc_u16 qt = mc_htons(28);
-		mc_u16 qc = mc_htons(1);
-		q[qn++] = (mc_u8)(qt >> 8);
-		q[qn++] = (mc_u8)(qt & 0xFFu);
-		q[qn++] = (mc_u8)(qc >> 8);
-		q[qn++] = (mc_u8)(qc & 0xFFu);
+		q[qn++] = 0x00;
+		q[qn++] = 0x1c;
+		q[qn++] = 0x00;
+		q[qn++] = 0x01;
 
 		mc_u8 tcpbuf[2 + sizeof(q)];
 		const void *sendbuf = q;
 		mc_usize sendlen = qn;
 		if (use_tcp) {
-			mc_u16 l = mc_htons((mc_u16)qn);
-			tcpbuf[0] = (mc_u8)(l >> 8);
-			tcpbuf[1] = (mc_u8)(l & 0xFFu);
+			tcpbuf[0] = (mc_u8)((qn >> 8) & 0xFFu);
+			tcpbuf[1] = (mc_u8)(qn & 0xFFu);
 			for (mc_usize i = 0; i < qn; i++) tcpbuf[2 + i] = q[i];
 			sendbuf = tcpbuf;
 			sendlen = 2 + qn;
@@ -407,6 +404,8 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 
 		mc_u16 qd = (mc_u16)(((mc_u16)ans[4] << 8) | (mc_u16)ans[5]);
 		mc_u16 an = (mc_u16)(((mc_u16)ans[6] << 8) | (mc_u16)ans[7]);
+		mc_u16 ns = (mc_u16)(((mc_u16)ans[8] << 8) | (mc_u16)ans[9]);
+		mc_u16 ar = (mc_u16)(((mc_u16)ans[10] << 8) | (mc_u16)ans[11]);
 
 		mc_usize off = 12;
 		for (mc_u16 qi = 0; qi < qd; qi++) {
@@ -417,13 +416,14 @@ static int dns6_resolve_first_aaaa(const char *argv0, const mc_u8 server_ip[16],
 			off += 4;
 		}
 
-		for (mc_u16 ai = 0; ai < an; ai++) {
+		mc_u32 total = (mc_u32)an + (mc_u32)ns + (mc_u32)ar;
+		for (mc_u32 ai = 0; ai < total; ai++) {
 			mc_usize noff;
 			if (!dns_name_skip(ans, msglen, off, &noff)) return 0;
 			off = noff;
 			if (off + 10 > msglen) return 0;
-			mc_u16 atype = mc_ntohs((mc_u16)(((mc_u16)ans[off] << 8) | (mc_u16)ans[off + 1]));
-			mc_u16 rdlen = mc_ntohs((mc_u16)(((mc_u16)ans[off + 8] << 8) | (mc_u16)ans[off + 9]));
+			mc_u16 atype = (mc_u16)(((mc_u16)ans[off] << 8) | (mc_u16)ans[off + 1]);
+			mc_u16 rdlen = (mc_u16)(((mc_u16)ans[off + 8] << 8) | (mc_u16)ans[off + 9]);
 			off += 10;
 			if (off + rdlen > msglen) return 0;
 			if (atype == 28 && rdlen == 16) {

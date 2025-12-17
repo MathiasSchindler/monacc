@@ -78,4 +78,9 @@ EXP=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   "s_iv 5d313eb2671276ee13000b30")
 assert_eq "tls13kdf rfc8448 1rtt" "$EXP" "$OUT"
 
+# --- tls13hello: TLS 1.3 ClientHello/ServerHello + transcript hash (RFC 8448) ---
+OUT=$("$BIN/tls13hello" --rfc8448-1rtt)
+EXP="chsh_hash 860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8"
+assert_eq "tls13hello rfc8448 ch+sh transcript" "$EXP" "$OUT"
+
 exit 0

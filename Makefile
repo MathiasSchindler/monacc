@@ -67,6 +67,8 @@ CORE_COMMON_SRC := \
 	core/mc_hmac.c \
 	core/mc_hkdf.c \
 	core/mc_tls13.c \
+	core/mc_tls13_transcript.c \
+	core/mc_tls13_handshake.c \
 	core/mc_aes.c \
 	core/mc_gcm.c \
 	core/mc_x25519.c \

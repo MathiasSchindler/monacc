@@ -78,5 +78,8 @@ require_bin col
 require_bin more
 require_bin watch
 require_bin hexdump
+require_bin sha256
+require_bin hkdf
+require_bin aes128
 
 exit 0

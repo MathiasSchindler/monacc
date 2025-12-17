@@ -43,7 +43,96 @@ static void expr_set_int(Expr *e) {
     e->ptr = 0;
     e->struct_id = -1;
     e->is_unsigned = 0;
+    e->lval_size = 4;
+}
+
+static void expr_set_int_literal(Expr *e, long long v) {
+    if (!e) return;
+    e->base = BT_INT;
+    e->ptr = 0;
+    e->struct_id = -1;
+
+    // Minimal literal typing:
+    // - Prefer 32-bit int/unsigned int when representable.
+    // - Fall back to 64-bit long for larger values.
+    if (v >= -2147483648LL && v <= 2147483647LL) {
+        e->is_unsigned = 0;
+        e->lval_size = 4;
+        return;
+    }
+    if (v >= 0 && v <= 0xffffffffLL) {
+        e->is_unsigned = 1;
+        e->lval_size = 4;
+        return;
+    }
+    e->base = BT_LONG;
+    e->is_unsigned = 0;
     e->lval_size = 8;
+}
+
+static int expr_is_integer_scalar(const Expr *e) {
+    if (!e) return 0;
+    if (e->ptr != 0) return 0;
+    if (e->base == BT_VOID || e->base == BT_STRUCT) return 0;
+    return 1;
+}
+
+static void expr_promoted_int_type_from(const Expr *src, BaseType *out_base, int *out_is_unsigned, int *out_sz) {
+    // Integer promotions: promote char/short to int.
+    int sz = (src && src->lval_size) ? src->lval_size : 4;
+    int is_unsigned = (src && src->is_unsigned) ? 1 : 0;
+
+    if (sz < 4) {
+        sz = 4;
+        // Like C: promotions generally go to signed int.
+        is_unsigned = 0;
+    }
+
+    BaseType base = (sz >= 8) ? BT_LONG : BT_INT;
+    if (out_base) *out_base = base;
+    if (out_is_unsigned) *out_is_unsigned = is_unsigned;
+    if (out_sz) *out_sz = sz;
+}
+
+static void expr_set_promoted_int(Expr *dst, const Expr *src) {
+    if (!dst) return;
+    BaseType base = BT_INT;
+    int is_unsigned = 0;
+    int sz = 4;
+    expr_promoted_int_type_from(src, &base, &is_unsigned, &sz);
+    dst->base = base;
+    dst->ptr = 0;
+    dst->struct_id = -1;
+    dst->is_unsigned = is_unsigned;
+    dst->lval_size = (sz >= 8) ? 8 : 4;
+}
+
+static void expr_set_usual_arith(Expr *dst, const Expr *lhs, const Expr *rhs) {
+    if (!dst) return;
+    if (!expr_is_integer_scalar(lhs) || !expr_is_integer_scalar(rhs)) {
+        expr_set_int(dst);
+        return;
+    }
+
+    BaseType lb = BT_INT, rb = BT_INT;
+    int lu = 0, ru = 0;
+    int lsz = 4, rsz = 4;
+    expr_promoted_int_type_from(lhs, &lb, &lu, &lsz);
+    expr_promoted_int_type_from(rhs, &rb, &ru, &rsz);
+
+    int sz = (lsz > rsz) ? lsz : rsz;
+    if (sz < 4) sz = 4;
+    dst->base = (sz >= 8) ? BT_LONG : BT_INT;
+    dst->ptr = 0;
+    dst->struct_id = -1;
+    dst->is_unsigned = (lu || ru) ? 1 : 0;
+    dst->lval_size = (sz >= 8) ? 8 : 4;
+}
+
+static void write_le_bytes(unsigned char *dst, int size, unsigned long long v) {
+    for (int i = 0; i < size; i++) {
+        dst[i] = (unsigned char)((v >> (8ULL * (unsigned long long)i)) & 0xFFULL);
+    }
 }
 
 static void skip_balanced(Parser *p, TokenKind open, TokenKind close) {
@@ -575,11 +664,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
     if (p->tok.kind == TOK_NUM) {
         Expr *e = new_expr(EXPR_NUM);
         e->num = p->tok.num;
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->is_unsigned = 0;
-        e->lval_size = 8;
+        expr_set_int_literal(e, e->num);
         parser_next(p);
         return e;
     }
@@ -589,11 +674,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
         parser_next(p);
         Expr *e = new_expr(EXPR_NUM);
         e->num = (long long)v;
-        e->base = BT_INT;
-        e->ptr = 0;
-        e->struct_id = -1;
-        e->is_unsigned = 0;
-        e->lval_size = 8;
+        expr_set_int_literal(e, e->num);
         return e;
     }
     if (p->tok.kind == TOK_STR) {
@@ -760,11 +841,7 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
             if (c) {
                 Expr *e = new_expr(EXPR_NUM);
                 e->num = c->value;
-                e->base = BT_INT;
-                e->ptr = 0;
-                e->struct_id = -1;
-                e->is_unsigned = 0;
-                e->lval_size = 8;
+                expr_set_int_literal(e, e->num);
                 return e;
             }
 
@@ -918,6 +995,7 @@ static Expr *parse_postfix(Parser *p, Locals *ls) {
             n->base = e->base;
             n->ptr = e->ptr - 1;
             n->struct_id = e->struct_id;
+            n->is_unsigned = e->is_unsigned;
             n->ptr_scale = scale;
             n->lval_size = row_from_2d ? 0 : type_sizeof(p->prg, n->base, n->ptr, n->struct_id);
             e = n;
@@ -1100,16 +1178,21 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
     if (consume(p, TOK_PLUS)) {
         Expr *e = new_expr(EXPR_POS);
         e->lhs = parse_unary(p, ls);
-        e->base = e->lhs ? e->lhs->base : BT_INT;
-        e->ptr = e->lhs ? e->lhs->ptr : 0;
-        e->struct_id = e->lhs ? e->lhs->struct_id : -1;
-        e->lval_size = 8;
+        if (e->lhs && e->lhs->ptr > 0) {
+            e->base = e->lhs->base;
+            e->ptr = e->lhs->ptr;
+            e->struct_id = e->lhs->struct_id;
+            e->is_unsigned = 1;
+            e->lval_size = 8;
+        } else {
+            expr_set_promoted_int(e, e->lhs);
+        }
         return e;
     }
     if (consume(p, TOK_MINUS)) {
         Expr *e = new_expr(EXPR_NEG);
         e->lhs = parse_unary(p, ls);
-        expr_set_int(e);
+        expr_set_promoted_int(e, e->lhs);
         return e;
     }
     if (consume(p, TOK_BANG)) {
@@ -1121,7 +1204,7 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
     if (consume(p, TOK_TILDE)) {
         Expr *e = new_expr(EXPR_BNOT);
         e->lhs = parse_unary(p, ls);
-        expr_set_int(e);
+        expr_set_promoted_int(e, e->lhs);
         return e;
     }
     if (consume(p, TOK_AMP)) {
@@ -1156,6 +1239,7 @@ static Expr *parse_mul(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_MUL);
             n->lhs = e;
             n->rhs = parse_unary(p, ls);
+            expr_set_usual_arith(n, n->lhs, n->rhs);
             e = n;
             continue;
         }
@@ -1163,6 +1247,7 @@ static Expr *parse_mul(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_DIV);
             n->lhs = e;
             n->rhs = parse_unary(p, ls);
+            expr_set_usual_arith(n, n->lhs, n->rhs);
             e = n;
             continue;
         }
@@ -1170,6 +1255,7 @@ static Expr *parse_mul(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_MOD);
             n->lhs = e;
             n->rhs = parse_unary(p, ls);
+            expr_set_usual_arith(n, n->lhs, n->rhs);
             e = n;
             continue;
         }
@@ -1189,20 +1275,21 @@ static Expr *parse_add(Parser *p, Locals *ls) {
                 n->base = n->lhs->base;
                 n->ptr = n->lhs->ptr;
                 n->struct_id = n->lhs->struct_id;
+                n->is_unsigned = 1;
+                n->lval_size = 8;
                 n->ptr_scale = ptr_pointee_size(p->prg, n->lhs->base, n->lhs->ptr, n->lhs->struct_id);
                 n->ptr_index_side = 1;
             } else if (n->lhs && n->rhs && n->lhs->ptr == 0 && n->rhs->ptr > 0) {
                 n->base = n->rhs->base;
                 n->ptr = n->rhs->ptr;
                 n->struct_id = n->rhs->struct_id;
+                n->is_unsigned = 1;
+                n->lval_size = 8;
                 n->ptr_scale = ptr_pointee_size(p->prg, n->rhs->base, n->rhs->ptr, n->rhs->struct_id);
                 n->ptr_index_side = 2;
             } else {
-                n->base = BT_INT;
-                n->ptr = 0;
-                n->struct_id = -1;
+                expr_set_usual_arith(n, n->lhs, n->rhs);
             }
-            n->lval_size = 8;
             e = n;
             continue;
         }
@@ -1214,16 +1301,15 @@ static Expr *parse_add(Parser *p, Locals *ls) {
                 n->base = n->lhs->base;
                 n->ptr = n->lhs->ptr;
                 n->struct_id = n->lhs->struct_id;
+                n->is_unsigned = 1;
+                n->lval_size = 8;
                 n->ptr_scale = ptr_pointee_size(p->prg, n->lhs->base, n->lhs->ptr, n->lhs->struct_id);
                 n->ptr_index_side = 1;
             } else if (n->lhs && n->rhs && n->lhs->ptr == 0 && n->rhs->ptr > 0) {
                 die("%s:%d:%d: int - pointer not supported", p->lx.path, p->tok.line, p->tok.col);
             } else {
-                n->base = BT_INT;
-                n->ptr = 0;
-                n->struct_id = -1;
+                expr_set_usual_arith(n, n->lhs, n->rhs);
             }
-            n->lval_size = 8;
             e = n;
             continue;
         }
@@ -1238,10 +1324,7 @@ static Expr *parse_shift(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_SHL);
             n->lhs = e;
             n->rhs = parse_add(p, ls);
-            n->base = BT_INT;
-            n->ptr = 0;
-            n->struct_id = -1;
-            n->lval_size = 8;
+            expr_set_promoted_int(n, n->lhs);
             e = n;
             continue;
         }
@@ -1249,10 +1332,7 @@ static Expr *parse_shift(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_SHR);
             n->lhs = e;
             n->rhs = parse_add(p, ls);
-            n->base = BT_INT;
-            n->ptr = 0;
-            n->struct_id = -1;
-            n->lval_size = 8;
+            expr_set_promoted_int(n, n->lhs);
             e = n;
             continue;
         }
@@ -1267,6 +1347,7 @@ static Expr *parse_rel(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_LT);
             n->lhs = e;
             n->rhs = parse_shift(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1274,6 +1355,7 @@ static Expr *parse_rel(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_LE);
             n->lhs = e;
             n->rhs = parse_shift(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1281,6 +1363,7 @@ static Expr *parse_rel(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_GT);
             n->lhs = e;
             n->rhs = parse_shift(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1288,6 +1371,7 @@ static Expr *parse_rel(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_GE);
             n->lhs = e;
             n->rhs = parse_shift(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1302,6 +1386,7 @@ static Expr *parse_eq(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_EQ);
             n->lhs = e;
             n->rhs = parse_rel(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1309,6 +1394,7 @@ static Expr *parse_eq(Parser *p, Locals *ls) {
             Expr *n = new_expr(EXPR_NE);
             n->lhs = e;
             n->rhs = parse_rel(p, ls);
+            expr_set_int(n);
             e = n;
             continue;
         }
@@ -1322,7 +1408,7 @@ static Expr *parse_bitand(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BAND);
         n->lhs = e;
         n->rhs = parse_eq(p, ls);
-        expr_set_int(n);
+        expr_set_usual_arith(n, n->lhs, n->rhs);
         e = n;
     }
     return e;
@@ -1334,7 +1420,7 @@ static Expr *parse_bitxor(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BXOR);
         n->lhs = e;
         n->rhs = parse_bitand(p, ls);
-        expr_set_int(n);
+        expr_set_usual_arith(n, n->lhs, n->rhs);
         e = n;
     }
     return e;
@@ -1346,7 +1432,7 @@ static Expr *parse_bitor(Parser *p, Locals *ls) {
         Expr *n = new_expr(EXPR_BOR);
         n->lhs = e;
         n->rhs = parse_bitxor(p, ls);
-        expr_set_int(n);
+        expr_set_usual_arith(n, n->lhs, n->rhs);
         e = n;
     }
     return e;
@@ -1393,7 +1479,8 @@ static Expr *parse_cond(Parser *p, Locals *ls) {
             e->base = BT_STRUCT;
             e->ptr = 0;
             e->struct_id = t->struct_id;
-            e->lval_size = type_sizeof(p->prg, BT_STRUCT, 0, e->struct_id);
+            e->is_unsigned = 0;
+            e->lval_size = type_sizeof(p->prg, BT_STRUCT, 0, t->struct_id);
             return e;
         }
 
@@ -3180,20 +3267,24 @@ void parse_program(Parser *p, Program *out) {
         // Global variables
         // Handle array syntax: T name[N] or T name[]
         int array_len = 0;
+        int saw_brackets = 0;
         if (consume(p, TOK_LBRACK)) {
+            saw_brackets = 1;
             if (tok_is(p, TOK_NUM)) {
                 array_len = (int)p->tok.num;
                 parser_next(p);
             } else {
-                // Incomplete array (only valid as an extern declaration in this compiler).
+                // Incomplete array: allow with initializer (we'll deduce size), or as extern.
                 array_len = -1;
             }
             expect(p, TOK_RBRACK, "']'");
             skip_gcc_attrs(p);
         }
 
-        if (array_len < 0 && !saw_extern) {
-            die("%s:%d:%d: incomplete global array requires extern", p->lx.path, p->tok.line, p->tok.col);
+        // Optional initializer (= ...)
+        int has_init = tok_is(p, TOK_ASSIGN);
+        if (array_len < 0 && !saw_extern && !has_init) {
+            die("%s:%d:%d: incomplete global array requires extern or initializer", p->lx.path, p->tok.line, p->tok.col);
         }
 
         GlobalVar gv;
@@ -3210,6 +3301,8 @@ void parse_program(Parser *p, Program *out) {
         gv.is_static = saw_static;
         gv.array_len = array_len;
         gv.is_extern = saw_extern;
+        gv.has_init = 0;
+        gv.init_str_id = -1;
 
         int elem_size = type_sizeof(p->prg, base, ptr, sid);
         gv.elem_size = elem_size;
@@ -3221,29 +3314,141 @@ void parse_program(Parser *p, Program *out) {
             gv.size = elem_size;
         }
 
-        program_add_global(out, &gv);
-
-        // Skip initializer if present (= ...)
         if (consume(p, TOK_ASSIGN)) {
             if (saw_extern) {
                 die("%s:%d:%d: extern global initializers are not supported", p->lx.path, p->tok.line, p->tok.col);
             }
-            // Skip to semicolon, handling braces for struct/array initializers
-            int brace_depth = 0;
-            while (p->tok.kind != TOK_EOF) {
-                if (tok_is(p, TOK_LBRACE)) {
-                    brace_depth++;
-                    parser_next(p);
-                } else if (tok_is(p, TOK_RBRACE)) {
-                    if (brace_depth > 0) brace_depth--;
-                    parser_next(p);
-                } else if (tok_is(p, TOK_SEMI) && brace_depth == 0) {
-                    break;
+
+            // Minimal initializer support:
+            // - scalar numeric init for 1/2/4/8-byte scalars
+            // - 1D array init { const, const, ... } for 1/2/4/8-byte elements
+            // - string init for char arrays
+            Locals dummy_ls;
+            mc_memset(&dummy_ls, 0, sizeof(dummy_ls));
+
+            int supported = 0;
+            if (gv.ptr == 0 && gv.base != BT_STRUCT && (elem_size == 1 || elem_size == 2 || elem_size == 4 || elem_size == 8)) {
+                if (gv.array_len != 0) {
+                    // Array initializer.
+                    if (p->tok.kind == TOK_STR) {
+                        Expr *se = parse_expr(p, &dummy_ls);
+                        int ok = (gv.base == BT_CHAR && elem_size == 1);
+                        if (ok && se && se->kind == EXPR_STR) {
+                            const StringLit *sl = &out->strs[se->str_id];
+                            if (gv.array_len < 0) {
+                                gv.array_len = (int)sl->len;
+                                gv.size = (int)sl->len;
+                            } else if (gv.size > 0 && (int)sl->len > gv.size) {
+                                die("%s:%d:%d: string initializer too long", p->lx.path, p->tok.line, p->tok.col);
+                            }
+                            gv.has_init = 1;
+                            gv.init_str_id = se->str_id;
+                            supported = 1;
+                        }
+                    } else if (consume(p, TOK_LBRACE)) {
+                        int cap = 0;
+                        int n = 0;
+                        unsigned char *buf = NULL;
+                        while (!tok_is(p, TOK_RBRACE)) {
+                            if (tok_is(p, TOK_EOF)) {
+                                die("%s:%d:%d: unexpected EOF in global array initializer", p->lx.path, p->tok.line, p->tok.col);
+                            }
+                            if (n + 1 > cap) {
+                                int ncap = cap ? cap * 2 : 16;
+                                unsigned char *nb = (unsigned char *)monacc_realloc(buf, (mc_usize)ncap * (mc_usize)elem_size);
+                                if (!nb) die("oom");
+                                buf = nb;
+                                cap = ncap;
+                            }
+                            Expr *val = parse_expr(p, &dummy_ls);
+                            long long vv = eval_const_expr(p, val);
+                            unsigned long long uv = (unsigned long long)vv;
+                            if (elem_size < 8) {
+                                unsigned long long mask = (1ULL << (8ULL * (unsigned long long)elem_size)) - 1ULL;
+                                uv &= mask;
+                            }
+                            write_le_bytes(buf + (mc_usize)n * (mc_usize)elem_size, elem_size, uv);
+                            n++;
+                            skip_gcc_attrs(p);
+                            if (consume(p, TOK_COMMA)) {
+                                skip_gcc_attrs(p);
+                                if (tok_is(p, TOK_RBRACE)) break;
+                                continue;
+                            }
+                            break;
+                        }
+                        expect(p, TOK_RBRACE, "'}'");
+
+                        if (n == 0) {
+                            // Empty initializer list: keep zero-init.
+                            // Unsized arrays cannot deduce length from an empty list.
+                            if (gv.array_len < 0) {
+                                die("%s:%d:%d: empty initializer for unsized global array", p->lx.path, p->tok.line, p->tok.col);
+                            }
+                            monacc_free(buf);
+                            supported = 1;
+                        } else {
+                            if (gv.array_len < 0) {
+                                gv.array_len = n;
+                                gv.size = n * elem_size;
+                            } else if (gv.array_len > 0) {
+                                if (n * elem_size > gv.size) {
+                                    die("%s:%d:%d: too many global array initializer elements", p->lx.path, p->tok.line, p->tok.col);
+                                }
+                            }
+                            int blob_len = n * elem_size;
+                            if (blob_len < 0) blob_len = 0;
+                            int blob_id = program_add_str(out, buf, (mc_usize)blob_len);
+                            monacc_free(buf);
+                            gv.has_init = 1;
+                            gv.init_str_id = blob_id;
+                            supported = 1;
+                        }
+                    }
                 } else {
-                    parser_next(p);
+                    // Scalar initializer.
+                    Expr *val = parse_expr(p, &dummy_ls);
+                    long long vv = eval_const_expr(p, val);
+                    unsigned long long uv = (unsigned long long)vv;
+                    if (elem_size < 8) {
+                        unsigned long long mask = (1ULL << (8ULL * (unsigned long long)elem_size)) - 1ULL;
+                        uv &= mask;
+                    }
+                    unsigned char buf8[8];
+                    write_le_bytes(buf8, elem_size, uv);
+                    int blob_id = program_add_str(out, buf8, (mc_usize)elem_size);
+                    gv.has_init = 1;
+                    gv.init_str_id = blob_id;
+                    supported = 1;
+                }
+            }
+
+            if (!supported) {
+                // Backwards-compatible behavior: ignore unsupported global initializers
+                // (previously all global initializers were skipped).
+                int brace_depth = 0;
+                while (p->tok.kind != TOK_EOF) {
+                    if (tok_is(p, TOK_LBRACE)) {
+                        brace_depth++;
+                        parser_next(p);
+                    } else if (tok_is(p, TOK_RBRACE)) {
+                        if (brace_depth > 0) brace_depth--;
+                        parser_next(p);
+                    } else if (tok_is(p, TOK_SEMI) && brace_depth == 0) {
+                        break;
+                    } else {
+                        parser_next(p);
+                    }
                 }
             }
         }
+
+        // Ensure we didn't declare an incomplete array without brackets.
+        if (saw_brackets && gv.array_len < 0 && !gv.is_extern) {
+            die("%s:%d:%d: incomplete global array requires extern or initializer", p->lx.path, p->tok.line, p->tok.col);
+        }
+
+        program_add_global(out, &gv);
         expect(p, TOK_SEMI, "';'");
     }
     if (out->nfns == 0) {

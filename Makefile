@@ -62,7 +62,11 @@ CORE_COMMON_SRC := \
 	core/mc_libc_compat.c \
 	core/mc_start_env.c \
 	core/mc_io.c \
-	core/mc_regex.c
+	core/mc_regex.c \
+	core/mc_sha256.c \
+	core/mc_hmac.c \
+	core/mc_hkdf.c \
+	core/mc_aes.c
 
 # Hosted-only core sources (not built into MONACC tools)
 CORE_HOSTED_SRC := \

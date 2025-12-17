@@ -31,6 +31,7 @@ typedef struct {
 static int new_label(CG *cg) { return cg->label_id++; }
 
 static void cg_expr(CG *cg, const Expr *e);
+static void cg_normalize_scalar_result(CG *cg, const Expr *e);
 
 static int cg_label_id(CG *cg, const char *name) {
     for (int i = 0; i < cg->nlabels; i++) {
@@ -2076,6 +2077,7 @@ static void cg_expr(CG *cg, const Expr *e) {
         }
         case EXPR_CALL:
             cg_call(cg, e);
+            cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_SRET_CALL:
             cg_sret_call(cg, e);
@@ -2085,10 +2087,12 @@ static void cg_expr(CG *cg, const Expr *e) {
             return;
         case EXPR_POS:
             cg_expr(cg, e->lhs);
+            cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_NEG:
             cg_expr(cg, e->lhs);
             str_appendf(&cg->out, "  neg %%rax\n");
+            cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_NOT:
             cg_expr(cg, e->lhs);
@@ -2099,6 +2103,7 @@ static void cg_expr(CG *cg, const Expr *e) {
         case EXPR_BNOT:
             cg_expr(cg, e->lhs);
             str_appendf(&cg->out, "  not %%rax\n");
+            cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_CAST:
             cg_expr(cg, e->lhs);
@@ -2355,11 +2360,40 @@ static void cg_expr(CG *cg, const Expr *e) {
         case EXPR_GT:
         case EXPR_GE:
             cg_binop(cg, e);
+            cg_normalize_scalar_result(cg, e);
             return;
         default:
             break;
     }
     die("internal: unhandled expr kind");
+}
+
+static void cg_normalize_scalar_result(CG *cg, const Expr *e) {
+    if (!e) return;
+    if (e->ptr > 0) return;
+    if (e->base == BT_VOID || e->base == BT_STRUCT) return;
+
+    // Keep the value in %rax consistent with the expression's type.
+    // This is important for correct 32-bit wraparound arithmetic (e.g. SHA-256).
+    if (e->lval_size == 1) {
+        if (e->is_unsigned) {
+            str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+        } else {
+            str_appendf(&cg->out, "  movsbq %%al, %%rax\n");
+        }
+    } else if (e->lval_size == 2) {
+        if (e->is_unsigned) {
+            str_appendf(&cg->out, "  movzw %%ax, %%eax\n");
+        } else {
+            str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
+        }
+    } else if (e->lval_size == 4) {
+        if (e->is_unsigned) {
+            str_appendf(&cg->out, "  mov %%eax, %%eax\n");
+        } else {
+            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+        }
+    }
 }
 
 // Emit a conditional branch for a comparison expression.

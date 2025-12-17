@@ -197,21 +197,23 @@ https://{lang}.wikipedia.org/w/api.php?action=opensearch&search={query}&limit=1&
 
 ### HTTPS Challenge
 
-Wikipedia enforces HTTPS. Options:
+Wikipedia enforces HTTPS. In practice, Wikipedia currently redirects plain HTTP to HTTPS (e.g. `http://en.wikipedia.org/w/api.php?...` → `301` with `Location: https://...`).
+
+**Implication:** A syscall-only HTTP client (like `wget6`) cannot fetch Wikipedia API responses reliably until monacc gains TLS client support.
+
+Options:
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **A. Implement TLS** | Full compatibility | Significant work (~1000+ lines) |
-| **B. HTTP redirect** | Wikipedia may redirect HTTP→HTTPS | May not work; against philosophy |
-| **C. Use HTTP API** | Simpler | May be blocked by Wikipedia |
+| **A. Implement TLS** | Full compatibility; unblocks `wtf`, `wget6`, future net tools | Significant work (see `docs/tls.md`) |
+| **B. Follow HTTP redirect** | Small change if redirect stays same-host | Still requires HTTPS after redirect → TLS needed anyway |
+| **C. Use HTTP API** | Simplest client-side | Not viable if endpoints redirect to HTTPS |
 
-**Recommended approach:** Start with Option C (try HTTP). If Wikipedia blocks it, implement minimal TLS (Option A) as a future enhancement. The HTTP Action API endpoint may still work:
+**Recommended approach:** Implement Option A (TLS 1.3 client) first, then build `wtf` on top of HTTPS.
 
-```
-http://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles=Caffeine&format=json
-```
-
-If HTTP is blocked, `wtf` becomes a forcing function for adding TLS support to monacc — a valuable capability.
+`wtf` can still be developed incrementally without TLS by:
+- implementing parsing/formatting logic against recorded JSON responses (fixtures), and
+- optionally shipping an early version that prints a stable error like: `wtf: HTTPS required (TLS not implemented)`.
 
 ### IPv6 Only
 
@@ -224,6 +226,10 @@ Following monacc's networking philosophy (see `wget6.c`, `dns6.c`):
 ---
 
 ## Implementation Plan
+
+### Prerequisite: HTTPS Support
+
+`wtf` depends on HTTPS access to Wikipedia endpoints. Implement TLS first (see `docs/tls.md`), then build `wtf` on top of a shared `mc_tls` API that can back `wget6` and future tools.
 
 ### Phase 0: Preparation
 

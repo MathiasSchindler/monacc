@@ -63,7 +63,7 @@ After `make`, the `bin/` directory contains:
 | `grep`, `sed`, `awk`, ... | Text processing |
 | `sh` | A minimal POSIX-ish shell (enough for the project’s scripts; compatibility is actively improved) |
 | `find`, `xargs`, `test`, ... | Scripting utilities |
-| ... | 86 tools total (+ a couple aliases like `[` and `realpath`) |
+| ... | 90 tools total (+ a couple aliases like `[` and `realpath`) |
 
 ## Bootstrapping Sequence
 

@@ -133,6 +133,12 @@ struct sh_cmd {
 	struct sh_redir_op redirs[SH_MAX_REDIRS];
 };
 
+// Forward declarations needed for hosted compilers (C99+ forbids implicit decls).
+struct sh_tok;
+struct sh_ctx;
+static int sh_is_name_char(char c);
+static mc_i32 sh_eval_range(const char *argv0, struct sh_tok *toks, mc_u32 start, mc_u32 end, char **envp, struct sh_ctx *ctx);
+
 static int sh_parse_fd_dec(const char *s, mc_i32 *out_fd) {
 	if (!s || !*s || !out_fd) return -1;
 	mc_u32 v = 0;
@@ -206,8 +212,6 @@ static int sh_func_set(struct sh_ctx *ctx, const char *name, struct sh_tok *toks
 	for (mc_u32 ti = body_start; ti < body_end; ti++) {
 		struct sh_tok t = toks[ti];
 		const char *emit = 0;
-		char tmp[3];
-		tmp[0] = 0;
 		if (t.kind == SH_TOK_WORD) {
 			// Copy word bytes (may include SH_ESC markers).
 			for (mc_usize k = 0; t.s && k < t.n; k++) {
@@ -1562,7 +1566,6 @@ static int sh_parse_pipeline(struct sh_tok *toks, mc_u32 ntoks, mc_u32 *io, stru
 	return 0;
 }
 
-static mc_i32 sh_eval_range(const char *argv0, struct sh_tok *toks, mc_u32 start, mc_u32 end, char **envp, struct sh_ctx *ctx);
 static int sh_tokenize(const char *line, char *wordbuf, mc_usize wordbuf_sz, struct sh_tok *toks, mc_u32 *out_ntoks, const char *argv0);
 
 static void sh_run_trap_exit(const char *argv0, struct sh_ctx *ctx, char **envp) {
@@ -2678,8 +2681,26 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	ictx.cmdsub_used = 0;
 	ictx.last_cmdsub_rc = 0;
 	ictx.posc = 0;
+
+	// Show a prompt only when stdin is a tty.
+	// TCGETS is 0x5401 on Linux.
+	int interactive = 0;
+	{
+		mc_u8 dummy[64];
+		mc_i64 ir = mc_sys_ioctl(0, 0x5401u, dummy);
+		if (ir >= 0) interactive = 1;
+	}
 	for (;;) {
-		(void)mc_write_str(1, "$ ");
+		if (interactive) {
+			char cwd[512];
+			mc_i64 cr = mc_sys_getcwd(cwd, sizeof(cwd));
+			if (cr >= 0) {
+				(void)mc_write_str(1, cwd);
+				(void)mc_write_str(1, " $ ");
+			} else {
+				(void)mc_write_str(1, "$ ");
+			}
+		}
 		mc_usize ln = 0;
 		int rr = sh_read_line(&r, line, sizeof(line), &ln);
 		if (rr < 0) {

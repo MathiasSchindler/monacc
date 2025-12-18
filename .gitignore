@@ -1,6 +1,7 @@
 # Build outputs
 /bin/
 /build/
+/release/
 
 # Keep kernel sources tracked; ignore only generated artifacts.
 /kernel/build/

@@ -27,6 +27,9 @@ require_bin sort
 require_bin uniq
 require_bin tee
 require_bin tr
+require_bin tar
+require_bin gzip
+require_bin gunzip
 require_bin cut
 require_bin paste
 require_bin nl
@@ -71,6 +74,7 @@ require_bin sh
 require_bin uptime
 require_bin free
 require_bin mount
+require_bin dmesg
 require_bin strings
 require_bin rev
 require_bin column

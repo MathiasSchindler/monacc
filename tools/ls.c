@@ -49,6 +49,67 @@ static void ls_write_size(const char *argv0, mc_u64 size, int human) {
 	}
 }
 
+static void ls_write_mtime_utc(const char *argv0, mc_i64 t) {
+	if (t < 0) t = 0;
+	mc_i64 days = t / 86400;
+	mc_i64 secs = t - days * 86400;
+	mc_i64 hour = secs / 3600;
+	secs -= hour * 3600;
+	mc_i64 minute = secs / 60;
+
+	// Civil-from-days (1970-01-01 is day 0). Hinnant algorithm.
+	mc_i64 z = days + 719468;
+	mc_i64 era = (z >= 0 ? z : z - 146096) / 146097;
+	mc_i64 doe = z - era * 146097;
+	mc_i64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	mc_i64 y = yoe + era * 400;
+	mc_i64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	mc_i64 mp = (5 * doy + 2) / 153;
+	mc_i64 d = doy - (153 * mp + 2) / 5 + 1;
+	mc_i64 m = mp + (mp < 10 ? 3 : -9);
+	y += (m <= 2);
+
+	char ts[16];
+	if (y < 0 || y > 9999) {
+		// Very unlikely for our use; fall back to raw epoch seconds.
+		if (mc_write_i64_dec(1, t) < 0) mc_die_errno(argv0, "write", -1);
+		return;
+	}
+	{
+		mc_u32 yy = (mc_u32)y;
+		ts[0] = (char)('0' + (yy / 1000u) % 10u);
+		ts[1] = (char)('0' + (yy / 100u) % 10u);
+		ts[2] = (char)('0' + (yy / 10u) % 10u);
+		ts[3] = (char)('0' + (yy / 1u) % 10u);
+	}
+	ts[4] = '-';
+	{
+		mc_u32 mm = (mc_u32)m;
+		ts[5] = (char)('0' + (mm / 10u) % 10u);
+		ts[6] = (char)('0' + (mm / 1u) % 10u);
+	}
+	ts[7] = '-';
+	{
+		mc_u32 dd = (mc_u32)d;
+		ts[8] = (char)('0' + (dd / 10u) % 10u);
+		ts[9] = (char)('0' + (dd / 1u) % 10u);
+	}
+	ts[10] = ' ';
+	{
+		mc_u32 hh = (mc_u32)hour;
+		ts[11] = (char)('0' + (hh / 10u) % 10u);
+		ts[12] = (char)('0' + (hh / 1u) % 10u);
+	}
+	ts[13] = ':';
+	{
+		mc_u32 mi = (mc_u32)minute;
+		ts[14] = (char)('0' + (mi / 10u) % 10u);
+		ts[15] = (char)('0' + (mi / 1u) % 10u);
+	}
+
+	if (mc_write_all(1, ts, sizeof(ts)) < 0) mc_die_errno(argv0, "write", -1);
+}
+
 static void ls_print_long_at(const char *argv0, mc_i32 dirfd, const char *name, int human) {
 	struct mc_stat st;
 	mc_i64 r = mc_sys_newfstatat(dirfd, name, &st, MC_AT_SYMLINK_NOFOLLOW);
@@ -66,7 +127,7 @@ static void ls_print_long_at(const char *argv0, mc_i32 dirfd, const char *name, 
 	if (mc_write_all(1, " ", 1) < 0) mc_die_errno(argv0, "write", -1);
 	ls_write_size(argv0, (mc_u64)st.st_size, human);
 	if (mc_write_all(1, " ", 1) < 0) mc_die_errno(argv0, "write", -1);
-	if (mc_write_u64_dec(1, st.st_mtime) < 0) mc_die_errno(argv0, "write", -1);
+	ls_write_mtime_utc(argv0, st.st_mtime);
 	if (mc_write_all(1, " ", 1) < 0) mc_die_errno(argv0, "write", -1);
 	if (mc_write_all(1, name, mc_strlen(name)) < 0 || mc_write_all(1, "\n", 1) < 0) {
 		mc_die_errno(argv0, "write", -1);

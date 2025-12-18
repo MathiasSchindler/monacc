@@ -98,11 +98,13 @@ const char *tok_kind_name(TokenKind k) {
         case TOK_EOF: return "eof";
         case TOK_IDENT: return "identifier";
         case TOK_NUM: return "number";
+        case TOK_FLOATNUM: return "float";
         case TOK_STR: return "string";
         case TOK_CHAR: return "char";
         case TOK_KW_INT: return "int";
         case TOK_KW_CHAR: return "char";
         case TOK_KW_VOID: return "void";
+        case TOK_KW_FLOAT: return "float";
         case TOK_KW_TYPEDEF: return "typedef";
         case TOK_KW_ENUM: return "enum";
         case TOK_KW_SIZEOF: return "sizeof";
@@ -246,6 +248,310 @@ static int is_ident_start(unsigned char c) {
 
 int is_ident_cont(unsigned char c) {
     return is_ident_start(c) || (c >= '0' && c <= '9');
+}
+
+// ===== float literal -> IEEE-754 binary32 (no host FP) =====
+
+typedef struct {
+    mc_u32 limb[64];
+    int n; // number of used limbs
+} BigU;
+
+static void bigu_norm(BigU *b) {
+    while (b->n > 0 && b->limb[b->n - 1] == 0) b->n--;
+}
+
+static void bigu_zero(BigU *b) {
+    mc_memset(b, 0, sizeof(*b));
+}
+
+static void bigu_mul_small(BigU *b, mc_u32 m, int *io_overflow) {
+    if (!b || m == 0) {
+        if (b) bigu_zero(b);
+        return;
+    }
+    mc_u64 carry = 0;
+    for (int i = 0; i < b->n; i++) {
+        mc_u64 x = (mc_u64)b->limb[i] * (mc_u64)m + carry;
+        b->limb[i] = (mc_u32)x;
+        carry = x >> 32;
+    }
+    if (carry) {
+        if (b->n >= (int)(sizeof(b->limb) / sizeof(b->limb[0]))) {
+            if (io_overflow) *io_overflow = 1;
+            return;
+        }
+        b->limb[b->n++] = (mc_u32)carry;
+    }
+}
+
+static void bigu_add_small(BigU *b, mc_u32 a, int *io_overflow) {
+    if (!b) return;
+    mc_u64 carry = a;
+    int i = 0;
+    while (carry) {
+        if (i >= b->n) {
+            if (b->n >= (int)(sizeof(b->limb) / sizeof(b->limb[0]))) {
+                if (io_overflow) *io_overflow = 1;
+                return;
+            }
+            b->limb[b->n++] = 0;
+        }
+        mc_u64 x = (mc_u64)b->limb[i] + carry;
+        b->limb[i] = (mc_u32)x;
+        carry = x >> 32;
+        i++;
+    }
+}
+
+static int bigu_is_zero(const BigU *b) {
+    return !b || b->n == 0;
+}
+
+static void bigu_shl_bits(BigU *b, int bits, int *io_overflow) {
+    if (!b || bits <= 0 || b->n == 0) return;
+    int limb_shift = bits / 32;
+    int bit_shift = bits % 32;
+
+    if (limb_shift) {
+        if (b->n + limb_shift > (int)(sizeof(b->limb) / sizeof(b->limb[0]))) {
+            if (io_overflow) *io_overflow = 1;
+            return;
+        }
+        for (int i = b->n - 1; i >= 0; i--) {
+            b->limb[i + limb_shift] = b->limb[i];
+        }
+        for (int i = 0; i < limb_shift; i++) b->limb[i] = 0;
+        b->n += limb_shift;
+    }
+
+    if (bit_shift) {
+        mc_u32 carry = 0;
+        for (int i = 0; i < b->n; i++) {
+            mc_u64 x = ((mc_u64)b->limb[i] << (mc_u64)bit_shift) | (mc_u64)carry;
+            b->limb[i] = (mc_u32)x;
+            carry = (mc_u32)(x >> 32);
+        }
+        if (carry) {
+            if (b->n >= (int)(sizeof(b->limb) / sizeof(b->limb[0]))) {
+                if (io_overflow) *io_overflow = 1;
+                return;
+            }
+            b->limb[b->n++] = carry;
+        }
+    }
+    bigu_norm(b);
+}
+
+// Shift right by 1. Returns the bit shifted out.
+static int bigu_shr1(BigU *b) {
+    if (!b || b->n == 0) return 0;
+    mc_u32 carry = 0;
+    for (int i = b->n - 1; i >= 0; i--) {
+        mc_u32 w = b->limb[i];
+        mc_u32 new_carry = w & 1u;
+        b->limb[i] = (w >> 1) | (carry << 31);
+        carry = new_carry;
+    }
+    bigu_norm(b);
+    return (int)carry;
+}
+
+static int bigu_highbit_index(const BigU *b) {
+    if (!b || b->n == 0) return -1;
+    mc_u32 top = b->limb[b->n - 1];
+    int hi = 31;
+    while (hi >= 0 && ((top >> hi) & 1u) == 0) hi--;
+    return (b->n - 1) * 32 + hi;
+}
+
+static int bigu_test_bit(const BigU *b, int bit_index) {
+    if (!b || bit_index < 0) return 0;
+    int li = bit_index / 32;
+    int bi = bit_index % 32;
+    if (li >= b->n) return 0;
+    return (int)((b->limb[li] >> bi) & 1u);
+}
+
+// Any set bit in [0..bit_index]?
+static int bigu_any_bits_below(const BigU *b, int bit_index) {
+    if (!b || b->n == 0 || bit_index < 0) return 0;
+    int li = bit_index / 32;
+    int bi = bit_index % 32;
+    if (li >= b->n) li = b->n - 1;
+    for (int i = 0; i < li; i++) {
+        if (b->limb[i]) return 1;
+    }
+    mc_u32 mask = (bi == 31) ? 0xffffffffu : ((1u << (bi + 1)) - 1u);
+    if ((b->limb[li] & mask) != 0) return 1;
+    return 0;
+}
+
+static mc_u32 bigu_low_u32(const BigU *b) {
+    if (!b || b->n == 0) return 0;
+    return b->limb[0];
+}
+
+static mc_u32 float32_from_decimal_parts(const BigU *digits, int exp10, int sticky_in, int is_neg) {
+    // Compute IEEE-754 binary32 bits for |digits| * 10^exp10.
+    // This is a minimal, deterministic conversion for typical literals.
+    // Rounds to nearest-even.
+
+    if (!digits || digits->n == 0) {
+        return is_neg ? 0x80000000u : 0u;
+    }
+
+    // Fast under/overflow clamps for extreme exponents.
+    if (exp10 > 80) {
+        return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+    }
+    if (exp10 < -120) {
+        return is_neg ? 0x80000000u : 0u;
+    }
+
+    // Work with a scaled integer S ~= value * 2^N.
+    // N chosen large enough for float32 rounding.
+    const int N = 200;
+    BigU s;
+    s = *digits;
+
+    int sticky = sticky_in ? 1 : 0;
+    int overflow = 0;
+
+    if (exp10 >= 0) {
+        // Multiply by 10^exp10: *5^exp10 then << exp10.
+        for (int i = 0; i < exp10; i++) {
+            bigu_mul_small(&s, 5u, &overflow);
+            if (overflow) {
+                return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+            }
+        }
+        bigu_shl_bits(&s, exp10, &overflow);
+        if (overflow) {
+            return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+        }
+        bigu_shl_bits(&s, N, &overflow);
+        if (overflow) {
+            return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+        }
+    } else {
+        int k = -exp10;
+        bigu_shl_bits(&s, N, &overflow);
+        if (overflow) {
+            // Very large integer part before scaling; division should still yield something representable.
+            // If we overflow our bigint, treat as +inf.
+            return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+        }
+        // Divide by 10^k via repeated /5 and >>1, tracking discarded bits.
+        // This is slow for huge k, but k is expected small for our subset.
+        if (k > 256) {
+            // Definitely underflows binary32.
+            return is_neg ? 0x80000000u : 0u;
+        }
+
+        for (int i = 0; i < k; i++) {
+            // Divide by 5.
+            mc_u64 rem = 0;
+            for (int j = s.n - 1; j >= 0; j--) {
+                mc_u64 cur = (rem << 32) | (mc_u64)s.limb[j];
+                mc_u64 q = cur / 5u;
+                rem = cur - q * 5u;
+                s.limb[j] = (mc_u32)q;
+            }
+            if (rem) sticky = 1;
+            bigu_norm(&s);
+
+            // Divide by 2.
+            int lost = bigu_shr1(&s);
+            if (lost) sticky = 1;
+            if (s.n == 0) {
+                // Underflow: if anything was discarded, this is tiny.
+                return is_neg ? 0x80000000u : 0u;
+            }
+        }
+    }
+
+    if (s.n == 0) {
+        return is_neg ? 0x80000000u : 0u;
+    }
+
+    int hb = bigu_highbit_index(&s);
+    if (hb < 0) {
+        return is_neg ? 0x80000000u : 0u;
+    }
+
+    int e = hb - N;
+
+    // Overflow to infinity.
+    if (e > 127) {
+        return (is_neg ? 0x80000000u : 0u) | 0x7f800000u;
+    }
+
+    mc_u32 sign = is_neg ? 0x80000000u : 0u;
+
+    // Subnormals: exponent < -126.
+    if (e < -126) {
+        // mant = round(value * 2^149) = round(S / 2^(N-149)).
+        int rshift = N - 149;
+        if (rshift < 0) {
+            // Shouldn't happen with N=200.
+            rshift = 0;
+        }
+        // Extract q and rounding bits from S >> rshift.
+        BigU tmp = s;
+        // Determine rounding.
+        int guard = (rshift > 0) ? bigu_test_bit(&s, rshift - 1) : 0;
+        int sticky2 = sticky;
+        if (rshift > 1) sticky2 |= bigu_any_bits_below(&s, rshift - 2);
+
+        // Shift right rshift.
+        for (int i = 0; i < rshift; i++) {
+            (void)bigu_shr1(&tmp);
+            if (tmp.n == 0) break;
+        }
+        mc_u32 q = bigu_low_u32(&tmp);
+        if (guard && (sticky2 || (q & 1u))) q++;
+
+        if (q == 0) {
+            return sign;
+        }
+        if (q >= (1u << 23)) {
+            // Rounds up into the smallest normal.
+            return sign | (1u << 23);
+        }
+        return sign | (q & 0x7fffffu);
+    }
+
+    // Normal numbers.
+    mc_u32 exp_field = (mc_u32)(e + 127);
+    int rshift = hb - 23;
+    if (rshift < 0) rshift = 0;
+
+    int guard = (rshift > 0) ? bigu_test_bit(&s, rshift - 1) : 0;
+    int sticky2 = sticky;
+    if (rshift > 1) sticky2 |= bigu_any_bits_below(&s, rshift - 2);
+
+    BigU tmp = s;
+    for (int i = 0; i < rshift; i++) {
+        (void)bigu_shr1(&tmp);
+        if (tmp.n == 0) break;
+    }
+
+    mc_u32 q = bigu_low_u32(&tmp);
+    // q should contain the top 24 bits (implicit 1 + 23 mantissa bits).
+    if (guard && (sticky2 || (q & 1u))) q++;
+
+    if (q >= (1u << 24)) {
+        // Carry out.
+        q >>= 1;
+        exp_field++;
+        if (exp_field >= 255u) {
+            return sign | 0x7f800000u;
+        }
+    }
+
+    mc_u32 mant_field = q & 0x7fffffu;
+    return sign | (exp_field << 23) | mant_field;
 }
 
 static void lex_pop_exhausted(Lexer *lx) {
@@ -410,6 +716,8 @@ restart:
             t.kind = TOK_KW_CHAR;
         } else if (t.len == 4 && mc_memcmp(t.start, "void", 4) == 0) {
             t.kind = TOK_KW_VOID;
+        } else if (t.len == 5 && mc_memcmp(t.start, "float", 5) == 0) {
+            t.kind = TOK_KW_FLOAT;
         } else if (t.len == 7 && mc_memcmp(t.start, "typedef", 7) == 0) {
             t.kind = TOK_KW_TYPEDEF;
         } else if (t.len == 4 && mc_memcmp(t.start, "enum", 4) == 0) {
@@ -457,14 +765,81 @@ restart:
         return t;
     }
 
+    // Float literal starting with '.' (e.g. .5)
+    if (c == '.' && (peekc2(lx) >= '0' && peekc2(lx) <= '9')) {
+        (void)getc_lex(lx); // '.'
+
+        BigU digits;
+        bigu_zero(&digits);
+        int overflow = 0;
+        int frac_digits = 0;
+        int sticky = 0;
+
+        while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '9') {
+            unsigned char d = getc_lex(lx);
+            bigu_mul_small(&digits, 10u, &overflow);
+            bigu_add_small(&digits, (mc_u32)(d - '0'), &overflow);
+            frac_digits++;
+            if (overflow) {
+                // Too many digits: keep going just to consume, but mark sticky.
+                sticky = 1;
+            }
+        }
+
+        int exp10 = -frac_digits;
+        if (peekc_nopop(lx) == 'e' || peekc_nopop(lx) == 'E') {
+            (void)getc_lex(lx);
+            int esign = 1;
+            if (peekc_nopop(lx) == '+') {
+                (void)getc_lex(lx);
+            } else if (peekc_nopop(lx) == '-') {
+                (void)getc_lex(lx);
+                esign = -1;
+            }
+            int any = 0;
+            int eacc = 0;
+            while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '9') {
+                any = 1;
+                unsigned char d = getc_lex(lx);
+                if (eacc < 10000) eacc = eacc * 10 + (int)(d - '0');
+            }
+            if (!any) {
+                die("%s:%d:%d: malformed float exponent", lx->path, t.line, t.col);
+            }
+            exp10 += esign * eacc;
+        }
+
+        // Optional float suffix.
+        if (peekc_nopop(lx) == 'f' || peekc_nopop(lx) == 'F') {
+            (void)getc_lex(lx);
+        }
+
+        t.kind = TOK_FLOATNUM;
+        t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
+        t.num = (long long)(mc_u32)float32_from_decimal_parts(&digits, exp10, sticky, 0);
+        return t;
+    }
+
     if (c >= '0' && c <= '9') {
         // Integer literal (subset): decimal/octal/hex + common suffixes (u/U/l/L).
         unsigned long long v = 0;
         int base = 10;
 
+        BigU dec_digits;
+        bigu_zero(&dec_digits);
+        int dec_overflow = 0;
+        int saw_any_digit = 0;
+        int sticky = 0;
+        int frac_digits = 0;
+        int is_float = 0;
+        int exp10 = 0;
+
         // Consume first digit using lexer helpers so this works for macro-expansion buffers too.
         unsigned char first = getc_lex(lx);
         v = (unsigned long long)(first - '0');
+        saw_any_digit = 1;
+        bigu_mul_small(&dec_digits, 10u, &dec_overflow);
+        bigu_add_small(&dec_digits, (mc_u32)(first - '0'), &dec_overflow);
 
         if (first == '0') {
             unsigned char n1 = peekc_nopop(lx);
@@ -496,12 +871,93 @@ restart:
             while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '7') {
                 unsigned char d = getc_lex(lx);
                 v = (v << 3) + (unsigned long long)(d - '0');
+
+                saw_any_digit = 1;
+                if (!dec_overflow) {
+                    bigu_mul_small(&dec_digits, 10u, &dec_overflow);
+                    bigu_add_small(&dec_digits, (mc_u32)(d - '0'), &dec_overflow);
+                } else {
+                    sticky = 1;
+                }
             }
         } else {
             while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '9') {
                 unsigned char d = getc_lex(lx);
                 v = v * 10 + (unsigned long long)(d - '0');
+
+                saw_any_digit = 1;
+                if (!dec_overflow) {
+                    bigu_mul_small(&dec_digits, 10u, &dec_overflow);
+                    bigu_add_small(&dec_digits, (mc_u32)(d - '0'), &dec_overflow);
+                } else {
+                    sticky = 1;
+                }
             }
+        }
+
+        // Float literal detection: decimal point or exponent (decimal floats only).
+        if (base != 16) {
+            if (peekc_nopop(lx) == '.' && peekc2(lx) != '.') {
+                is_float = 1;
+                (void)getc_lex(lx); // '.'
+                while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '9') {
+                    unsigned char d = getc_lex(lx);
+                    if (!dec_overflow) {
+                        bigu_mul_small(&dec_digits, 10u, &dec_overflow);
+                        bigu_add_small(&dec_digits, (mc_u32)(d - '0'), &dec_overflow);
+                    } else {
+                        sticky = 1;
+                    }
+                    frac_digits++;
+                }
+            }
+
+            if (peekc_nopop(lx) == 'e' || peekc_nopop(lx) == 'E') {
+                is_float = 1;
+                (void)getc_lex(lx);
+                int esign = 1;
+                if (peekc_nopop(lx) == '+') {
+                    (void)getc_lex(lx);
+                } else if (peekc_nopop(lx) == '-') {
+                    (void)getc_lex(lx);
+                    esign = -1;
+                }
+                int any = 0;
+                int eacc = 0;
+                while (peekc_nopop(lx) >= '0' && peekc_nopop(lx) <= '9') {
+                    any = 1;
+                    unsigned char d = getc_lex(lx);
+                    if (eacc < 10000) eacc = eacc * 10 + (int)(d - '0');
+                }
+                if (!any) {
+                    die("%s:%d:%d: malformed float exponent", lx->path, t.line, t.col);
+                }
+                exp10 += esign * eacc;
+            }
+
+            // Suffix-only float literal (e.g. 1f)
+            if (!is_float && (peekc_nopop(lx) == 'f' || peekc_nopop(lx) == 'F')) {
+                is_float = 1;
+            }
+        }
+
+        if (is_float) {
+            exp10 -= frac_digits;
+
+            // Optional float suffix.
+            if (peekc_nopop(lx) == 'f' || peekc_nopop(lx) == 'F') {
+                (void)getc_lex(lx);
+            }
+
+            t.kind = TOK_FLOATNUM;
+            t.len = (mc_usize)(lex_cur_ptr_nopop(lx) - t.start);
+            if (!saw_any_digit || bigu_is_zero(&dec_digits)) {
+                t.num = 0;
+            } else {
+                mc_u32 bits = float32_from_decimal_parts(&dec_digits, exp10, sticky, 0);
+                t.num = (long long)bits;
+            }
+            return t;
         }
 
         // Consume common integer suffixes: u/U/l/L (including LL, ULL, etc).

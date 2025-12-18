@@ -43,10 +43,24 @@ BUILD_TSV="$OUT_BASE/build.tsv"
 : >"$BUILD_TSV"
 
 # Iterate tool source files.
-# shellcheck disable=SC2045
-TOOLS="$(ls tools/*.c 2>/dev/null || true)"
-if [ -z "$TOOLS" ]; then
-	die "no tools found under tools/"
+# By default, build all tools under tools/*.c.
+# If MATRIX_TOOLS is set (space-separated tool names, e.g. "mandelbrot wc"),
+# build only those.
+TOOLS=""
+if [ -n "${MATRIX_TOOLS:-}" ]; then
+	for tool in $MATRIX_TOOLS; do
+		src="tools/$tool.c"
+		if [ ! -f "$src" ]; then
+			die "matrix: unknown tool '$tool' (missing $src)"
+		fi
+		TOOLS="$TOOLS $src"
+	done
+else
+	# shellcheck disable=SC2045
+	TOOLS="$(ls tools/*.c 2>/dev/null || true)"
+	if [ -z "$TOOLS" ]; then
+		die "no tools found under tools/"
+	fi
 fi
 
 for tc in $TCS; do

@@ -1,8 +1,8 @@
 # IPv6 network tools (nettools)
 
-Date: 2025-12-17
+Date: 2025-12-18 (Updated)
 
-This document proposes a small set of elementary, *IPv6-only* networking tools for monacc userland.
+monacc includes a set of elementary, *IPv6-only* networking tools.
 
 The goals match the rest of the project:
 
@@ -27,17 +27,35 @@ If IPv4 support is ever desired, it can be added later as separate tools (e.g. `
 
 ---
 
-## Proposed tool set
+## Current Status
 
-### 1) `dns6` (DNS lookup)
+| Tool | Status | Notes |
+|------|--------|-------|
+| `dns6` | ✅ Implemented | AAAA, PTR, TCP fallback |
+| `ping6` | ✅ Implemented | ICMPv6 echo, hostname resolution |
+| `tcp6` | ✅ Implemented | TCP connect probe with timeout |
+| `wget6` | ✅ Implemented | HTTP/1.1 GET (no TLS) |
+| `ntp6` | ✅ Implemented | NTP time query |
+| `nc6` | ✅ Implemented | Netcat-style connect/listen |
+| `trace6` | ⏳ Not yet | ICMPv6 traceroute |
+| `tls13` | ✅ Implemented | TLS 1.3 client + HTTPS (separate tool) |
 
-A tiny “dig-like” tool focused on a minimal subset:
+---
+
+## Implemented tool set
+
+### 1) `dns6` (DNS lookup) ✅
+
+A tiny "dig-like" tool focused on a minimal subset:
 
 - Default query: `AAAA <name>`
 - Support `PTR <ipv6>` (reverse lookup) via `ip6.arpa` generation
-- Optional: `NS`, `MX`, `TXT` later (not needed for the first cut)
 
-CLI sketch:
+CLI:
+
+```bash
+dns6 [-t aaaa|ptr] [-s SERVER] [-p PORT] [-W TIMEOUT_MS] [--tcp] NAME
+```
 
 - `dns6 example.com` → prints AAAA records
 - `dns6 -t ptr 2001:db8::1` → reverse lookup
@@ -45,7 +63,7 @@ CLI sketch:
 - `dns6 -p 53 example.com` → choose port
 - `dns6 --tcp example.com` → force TCP
 
-Behavior constraints:
+Behavior:
 
 - Reads resolvers from `/etc/resolv.conf` (IPv6 only).
 - Temporary fallback when no IPv6 `nameserver` exists: use Google Public DNS IPv6
@@ -54,23 +72,30 @@ Behavior constraints:
 - UDP first; TCP fallback only if response is truncated (`TC` bit)
 - Prints only essential output (one answer per line)
 
-### 2) `ping6` (ICMPv6 echo)
+### 2) `ping6` (ICMPv6 echo) ✅
 
 Minimal ICMPv6 echo request/reply:
 
-CLI sketch:
+CLI:
+
+```bash
+ping6 [-c COUNT] [-i INTERVAL_MS] [-W TIMEOUT_MS] [-s DNS_SERVER] HOST
+```
 
 - `ping6 2001:db8::1`
 - `ping6 -c 3 -i 200 2001:db8::1` (count, interval ms)
 - `ping6 -W 1000 2001:db8::1` (timeout ms)
+- `ping6 -s 2001:4860:4860::8888 example.com` (specify DNS server for hostname resolution)
 
-Constraints:
+Behavior:
 
 - Accepts IPv6 literals and (optionally) hostnames by doing a minimal `AAAA` lookup using the same IPv6-only resolver approach as `dns6`.
 - If no IPv6 resolver exists in `/etc/resolv.conf`, require `-s DNS_SERVER`.
 - Requires `CAP_NET_RAW` (or root). If not present: print a clear error and exit 2.
 
-### 3) `trace6` (traceroute)
+### 3) `trace6` (traceroute) ⏳
+
+**Not yet implemented.**
 
 Traceroute via ICMPv6 echo with increasing hop-limit.
 
@@ -85,7 +110,7 @@ Constraints:
 - Uses ICMPv6 Time Exceeded + Echo Reply
 - Requires `CAP_NET_RAW`
 
-### 4) `tcp6` (basic TCP connect probe)
+### 4) `tcp6` (basic TCP connect probe) ✅
 
 A very small “can I connect” tool for IPv6:
 
@@ -94,7 +119,7 @@ A very small “can I connect” tool for IPv6:
 
 This tool does **not** require raw sockets and is useful for debugging without privileges.
 
-### 5) `wget6` (minimal HTTP GET)
+### 5) `wget6` (minimal HTTP GET) ✅
 
 A tiny, syscall-only HTTP/1.1 GET client over IPv6:
 
@@ -109,7 +134,7 @@ CLI sketch:
 - `wget6 -s 2001:4860:4860::8888 example.com/`
 - `wget6 -O out.html example.com/`
 
-### 6) `ntp6` (query current time)
+### 6) `ntp6` (query current time) ✅
 
 A tiny NTP client over IPv6 (UDP/123):
 
@@ -122,6 +147,43 @@ CLI sketch:
 - `ntp6` (queries `pool.ntp.org`)
 - `ntp6 time.google.com`
 - `ntp6 -W 1000` (timeout)
+
+### 7) `nc6` (netcat) ✅
+
+A minimal netcat-style tool for IPv6 TCP connections:
+
+CLI:
+
+```bash
+nc6 [-l] [-s BIND_ADDR] [-p PORT] [-W TIMEOUT_MS] [-D DNS_SERVER] HOST PORT
+nc6 -l [-s BIND_ADDR] -p PORT [-W TIMEOUT_MS]
+```
+
+- Client mode: connect to HOST:PORT
+- Listen mode (`-l`): accept one connection on the given port
+- Relays stdin/stdout bidirectionally
+
+### 8) `tls13` (TLS 1.3 client) ✅
+
+A TLS 1.3 tool supporting live HTTPS requests (see [tls.md](tls.md) for details):
+
+CLI:
+
+```bash
+tls13 <rec|kdf|hello|hs> ...
+  tls13 rec   --smoke
+  tls13 kdf   --rfc8448-1rtt
+  tls13 hello --rfc8448-1rtt
+  tls13 hs    [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT
+```
+
+Example:
+
+```bash
+tls13 hs -n en.wikipedia.org -p /api/rest_v1/page/summary/caffeine en.wikipedia.org 443
+```
+
+Note: Certificate validation is **not implemented** (no X.509 parsing in-tree).
 
 ---
 
@@ -136,11 +198,13 @@ Not in the first iteration:
 
 ---
 
-## Implementation plan (precise steps)
+## Implementation notes (historical)
 
-### Step A — Add syscall surface for networking
+The following steps were completed during initial implementation. Kept for reference.
 
-Add the missing Linux x86_64 syscalls and wrappers in core:
+### Step A — Add syscall surface for networking ✅
+
+Linux x86_64 syscalls and wrappers in `core/mc_net.h`:
 
 1. Add syscall numbers to core/mc_syscall.h:
    - `socket` (41)
@@ -171,11 +235,11 @@ Add the missing Linux x86_64 syscalls and wrappers in core:
    - `IPV6_UNICAST_HOPS` / `IPV6_RECVHOPLIMIT` (for `trace6`)
    - `SOL_SOCKET`, `SO_RCVTIMEO` (optional)
 
-Recommendation: keep these in a dedicated header, e.g. `core/mc_net.h`, to avoid bloating unrelated tools.
+All implemented in `core/mc_net.h`.
 
-### Step B — Implement `tcp6` first (no privileges)
+### Step B — Implement `tcp6` first ✅
 
-Why first: exercises socket syscalls and timeouts without needing raw sockets.
+Completed. Exercises socket syscalls and timeouts without needing raw sockets.
 
 Implementation outline:
 
@@ -190,9 +254,9 @@ Implementation outline:
    - If you want to avoid `fcntl` initially, you can omit timeout v1.
 5. Exit codes: `0` success, `1` failure, `2` usage.
 
-### Step C — Implement `dns6` (UDP AAAA + PTR)
+### Step C — Implement `dns6` ✅
 
-Implementation outline:
+Completed. Implementation details:
 
 1. Read `/etc/resolv.conf`:
    - parse lines `nameserver <ip>`
@@ -223,9 +287,9 @@ Output suggestions:
 - For AAAA: print each IPv6 as text
 - For PTR: print hostname
 
-### Step D — Implement `ping6` (ICMPv6 echo)
+### Step D — Implement `ping6` ✅
 
-Implementation outline:
+Completed. Implementation details:
 
 1. Create raw socket: `socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6)`.
 2. Build ICMPv6 echo request:
@@ -249,9 +313,9 @@ Linux raw ICMPv6 sockets typically require checksum to be provided by kernel for
 5. Privileges:
    - If `socket()` returns `EPERM`, print: `ping6: need CAP_NET_RAW (try sudo)` and exit 2.
 
-### Step E — Implement `trace6` (ICMPv6 with hop-limit)
+### Step E — Implement `trace6` ⏳
 
-Implementation outline:
+**Not yet implemented.** Design outline:
 
 1. Raw ICMPv6 socket (same as ping6).
 2. For hop = 1..max:
@@ -302,4 +366,9 @@ Recommended checks:
 
 ## Summary
 
-Start with `tcp6` and `dns6` (no raw privileges), then add `ping6` and `trace6` once the raw-socket + checksum story is in place.
+The core IPv6 networking tools are implemented:
+
+- **Completed:** `dns6`, `ping6`, `tcp6`, `wget6`, `ntp6`, `nc6`, `tls13`
+- **Pending:** `trace6` (ICMPv6 traceroute)
+
+All tools use syscalls directly, no libc networking helpers.

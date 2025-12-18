@@ -451,6 +451,7 @@ int type_alignof(const Program *prg, BaseType base, int ptr, int struct_id) {
     if (base == BT_SHORT) return 2;
     if (base == BT_INT) return 4;
     if (base == BT_LONG) return 8;
+    if (base == BT_FLOAT) return 4;
     if (base == BT_VOID) return 1;
     if (base == BT_STRUCT) {
         if (!prg || struct_id < 0 || struct_id >= prg->nstructs) return 8;
@@ -466,6 +467,7 @@ int type_sizeof(const Program *prg, BaseType base, int ptr, int struct_id) {
     if (base == BT_SHORT) return 2;
     if (base == BT_INT) return 4;
     if (base == BT_LONG) return 8;
+    if (base == BT_FLOAT) return 4;
     if (base == BT_VOID) {
         die("invalid sizeof(void)");
     }

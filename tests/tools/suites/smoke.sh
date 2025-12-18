@@ -17,7 +17,8 @@ for part in \
   "$SMOKE_DIR/04_cmp_misc.sh" \
   "$SMOKE_DIR/05_sys_shell_text.sh" \
   "$SMOKE_DIR/06_find_stat_df_du_grep_ls.sh" \
-  "$SMOKE_DIR/07_crypto.sh"; do
+  "$SMOKE_DIR/07_crypto.sh" \
+  "$SMOKE_DIR/08_mandelbrot.sh"; do
   [ -f "$part" ] || fail "missing smoke part: $part"
   sh "$part" "$BIN" "$TMP"
 done

@@ -185,6 +185,28 @@ All tools compile and link successfully with monacc (currently 85).
 | `xargs` | `-n N`, `-I REPL` | — |
 | `yes` | Repeat line to stdout | — |
 
+### Networking Tools (IPv6-only)
+
+| Tool | Current Features | Notes |
+|------|------------------|-------|
+| `dns6` | AAAA, PTR; `-t`, `-s`, `-p`, `-W`, `--tcp` | UDP first, TCP fallback |
+| `nc6` | TCP connect/listen; `-l`, `-s`, `-p`, `-W`, `-D` | Netcat-style |
+| `ntp6` | NTP time query; `-s`, `-W` | Queries pool.ntp.org by default |
+| `ping6` | ICMPv6 echo; `-c`, `-i`, `-W`, `-s` | Requires CAP_NET_RAW |
+| `tcp6` | TCP connect probe; `-W` | No raw sockets needed |
+| `wget6` | HTTP/1.1 GET; `-O`, `-s`, `-W` | HTTP only (no TLS) |
+
+### Crypto/TLS Tools
+
+| Tool | Current Features | Notes |
+|------|------------------|-------|
+| `aes128` | AES-128 FIPS 197 test | `--fips197` |
+| `gcm128` | AES-128-GCM smoke test | `--smoke` |
+| `hkdf` | HKDF-SHA256 RFC 5869 vectors | `--rfc5869` |
+| `sha256` | SHA-256 hash files | `sha256 [FILE...]` |
+| `tls13` | TLS 1.3 client; record/KDF/handshake | See [tls.md](tls.md) |
+| `x25519` | X25519 key exchange RFC 7748 test | `--rfc7748` |
+
 ---
 
 ## Part 3: Dependency Reduction

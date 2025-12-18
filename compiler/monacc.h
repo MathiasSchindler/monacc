@@ -73,11 +73,13 @@ typedef enum {
     TOK_EOF = 0,
     TOK_IDENT,
     TOK_NUM,
+    TOK_FLOATNUM,
     TOK_STR,
     TOK_CHAR,
     TOK_KW_INT,
     TOK_KW_CHAR,
     TOK_KW_VOID,
+    TOK_KW_FLOAT,
     TOK_KW_TYPEDEF,
     TOK_KW_ENUM,
     TOK_KW_SIZEOF,
@@ -160,8 +162,9 @@ typedef enum {
     BT_CHAR = 1,
     BT_SHORT = 2,
     BT_LONG = 3,
-    BT_VOID = 4,
-    BT_STRUCT = 5,
+    BT_FLOAT = 4,
+    BT_VOID = 5,
+    BT_STRUCT = 6,
 } BaseType;
 
 typedef struct {

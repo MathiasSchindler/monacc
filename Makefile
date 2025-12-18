@@ -114,12 +114,14 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	unsigned_divmod_pow2 const_index sizeof_array packed_struct compound_literal_assign_global extern_incomplete_array static_local_array static_local_init \
 	global_array_store \
 	addr_deref_syscall \
-	asm_syscall
+	asm_syscall \
+	float_arith float_div float_cmp float_neg float_lits
 
 # Default goal: build everything
 .DEFAULT_GOAL := all
 
 .PHONY: all all-split tools-ld tools-internal test clean debug selfhost
+.PHONY: matrix-tool matrix-mandelbrot
 
 # === Initramfs image (for booting sysbox) ===
 
@@ -336,3 +338,21 @@ clean:
 debug:
 	$(MAKE) clean
 	$(MAKE) DEBUG=1 LTO=0 all
+
+# Build only one tool across multiple toolchains (monacc + gcc/clang), without
+# compiling all other tools.
+#
+# Examples:
+#   make matrix-tool TOOL=mandelbrot
+#   make matrix-tool TOOL=mandelbrot TCS="monacc gcc-15 clang-20"
+#
+TOOL ?= mandelbrot
+TCS ?=
+
+matrix-tool: $(MONACC)
+	@echo "==> Matrix: build tool=$(TOOL)"
+	@mkdir -p build/matrix
+	@MATRIX_TOOLS="$(TOOL)" sh tests/matrix/build-matrix.sh $(TCS)
+
+matrix-mandelbrot:
+	@$(MAKE) matrix-tool TOOL=mandelbrot TCS="$(TCS)"

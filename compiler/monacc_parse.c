@@ -73,8 +73,23 @@ static void expr_set_int_literal(Expr *e, long long v) {
 static int expr_is_integer_scalar(const Expr *e) {
     if (!e) return 0;
     if (e->ptr != 0) return 0;
-    if (e->base == BT_VOID || e->base == BT_STRUCT) return 0;
+    if (e->base == BT_VOID || e->base == BT_STRUCT || e->base == BT_FLOAT) return 0;
     return 1;
+}
+
+static int expr_is_float_scalar(const Expr *e) {
+    return e && e->ptr == 0 && e->base == BT_FLOAT;
+}
+
+static void expr_set_float(Expr *e) {
+    if (!e) return;
+    e->base = BT_FLOAT;
+    e->ptr = 0;
+    e->struct_id = -1;
+    // Treat float values as raw 32-bit bits in integer registers.
+    // Mark them as unsigned to avoid sign-extension during loads/normalization.
+    e->is_unsigned = 1;
+    e->lval_size = 4;
 }
 
 static void expr_promoted_int_type_from(const Expr *src, BaseType *out_base, int *out_is_unsigned, int *out_sz) {
@@ -109,6 +124,13 @@ static void expr_set_promoted_int(Expr *dst, const Expr *src) {
 
 static void expr_set_usual_arith(Expr *dst, const Expr *lhs, const Expr *rhs) {
     if (!dst) return;
+
+    // Minimal float support: if either operand is float, the result is float.
+    // Mixed int/float requires explicit casts for now.
+    if (expr_is_float_scalar(lhs) || expr_is_float_scalar(rhs)) {
+        expr_set_float(dst);
+        return;
+    }
     if (!expr_is_integer_scalar(lhs) || !expr_is_integer_scalar(rhs)) {
         expr_set_int(dst);
         return;
@@ -287,8 +309,8 @@ static int skip_type_qualifiers(Parser *p, int *io_is_unsigned, int *io_is_short
 }
 
 static int looks_like_type_start(Parser *p) {
-    if (tok_is(p, TOK_KW_INT) || tok_is(p, TOK_KW_CHAR) || tok_is(p, TOK_KW_VOID) || tok_is(p, TOK_KW_STRUCT) ||
-        tok_is(p, TOK_KW_ENUM))
+    if (tok_is(p, TOK_KW_INT) || tok_is(p, TOK_KW_CHAR) || tok_is(p, TOK_KW_VOID) || tok_is(p, TOK_KW_FLOAT) ||
+        tok_is(p, TOK_KW_STRUCT) || tok_is(p, TOK_KW_ENUM))
         return 1;
     if (p->tok.kind == TOK_IDENT) {
         if (p->prg && program_find_typedef(p->prg, p->tok.start, p->tok.len)) return 1;
@@ -442,6 +464,8 @@ static void parse_type_spec(Parser *p, BaseType *out_base, int *out_ptr, int *ou
         base = BT_CHAR;
     } else if (consume(p, TOK_KW_VOID)) {
         base = BT_VOID;
+    } else if (consume(p, TOK_KW_FLOAT)) {
+        base = BT_FLOAT;
     } else if (consume(p, TOK_KW_STRUCT)) {
         const char *nm = NULL;
         mc_usize nm_len = 0;
@@ -504,6 +528,11 @@ static void parse_type_spec(Parser *p, BaseType *out_base, int *out_ptr, int *ou
         } else if (is_long) {
             base = BT_LONG;
         }
+    }
+
+    // For float, treat the value as unsigned bits for loads/normalization.
+    if (base == BT_FLOAT && ptr == 0) {
+        is_unsigned = 1;
     }
 
     if (parse_ptr_stars) {
@@ -665,6 +694,14 @@ static Expr *parse_primary(Parser *p, Locals *ls) {
         Expr *e = new_expr(EXPR_NUM);
         e->num = p->tok.num;
         expr_set_int_literal(e, e->num);
+        parser_next(p);
+        return e;
+    }
+    if (p->tok.kind == TOK_FLOATNUM) {
+        Expr *e = new_expr(EXPR_NUM);
+        // Store IEEE-754 binary32 bits in num, evaluate as float scalar.
+        e->num = (long long)(mc_u32)p->tok.num;
+        expr_set_float(e);
         parser_next(p);
         return e;
     }
@@ -1178,7 +1215,9 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
     if (consume(p, TOK_PLUS)) {
         Expr *e = new_expr(EXPR_POS);
         e->lhs = parse_unary(p, ls);
-        if (e->lhs && e->lhs->ptr > 0) {
+        if (expr_is_float_scalar(e->lhs)) {
+            expr_set_float(e);
+        } else if (e->lhs && e->lhs->ptr > 0) {
             e->base = e->lhs->base;
             e->ptr = e->lhs->ptr;
             e->struct_id = e->lhs->struct_id;
@@ -1192,7 +1231,11 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
     if (consume(p, TOK_MINUS)) {
         Expr *e = new_expr(EXPR_NEG);
         e->lhs = parse_unary(p, ls);
-        expr_set_promoted_int(e, e->lhs);
+        if (expr_is_float_scalar(e->lhs)) {
+            expr_set_float(e);
+        } else {
+            expr_set_promoted_int(e, e->lhs);
+        }
         return e;
     }
     if (consume(p, TOK_BANG)) {

@@ -459,6 +459,16 @@ static int expr_is_simple_arg(const Expr *e) {
 static int cg_expr_to_reg(CG *cg, const Expr *e, const char *reg64, const char *reg32) {
     if (!e) return 0;
     if (e->kind == EXPR_NUM) {
+        if (e->ptr == 0 && e->base == BT_FLOAT) {
+            mc_u32 bits = (mc_u32)e->num;
+            if (bits == 0) {
+                str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
+            } else {
+                str_appendf_u64(&cg->out, "  mov $%u, ", (unsigned long long)bits);
+                str_appendf_s(&cg->out, "%s\n", reg32);
+            }
+            return 1;
+        }
         if (e->num == 0) {
             // xor reg32, reg32 is smaller than mov $0, reg
             str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
@@ -484,7 +494,47 @@ static void emit_load_rip_reg(CG *cg, const char *sym, int size, int is_unsigned
 // Returns 1 if successful, 0 otherwise.
 static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, const char *reg32) {
     if (!e) return 0;
-    if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return cg_expr_to_reg_simple_arg(cg, e->lhs, reg64, reg32);
+    if (e->kind == EXPR_POS) return cg_expr_to_reg_simple_arg(cg, e->lhs, reg64, reg32);
+    if (e->kind == EXPR_CAST) {
+        // IMPORTANT: casts can change width/signedness. Do not drop them.
+        // Keep this path limited to scalar integer/pointer casts that we can
+        // implement without clobbering other ABI argument registers.
+        if (!e->lhs) return 0;
+        if (e->ptr == 0 && (e->base == BT_FLOAT || e->base == BT_STRUCT)) {
+            return 0;
+        }
+
+        // Load the source expression into the target register.
+        if (!cg_expr_to_reg_simple_arg(cg, e->lhs, reg64, reg32)) return 0;
+
+        int dst_sz = 8;
+        if (e->ptr > 0) {
+            dst_sz = 8;
+        } else if (e->base == BT_CHAR) {
+            dst_sz = 1;
+        } else if (e->base == BT_SHORT) {
+            dst_sz = 2;
+        } else if (e->base == BT_INT) {
+            dst_sz = 4;
+        } else if (e->base == BT_LONG) {
+            dst_sz = 8;
+        }
+
+        int src_sz = 8;
+        if (e->lhs) {
+            src_sz = type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id);
+        }
+
+        // If we're widening a signed 32-bit integer to 64-bit, we must
+        // explicitly sign-extend because many loads now leave upper bits as 0.
+        if (dst_sz == 8 && src_sz == 4) {
+            if (e->lhs->ptr == 0 && !e->lhs->is_unsigned &&
+                e->lhs->base != BT_LONG && e->lhs->base != BT_FLOAT && e->lhs->base != BT_STRUCT) {
+                str_appendf_ss(&cg->out, "  movslq %s, %s\n", reg32, reg64);
+            }
+        }
+        return 1;
+    }
 
     // Simple scalar arithmetic: scalar +/- imm32. This is primarily used by the
     // ptr+idx lowering path when idx is parenthesized (e.g. `p + (i + 1)`).
@@ -560,6 +610,11 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
                 // Use %r11 as a dedicated scratch so we don't clobber any ABI arg regs.
                 if (!cg_expr_to_reg_simple_arg(cg, ptr_e, reg64, reg32)) return 0;
                 if (!cg_expr_to_reg_simple_arg(cg, imm_e, "%r11", "%r11d")) return 0;
+
+                if (imm_e->ptr == 0 && imm_e->lval_size == 4 && !imm_e->is_unsigned &&
+                    imm_e->base != BT_LONG && imm_e->base != BT_FLOAT && imm_e->base != BT_STRUCT) {
+                    str_appendf(&cg->out, "  movslq %%r11d, %%r11\n");
+                }
 
                 if (e->ptr_scale != 1) {
                     int sh = (e->ptr_scale == 2) ? 1 : (e->ptr_scale == 4) ? 2 : 3;
@@ -701,6 +756,18 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
     return 0;
 }
 
+// Like cg_expr_to_reg_simple_arg, but rolls back output on failure.
+static int cg_expr_to_reg_simple_arg_try(CG *cg, const Expr *e, const char *reg64, const char *reg32) {
+    if (!cg) return 0;
+    mc_usize old_len = cg->out.len;
+    int ok = cg_expr_to_reg_simple_arg(cg, e, reg64, reg32);
+    if (!ok) {
+        cg->out.len = old_len;
+        if (cg->out.buf) cg->out.buf[old_len] = 0;
+    }
+    return ok;
+}
+
 static int u64_pow2_shift(unsigned long long v) {
     if (v == 0) return -1;
     if ((v & (v - 1ULL)) != 0ULL) return -1;
@@ -726,11 +793,9 @@ static void emit_load_mem(CG *cg, const char *mem, int size, int is_unsigned) {
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_s(&cg->out, "  mov %s, %%eax\n", mem);
-        } else {
-            str_appendf_s(&cg->out, "  movslq %s, %%rax\n", mem);
-        }
+        // Keep 32-bit scalars in %eax and avoid eager sign-extension.
+        (void)is_unsigned;
+        str_appendf_s(&cg->out, "  mov %s, %%eax\n", mem);
         return;
     }
     if (size == 8) {
@@ -754,11 +819,8 @@ static void emit_load_disp(CG *cg, int disp, const char *base, int size, int is_
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_is(&cg->out, "  mov %d(%s), %%eax\n", (long long)disp, base);
-        } else {
-            str_appendf_is(&cg->out, "  movslq %d(%s), %%rax\n", (long long)disp, base);
-        }
+        (void)is_unsigned;
+        str_appendf_is(&cg->out, "  mov %d(%s), %%eax\n", (long long)disp, base);
         return;
     }
     if (size == 8) {
@@ -784,13 +846,10 @@ static void emit_load_disp_reg(CG *cg, int disp, const char *base, int size, int
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_is(&cg->out, "  mov %d(%s), ", (long long)disp, base);
-            str_appendf_s(&cg->out, "%s\n", reg32);
-        } else {
-            str_appendf_is(&cg->out, "  movslq %d(%s), ", (long long)disp, base);
-            str_appendf_s(&cg->out, "%s\n", reg64);
-        }
+        (void)is_unsigned;
+        (void)reg64;
+        str_appendf_is(&cg->out, "  mov %d(%s), ", (long long)disp, base);
+        str_appendf_s(&cg->out, "%s\n", reg32);
         return;
     }
     if (size == 8) {
@@ -815,11 +874,8 @@ static void emit_load_rip(CG *cg, const char *sym, int size, int is_unsigned) {
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_s(&cg->out, "  mov %s(%%rip), %%eax\n", sym);
-        } else {
-            str_appendf_s(&cg->out, "  movslq %s(%%rip), %%rax\n", sym);
-        }
+        (void)is_unsigned;
+        str_appendf_s(&cg->out, "  mov %s(%%rip), %%eax\n", sym);
         return;
     }
     if (size == 8) {
@@ -842,11 +898,9 @@ static void emit_load_rip_reg(CG *cg, const char *sym, int size, int is_unsigned
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_ss(&cg->out, "  mov %s(%%rip), %s\n", sym, reg32);
-        } else {
-            str_appendf_ss(&cg->out, "  movslq %s(%%rip), %s\n", sym, reg64);
-        }
+        (void)is_unsigned;
+        (void)reg64;
+        str_appendf_ss(&cg->out, "  mov %s(%%rip), %s\n", sym, reg32);
         return;
     }
     if (size == 8) {
@@ -874,11 +928,8 @@ static void emit_load_rip_disp(CG *cg, const char *sym, int disp, int size, int 
         return;
     }
     if (size == 4) {
-        if (is_unsigned) {
-            str_appendf_si(&cg->out, "  mov %s+%d(%%rip), %%eax\n", sym, (long long)disp);
-        } else {
-            str_appendf_si(&cg->out, "  movslq %s+%d(%%rip), %%rax\n", sym, (long long)disp);
-        }
+        (void)is_unsigned;
+        str_appendf_si(&cg->out, "  mov %s+%d(%%rip), %%eax\n", sym, (long long)disp);
         return;
     }
     if (size == 8) {
@@ -1162,7 +1213,13 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
     }
     if (e->kind == EXPR_INDEX) {
         // Address = base + idx*scale
-        int scale = (e->ptr_scale > 0) ? e->ptr_scale : 8;
+        int scale = 8;
+        if (e->ptr_scale > 0) {
+            scale = e->ptr_scale;
+        } else if (e->lval_size > 0) {
+            // Fall back to element size for indexing (e.g. char* and arrays).
+            scale = e->lval_size;
+        }
 
         // Optimize constant index: avoid push/pop, use immediate offset
         if (e->rhs && e->rhs->kind == EXPR_NUM) {
@@ -1218,6 +1275,10 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
         str_appendf(&cg->out, "  push %%rax\n");
         cg_expr(cg, e->rhs);
         str_appendf(&cg->out, "  pop %%rcx\n");
+        if (e->rhs && e->rhs->ptr == 0 && e->rhs->lval_size == 4 && !e->rhs->is_unsigned &&
+            e->rhs->base != BT_LONG && e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
+            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+        }
         if (scale != 1) {
             str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", scale);
         }
@@ -1352,10 +1413,25 @@ static void cg_call(CG *cg, const Expr *e) {
         }
         for (int i = e->nargs - 1; i >= 6; i--) {
             cg_expr(cg, e->args[i]);
+            const Expr *a = e->args[i];
+            if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+                a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
+                // If this arg is a known non-negative constant, zero-extension is sufficient.
+                if (!(a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                }
+            }
             str_appendf(&cg->out, "  push %%rax\n");
         }
         for (int i = 0; i < nreg; i++) {
             cg_expr(cg, e->args[i]);
+            const Expr *a = e->args[i];
+            if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+                a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
+                if (!(a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                }
+            }
             str_appendf(&cg->out, "  push %%rax\n");
         }
         for (int i = nreg - 1; i >= 0; i--) {
@@ -1381,6 +1457,31 @@ static void cg_call(CG *cg, const Expr *e) {
     CallArgInfo ai[64];
     if (e->nargs > (int)(sizeof(ai) / sizeof(ai[0]))) {
         die("too many call args");
+    }
+
+    // Determine when a signed 32-bit scalar argument must be sign-extended to 64-bit.
+    // SysV ABI allows upper bits to be unspecified for <=32-bit integer args, so we can
+    // skip extension when the callee parameter is 32-bit. But when the callee expects
+    // a 64-bit integer (e.g. long/long long) and the argument expression is 32-bit,
+    // we must extend to preserve negative values.
+    int need_sext[64];
+    for (int i = 0; i < e->nargs; i++) need_sext[i] = 0;
+    const Function *callee_sig = NULL;
+    if (cg->prg && e->callee[0] != 0) {
+        callee_sig = program_find_fn(cg->prg, e->callee, mc_strlen(e->callee));
+    }
+    for (int i = 0; i < e->nargs; i++) {
+        const Expr *a = e->args[i];
+        if (!a) continue;
+        if (!(a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+              a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT)) {
+            continue;
+        }
+        int want64 = 1; // conservative default when we don't know the signature
+        if (callee_sig && i < callee_sig->nparams) {
+            want64 = (callee_sig->param_sizes[i] == 8);
+        }
+        if (want64) need_sext[i] = 1;
     }
 
     int reg_used = 0;
@@ -1421,6 +1522,10 @@ static void cg_call(CG *cg, const Expr *e) {
     for (int i = e->nargs - 1; i >= 0; i--) {
         if (ai[i].kind == CALLARG_STACK_SCALAR) {
             cg_expr(cg, e->args[i]);
+            const Expr *a = e->args[i];
+            if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+            }
             str_appendf(&cg->out, "  push %%rax\n");
         } else if (ai[i].kind == CALLARG_STACK_STRUCT) {
             (void)cg_lval_addr(cg, e->args[i]);
@@ -1446,6 +1551,10 @@ static void cg_call(CG *cg, const Expr *e) {
         if (ai[i].kind != CALLARG_REG) continue;
         if (!expr_is_simple_arg(e->args[i])) {
             str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
+            const Expr *a = e->args[i];
+            if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+            }
         }
     }
     // Load simple const args directly into target registers.
@@ -1453,6 +1562,10 @@ static void cg_call(CG *cg, const Expr *e) {
         if (ai[i].kind != CALLARG_REG) continue;
         if (expr_is_simple_arg(e->args[i])) {
             (void)cg_expr_to_reg_simple_arg(cg, e->args[i], areg[ai[i].reg], areg32[ai[i].reg]);
+            const Expr *a = e->args[i];
+            if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+            }
         }
     }
 
@@ -1579,13 +1692,21 @@ static int cg_cmp_imm(CG *cg, const Expr *e, long long imm, int is_lhs_const) {
         return 0;
     }
 
-    // Evaluate the non-constant side into %rax.
-    cg_expr(cg, is_lhs_const ? e->rhs : e->lhs);
+    const Expr *other = is_lhs_const ? e->rhs : e->lhs;
+    int use32 = 0;
+    if (other && other->ptr == 0 && other->base != BT_LONG && other->base != BT_FLOAT && other->base != BT_STRUCT) {
+        if (other->lval_size == 4) use32 = 1;
+    }
+
+    // Evaluate the non-constant side into %rax/%eax.
+    cg_expr(cg, other);
 
     if (imm == 0) {
-        str_appendf(&cg->out, "  test %%rax, %%rax\n");
+        if (use32) str_appendf(&cg->out, "  test %%eax, %%eax\n");
+        else str_appendf(&cg->out, "  test %%rax, %%rax\n");
     } else if (imm >= -2147483648LL && imm <= 2147483647LL) {
-        str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", imm);
+        if (use32) str_appendf_i64(&cg->out, "  cmp $%lld, %%eax\n", imm);
+        else str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", imm);
     } else {
         return 0;
     }
@@ -1620,6 +1741,11 @@ static int cg_cmp_imm(CG *cg, const Expr *e, long long imm, int is_lhs_const) {
 static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_const) {
     if (!e) return 0;
 
+    int use32 = 0;
+    if (e->ptr == 0 && e->ptr_scale == 0 && e->base != BT_LONG && e->base != BT_FLOAT && e->base != BT_STRUCT) {
+        if (e->lval_size == 4) use32 = 1;
+    }
+
     const Expr *other = is_lhs_const ? e->rhs : e->lhs;
 
     // Add/sub/bitwise/mul immediate peepholes. (Shifts/div/mod have their own logic.)
@@ -1636,9 +1762,15 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
 
         cg_expr(cg, other);
         if (addimm == 0) return 1;
-        if (addimm == 1) str_appendf(&cg->out, "  inc %%rax\n");
-        else if (addimm == -1) str_appendf(&cg->out, "  dec %%rax\n");
-        else str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", addimm);
+        if (use32) {
+            if (addimm == 1) str_appendf(&cg->out, "  inc %%eax\n");
+            else if (addimm == -1) str_appendf(&cg->out, "  dec %%eax\n");
+            else str_appendf_i64(&cg->out, "  add $%lld, %%eax\n", addimm);
+        } else {
+            if (addimm == 1) str_appendf(&cg->out, "  inc %%rax\n");
+            else if (addimm == -1) str_appendf(&cg->out, "  dec %%rax\n");
+            else str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", addimm);
+        }
         return 1;
     }
 
@@ -1648,8 +1780,13 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
         if (is_lhs_const) {
             if (e->ptr_scale != 0) return 0;
             cg_expr(cg, other);
-            str_appendf(&cg->out, "  neg %%rax\n");
-            if (imm != 0) str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", imm);
+            if (use32) {
+                str_appendf(&cg->out, "  neg %%eax\n");
+                if (imm != 0) str_appendf_i64(&cg->out, "  add $%lld, %%eax\n", imm);
+            } else {
+                str_appendf(&cg->out, "  neg %%rax\n");
+                if (imm != 0) str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", imm);
+            }
             return 1;
         }
 
@@ -1663,9 +1800,15 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
 
         cg_expr(cg, other);
         if (subimm == 0) return 1;
-        if (subimm == 1) str_appendf(&cg->out, "  dec %%rax\n");
-        else if (subimm == -1) str_appendf(&cg->out, "  inc %%rax\n");
-        else str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", subimm);
+        if (use32) {
+            if (subimm == 1) str_appendf(&cg->out, "  dec %%eax\n");
+            else if (subimm == -1) str_appendf(&cg->out, "  inc %%eax\n");
+            else str_appendf_i64(&cg->out, "  sub $%lld, %%eax\n", subimm);
+        } else {
+            if (subimm == 1) str_appendf(&cg->out, "  dec %%rax\n");
+            else if (subimm == -1) str_appendf(&cg->out, "  inc %%rax\n");
+            else str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", subimm);
+        }
         return 1;
     }
 
@@ -1675,20 +1818,27 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
         cg_expr(cg, other);
         if (imm == -1) return 1;
         if (imm == 0) str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+        else if (use32) str_appendf_i64(&cg->out, "  and $%lld, %%eax\n", imm);
         else str_appendf_i64(&cg->out, "  and $%lld, %%rax\n", imm);
         return 1;
     }
     if (e->kind == EXPR_BOR) {
         cg_expr(cg, other);
         if (imm == 0) return 1;
-        str_appendf_i64(&cg->out, "  or $%lld, %%rax\n", imm);
+        if (use32) str_appendf_i64(&cg->out, "  or $%lld, %%eax\n", imm);
+        else str_appendf_i64(&cg->out, "  or $%lld, %%rax\n", imm);
         return 1;
     }
     if (e->kind == EXPR_BXOR) {
         cg_expr(cg, other);
         if (imm == 0) return 1;
-        if (imm == -1) str_appendf(&cg->out, "  not %%rax\n");
-        else str_appendf_i64(&cg->out, "  xor $%lld, %%rax\n", imm);
+        if (imm == -1) {
+            if (use32) str_appendf(&cg->out, "  not %%eax\n");
+            else str_appendf(&cg->out, "  not %%rax\n");
+        } else {
+            if (use32) str_appendf_i64(&cg->out, "  xor $%lld, %%eax\n", imm);
+            else str_appendf_i64(&cg->out, "  xor $%lld, %%rax\n", imm);
+        }
         return 1;
     }
 
@@ -1700,7 +1850,8 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
         }
         if (imm == 1) return 1;
         if (imm == -1) {
-            str_appendf(&cg->out, "  neg %%rax\n");
+            if (use32) str_appendf(&cg->out, "  neg %%eax\n");
+            else str_appendf(&cg->out, "  neg %%rax\n");
             return 1;
         }
         // Strength-reduce power-of-two multiplies for smaller code.
@@ -1710,24 +1861,223 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
             if (sh > 0 && sh <= 31) {
                 if (sh == 1) {
                     // Smaller than shl $1, %rax.
-                    str_appendf(&cg->out, "  add %%rax, %%rax\n");
+                    if (use32) str_appendf(&cg->out, "  add %%eax, %%eax\n");
+                    else str_appendf(&cg->out, "  add %%rax, %%rax\n");
                 } else {
-                    str_appendf_i64(&cg->out, "  shl $%d, %%rax\n", sh);
+                    if (use32) str_appendf_i64(&cg->out, "  shl $%d, %%eax\n", sh);
+                    else str_appendf_i64(&cg->out, "  shl $%d, %%rax\n", sh);
                 }
-                if (imm < 0) str_appendf(&cg->out, "  neg %%rax\n");
+                if (imm < 0) {
+                    if (use32) str_appendf(&cg->out, "  neg %%eax\n");
+                    else str_appendf(&cg->out, "  neg %%rax\n");
+                }
                 return 1;
             }
         }
-        str_appendf_i64(&cg->out, "  imul $%lld, %%rax, %%rax\n", imm);
+        if (use32) str_appendf_i64(&cg->out, "  imul $%lld, %%eax, %%eax\n", imm);
+        else str_appendf_i64(&cg->out, "  imul $%lld, %%rax, %%rax\n", imm);
         return 1;
     }
 
     return 0;
 }
 
+static int cg_binop_mem_rhs(CG *cg, const Expr *e, int use32) {
+    if (!cg || !e || !e->lhs || !e->rhs) return 0;
+    if (e->ptr_scale != 0) return 0;
+
+    // Only handle a plain stack/global scalar on RHS (no side effects).
+    const Expr *rhs = e->rhs;
+    if (!(rhs->kind == EXPR_VAR || rhs->kind == EXPR_GLOBAL)) return 0;
+    if (rhs->lval_size == 0) return 0;
+    if (!(rhs->lval_size == 4 || rhs->lval_size == 8)) return 0;
+
+    // For now, only apply when RHS size matches the chosen op width.
+    if (use32 && rhs->lval_size != 4) return 0;
+    if (!use32 && rhs->lval_size != 8) return 0;
+
+    // Compute lhs into %rax/%eax and then use a direct mem operand.
+    cg_expr(cg, e->lhs);
+
+    char mem[160];
+    if (rhs->kind == EXPR_VAR) {
+        int n = mc_snprint_cstr_i64_cstr(mem, sizeof(mem), "", (mc_i64)rhs->var_offset, "(%rbp)");
+        if (n <= 0 || (mc_usize)n >= sizeof(mem)) return 0;
+    } else {
+        const GlobalVar *gv = &cg->prg->globals[rhs->global_id];
+        int n = mc_snprint_cstr_cstr(mem, sizeof(mem), gv->name, "(%rip)");
+        if (n <= 0 || (mc_usize)n >= sizeof(mem)) return 0;
+    }
+
+    switch (e->kind) {
+        case EXPR_ADD:
+            if (use32) str_appendf_s(&cg->out, "  add %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  add %s, %%rax\n", mem);
+            return 1;
+        case EXPR_SUB:
+            if (use32) str_appendf_s(&cg->out, "  sub %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  sub %s, %%rax\n", mem);
+            return 1;
+        case EXPR_BAND:
+            if (use32) str_appendf_s(&cg->out, "  and %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  and %s, %%rax\n", mem);
+            return 1;
+        case EXPR_BXOR:
+            if (use32) str_appendf_s(&cg->out, "  xor %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  xor %s, %%rax\n", mem);
+            return 1;
+        case EXPR_BOR:
+            if (use32) str_appendf_s(&cg->out, "  or %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  or %s, %%rax\n", mem);
+            return 1;
+        case EXPR_MUL:
+            if (use32) str_appendf_s(&cg->out, "  imul %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  imul %s, %%rax\n", mem);
+            return 1;
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE:
+        {
+            if (use32) str_appendf_s(&cg->out, "  cmp %s, %%eax\n", mem);
+            else str_appendf_s(&cg->out, "  cmp %s, %%rax\n", mem);
+
+            int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
+                               (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+            const char *cc = "e";
+            if (e->kind == EXPR_EQ) cc = "e";
+            else if (e->kind == EXPR_NE) cc = "ne";
+            else if (e->kind == EXPR_LT) cc = use_unsigned ? "b" : "l";
+            else if (e->kind == EXPR_LE) cc = use_unsigned ? "be" : "le";
+            else if (e->kind == EXPR_GT) cc = use_unsigned ? "a" : "g";
+            else if (e->kind == EXPR_GE) cc = use_unsigned ? "ae" : "ge";
+
+            str_appendf_s(&cg->out, "  set%s %%al\n", cc);
+            str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+            return 1;
+        }
+        default:
+            break;
+    }
+    return 0;
+}
+
 // Helper: emit code for binary operations (arithmetic, bitwise, comparisons).
 // Returns after emitting code - caller should return immediately after calling this.
 static void cg_binop(CG *cg, const Expr *e) {
+    int use32 = 0;
+    if (e && e->ptr == 0 && e->ptr_scale == 0 && e->base != BT_VOID && e->base != BT_STRUCT && e->base != BT_FLOAT && e->base != BT_LONG) {
+        if (e->lval_size == 4) use32 = 1;
+    }
+
+    // Float scalar ops: represent float values as raw 32-bit bits in integer registers.
+    // When a binary op involves floats, lower it via SSE scalar instructions.
+    // This is deliberately minimal: it supports register-only operations emitted by the compiler.
+    if (e && e->ptr == 0 && (e->kind == EXPR_ADD || e->kind == EXPR_SUB || e->kind == EXPR_MUL || e->kind == EXPR_DIV)) {
+        if ((e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) || (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT)) {
+            // Common case in float-heavy code (e.g. mandelbrot): both operands are
+            // simple scalars. Avoid push/pop by loading them into fixed regs.
+            if (expr_is_simple_arg(e->lhs) && expr_is_simple_arg(e->rhs) &&
+                cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx") &&
+                cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rax", "%eax")) {
+                // loaded
+            } else {
+                cg_expr(cg, e->lhs);
+                str_appendf(&cg->out, "  push %%rax\n");
+                cg_expr(cg, e->rhs);
+                str_appendf(&cg->out, "  pop %%rcx\n");
+            }
+
+            // xmm1 = lhs, xmm0 = rhs (promote integers to float as needed)
+            if (e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) {
+                str_appendf(&cg->out, "  movd %%ecx, %%xmm1\n");
+            } else {
+                int lhs_sz = e->lhs ? type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id) : 8;
+                if (lhs_sz == 4 && e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG) {
+                    str_appendf(&cg->out, "  cvtsi2ss %%ecx, %%xmm1\n");
+                } else {
+                    str_appendf(&cg->out, "  cvtsi2ss %%rcx, %%xmm1\n");
+                }
+            }
+            if (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT) {
+                str_appendf(&cg->out, "  movd %%eax, %%xmm0\n");
+            } else {
+                int rhs_sz = e->rhs ? type_sizeof(cg->prg, e->rhs->base, e->rhs->ptr, e->rhs->struct_id) : 8;
+                if (rhs_sz == 4 && e->rhs && e->rhs->ptr == 0 && e->rhs->base != BT_LONG) {
+                    str_appendf(&cg->out, "  cvtsi2ss %%eax, %%xmm0\n");
+                } else {
+                    str_appendf(&cg->out, "  cvtsi2ss %%rax, %%xmm0\n");
+                }
+            }
+
+            if (e->kind == EXPR_ADD) {
+                str_appendf(&cg->out, "  addss %%xmm0, %%xmm1\n");
+            } else if (e->kind == EXPR_SUB) {
+                str_appendf(&cg->out, "  subss %%xmm0, %%xmm1\n");
+            } else if (e->kind == EXPR_MUL) {
+                str_appendf(&cg->out, "  mulss %%xmm0, %%xmm1\n");
+            } else {
+                str_appendf(&cg->out, "  divss %%xmm0, %%xmm1\n");
+            }
+
+            // Result bits back to %eax
+            str_appendf(&cg->out, "  movd %%xmm1, %%eax\n");
+            return;
+        }
+    }
+
+    if (e && (e->kind == EXPR_EQ || e->kind == EXPR_NE || e->kind == EXPR_LT || e->kind == EXPR_LE || e->kind == EXPR_GT || e->kind == EXPR_GE)) {
+        if ((e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) || (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT)) {
+            if (expr_is_simple_arg(e->lhs) && expr_is_simple_arg(e->rhs) &&
+                cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx") &&
+                cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rax", "%eax")) {
+                // loaded
+            } else {
+                cg_expr(cg, e->lhs);
+                str_appendf(&cg->out, "  push %%rax\n");
+                cg_expr(cg, e->rhs);
+                str_appendf(&cg->out, "  pop %%rcx\n");
+            }
+
+            // xmm1 = lhs, xmm0 = rhs (promote integers to float as needed)
+            if (e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) {
+                str_appendf(&cg->out, "  movd %%ecx, %%xmm1\n");
+            } else {
+                int lhs_sz = e->lhs ? type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id) : 8;
+                if (lhs_sz == 4 && e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG) {
+                    str_appendf(&cg->out, "  cvtsi2ss %%ecx, %%xmm1\n");
+                } else {
+                    str_appendf(&cg->out, "  cvtsi2ss %%rcx, %%xmm1\n");
+                }
+            }
+            if (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT) {
+                str_appendf(&cg->out, "  movd %%eax, %%xmm0\n");
+            } else {
+                int rhs_sz = e->rhs ? type_sizeof(cg->prg, e->rhs->base, e->rhs->ptr, e->rhs->struct_id) : 8;
+                if (rhs_sz == 4 && e->rhs && e->rhs->ptr == 0 && e->rhs->base != BT_LONG) {
+                    str_appendf(&cg->out, "  cvtsi2ss %%eax, %%xmm0\n");
+                } else {
+                    str_appendf(&cg->out, "  cvtsi2ss %%rax, %%xmm0\n");
+                }
+            }
+            str_appendf(&cg->out, "  ucomiss %%xmm0, %%xmm1\n");
+
+            const char *cc = "e";
+            if (e->kind == EXPR_EQ) cc = "e";
+            else if (e->kind == EXPR_NE) cc = "ne";
+            else if (e->kind == EXPR_LT) cc = "b";
+            else if (e->kind == EXPR_LE) cc = "be";
+            else if (e->kind == EXPR_GT) cc = "a";
+            else if (e->kind == EXPR_GE) cc = "ae";
+
+            str_appendf_s(&cg->out, "  set%s %%al\n", cc);
+            str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+            return;
+        }
+    }
+
     // Peepholes for constant LHS: avoid push/pop and generate shorter immediates.
     // Safe because EXPR_NUM has no side effects.
     if (e->lhs && e->lhs->kind == EXPR_NUM) {
@@ -1749,16 +2099,20 @@ static void cg_binop(CG *cg, const Expr *e) {
             if (e->kind == EXPR_SHL) {
                 if (imm == 1) {
                     // Smaller than shl $1, %rax.
-                    str_appendf(&cg->out, "  add %%rax, %%rax\n");
+                    if (use32) str_appendf(&cg->out, "  add %%eax, %%eax\n");
+                    else str_appendf(&cg->out, "  add %%rax, %%rax\n");
                 } else {
-                    str_appendf_i64(&cg->out, "  shl $%lld, %%rax\n", imm);
+                    if (use32) str_appendf_i64(&cg->out, "  shl $%lld, %%eax\n", imm);
+                    else str_appendf_i64(&cg->out, "  shl $%lld, %%rax\n", imm);
                 }
             } else {
                 if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
                     (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
-                    str_appendf_i64(&cg->out, "  shr $%lld, %%rax\n", imm);
+                    if (use32) str_appendf_i64(&cg->out, "  shr $%lld, %%eax\n", imm);
+                    else str_appendf_i64(&cg->out, "  shr $%lld, %%rax\n", imm);
                 } else {
-                    str_appendf_i64(&cg->out, "  sar $%lld, %%rax\n", imm);
+                    if (use32) str_appendf_i64(&cg->out, "  sar $%lld, %%eax\n", imm);
+                    else str_appendf_i64(&cg->out, "  sar $%lld, %%rax\n", imm);
                 }
             }
             return;
@@ -1803,6 +2157,9 @@ static void cg_binop(CG *cg, const Expr *e) {
         if (cg_binop_imm_simple(cg, e, imm, 0)) return;
     }
 
+    // Peepholes for a stack/global RHS: avoid push/pop by using a direct memory operand.
+    if (cg_binop_mem_rhs(cg, e, use32)) return;
+
 slow_binop:
     // General case: evaluate both operands, push/pop to get them in registers.
     cg_expr(cg, e->lhs);
@@ -1811,10 +2168,16 @@ slow_binop:
     str_appendf(&cg->out, "  pop %%rcx\n");
     if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
         if (e->ptr_index_side == 1) {
+            if (e->rhs && e->rhs->ptr == 0 && e->rhs->lval_size == 4 && !e->rhs->is_unsigned && e->rhs->base != BT_LONG && e->rhs->base != BT_FLOAT) {
+                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+            }
             if (e->ptr_scale != 1) {
                 str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", e->ptr_scale);
             }
         } else if (e->ptr_index_side == 2) {
+            if (e->lhs && e->lhs->ptr == 0 && e->lhs->lval_size == 4 && !e->lhs->is_unsigned && e->lhs->base != BT_LONG && e->lhs->base != BT_FLOAT) {
+                str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
+            }
             if (e->ptr_scale != 1) {
                 str_appendf_i64(&cg->out, "  imul $%d, %%rcx\n", e->ptr_scale);
             }
@@ -1822,57 +2185,100 @@ slow_binop:
     }
     switch (e->kind) {
         case EXPR_ADD:
-            str_appendf(&cg->out, "  add %%rcx, %%rax\n");
+            if (use32) str_appendf(&cg->out, "  add %%ecx, %%eax\n");
+            else str_appendf(&cg->out, "  add %%rcx, %%rax\n");
             return;
         case EXPR_SUB:
             // rcx = lhs, rax = rhs => lhs - rhs
-            str_appendf(&cg->out, "  sub %%rax, %%rcx\n");
-            str_appendf(&cg->out, "  mov %%rcx, %%rax\n");
+            if (use32) {
+                str_appendf(&cg->out, "  sub %%eax, %%ecx\n");
+                str_appendf(&cg->out, "  mov %%ecx, %%eax\n");
+            } else {
+                str_appendf(&cg->out, "  sub %%rax, %%rcx\n");
+                str_appendf(&cg->out, "  mov %%rcx, %%rax\n");
+            }
             return;
         case EXPR_BAND:
-            str_appendf(&cg->out, "  and %%rcx, %%rax\n");
+            if (use32) str_appendf(&cg->out, "  and %%ecx, %%eax\n");
+            else str_appendf(&cg->out, "  and %%rcx, %%rax\n");
             return;
         case EXPR_BXOR:
-            str_appendf(&cg->out, "  xor %%rcx, %%rax\n");
+            if (use32) str_appendf(&cg->out, "  xor %%ecx, %%eax\n");
+            else str_appendf(&cg->out, "  xor %%rcx, %%rax\n");
             return;
         case EXPR_BOR:
-            str_appendf(&cg->out, "  or %%rcx, %%rax\n");
+            if (use32) str_appendf(&cg->out, "  or %%ecx, %%eax\n");
+            else str_appendf(&cg->out, "  or %%rcx, %%rax\n");
             return;
         case EXPR_SHL:
             // rcx=lhs, rax=rhs(count)
-            str_appendf(&cg->out, "  mov %%rcx, %%rdx\n");
-            str_appendf(&cg->out, "  mov %%al, %%cl\n");
-            str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
-            str_appendf(&cg->out, "  shl %%cl, %%rax\n");
+            if (use32) {
+                str_appendf(&cg->out, "  mov %%ecx, %%edx\n");
+                str_appendf(&cg->out, "  mov %%al, %%cl\n");
+                str_appendf(&cg->out, "  mov %%edx, %%eax\n");
+                str_appendf(&cg->out, "  shl %%cl, %%eax\n");
+            } else {
+                str_appendf(&cg->out, "  mov %%rcx, %%rdx\n");
+                str_appendf(&cg->out, "  mov %%al, %%cl\n");
+                str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
+                str_appendf(&cg->out, "  shl %%cl, %%rax\n");
+            }
             return;
         case EXPR_SHR:
-            str_appendf(&cg->out, "  mov %%rcx, %%rdx\n");
-            str_appendf(&cg->out, "  mov %%al, %%cl\n");
-            str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
-            if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
-                str_appendf(&cg->out, "  shr %%cl, %%rax\n");
+            if (use32) {
+                str_appendf(&cg->out, "  mov %%ecx, %%edx\n");
+                str_appendf(&cg->out, "  mov %%al, %%cl\n");
+                str_appendf(&cg->out, "  mov %%edx, %%eax\n");
+                if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                    str_appendf(&cg->out, "  shr %%cl, %%eax\n");
+                } else {
+                    str_appendf(&cg->out, "  sar %%cl, %%eax\n");
+                }
             } else {
-                str_appendf(&cg->out, "  sar %%cl, %%rax\n");
+                str_appendf(&cg->out, "  mov %%rcx, %%rdx\n");
+                str_appendf(&cg->out, "  mov %%al, %%cl\n");
+                str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
+                if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                    str_appendf(&cg->out, "  shr %%cl, %%rax\n");
+                } else {
+                    str_appendf(&cg->out, "  sar %%cl, %%rax\n");
+                }
             }
             return;
         case EXPR_MUL:
-            str_appendf(&cg->out, "  imul %%rcx, %%rax\n");
+            if (use32) str_appendf(&cg->out, "  imul %%ecx, %%eax\n");
+            else str_appendf(&cg->out, "  imul %%rcx, %%rax\n");
             return;
         case EXPR_DIV:
         case EXPR_MOD:
             // Division/modulo (signed or unsigned)
             // rcx=lhs, rax=rhs currently
-            str_appendf(&cg->out, "  mov %%rax, %%rdi\n"); // rhs
-            str_appendf(&cg->out, "  mov %%rcx, %%rax\n"); // lhs
-            if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
-                str_appendf(&cg->out, "  xor %%edx, %%edx\n");
-                str_appendf(&cg->out, "  div %%rdi\n");
+            if (use32) {
+                str_appendf(&cg->out, "  mov %%eax, %%edi\n"); // rhs
+                str_appendf(&cg->out, "  mov %%ecx, %%eax\n"); // lhs
+                if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                    str_appendf(&cg->out, "  xor %%edx, %%edx\n");
+                    str_appendf(&cg->out, "  div %%edi\n");
+                } else {
+                    str_appendf(&cg->out, "  cdq\n");
+                    str_appendf(&cg->out, "  idiv %%edi\n");
+                }
+                if (e->kind == EXPR_MOD) {
+                    str_appendf(&cg->out, "  mov %%edx, %%eax\n");
+                }
             } else {
-                str_appendf(&cg->out, "  cqo\n");
-                str_appendf(&cg->out, "  idiv %%rdi\n");
-            }
-            if (e->kind == EXPR_MOD) {
-                str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
+                str_appendf(&cg->out, "  mov %%rax, %%rdi\n"); // rhs
+                str_appendf(&cg->out, "  mov %%rcx, %%rax\n"); // lhs
+                if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                    str_appendf(&cg->out, "  xor %%edx, %%edx\n");
+                    str_appendf(&cg->out, "  div %%rdi\n");
+                } else {
+                    str_appendf(&cg->out, "  cqo\n");
+                    str_appendf(&cg->out, "  idiv %%rdi\n");
+                }
+                if (e->kind == EXPR_MOD) {
+                    str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
+                }
             }
             return;
         case EXPR_EQ:
@@ -1883,7 +2289,8 @@ slow_binop:
         case EXPR_GE:
         {
             // Compare lhs (rcx) vs rhs (rax) => setcc into al
-            str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
+            if (use32) str_appendf(&cg->out, "  cmp %%eax, %%ecx\n");
+            else str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
             int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
             const char *cc = "e";
             if (e->kind == EXPR_EQ) cc = "e";
@@ -1910,6 +2317,15 @@ static void cg_expr(CG *cg, const Expr *e) {
     }
     switch (e->kind) {
         case EXPR_NUM:
+            if (e->ptr == 0 && e->base == BT_FLOAT) {
+                mc_u32 bits = (mc_u32)e->num;
+                if (bits == 0) {
+                    str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+                } else {
+                    str_appendf_u64(&cg->out, "  mov $%u, %%eax\n", (unsigned long long)bits);
+                }
+                return;
+            }
             if (e->num == 0) {
                 str_appendf(&cg->out, "  xor %%eax, %%eax\n");
                 return;
@@ -2091,7 +2507,17 @@ static void cg_expr(CG *cg, const Expr *e) {
             return;
         case EXPR_NEG:
             cg_expr(cg, e->lhs);
-            str_appendf(&cg->out, "  neg %%rax\n");
+            if (e->ptr == 0 && e->base == BT_FLOAT) {
+                // Flip the sign bit of the IEEE-754 binary32 payload.
+                str_appendf(&cg->out, "  xor $0x80000000, %%eax\n");
+                cg_normalize_scalar_result(cg, e);
+                return;
+            }
+            if (e->ptr == 0 && e->base != BT_LONG && e->base != BT_STRUCT && e->lval_size == 4) {
+                str_appendf(&cg->out, "  neg %%eax\n");
+            } else {
+                str_appendf(&cg->out, "  neg %%rax\n");
+            }
             cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_NOT:
@@ -2102,16 +2528,90 @@ static void cg_expr(CG *cg, const Expr *e) {
             return;
         case EXPR_BNOT:
             cg_expr(cg, e->lhs);
-            str_appendf(&cg->out, "  not %%rax\n");
+            if (e->ptr == 0 && e->base != BT_LONG && e->base != BT_FLOAT && e->base != BT_STRUCT && e->lval_size == 4) {
+                str_appendf(&cg->out, "  not %%eax\n");
+            } else {
+                str_appendf(&cg->out, "  not %%rax\n");
+            }
             cg_normalize_scalar_result(cg, e);
             return;
         case EXPR_CAST:
-            cg_expr(cg, e->lhs);
             if (e->ptr == 0 && e->base == BT_VOID) {
+                cg_expr(cg, e->lhs);
                 // Value is discarded; keep a well-defined register value.
                 str_appendf(&cg->out, "  xor %%eax, %%eax\n");
                 return;
             }
+
+            // int -> float: convert and keep the raw IEEE-754 bits in %eax.
+            if (e->ptr == 0 && e->base == BT_FLOAT) {
+                if (e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) {
+                    cg_expr(cg, e->lhs);
+                    return;
+                }
+
+                cg_expr(cg, e->lhs);
+                // Use the 32-bit form when the source is a 32-bit integer to preserve
+                // signedness without relying on a prior sign-extension.
+                int src_sz = 8;
+                if (e->lhs) {
+                    src_sz = type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id);
+                }
+                if (src_sz == 4 && e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG) {
+                    str_appendf(&cg->out, "  cvtsi2ss %%eax, %%xmm0\n");
+                } else {
+                    // cvtsi2ss r/m64, xmm (F3 REX.W 0F 2A /r)
+                    str_appendf(&cg->out, "  cvtsi2ss %%rax, %%xmm0\n");
+                }
+                // movd xmm, r/m32 (66 0F 7E /r)
+                str_appendf(&cg->out, "  movd %%xmm0, %%eax\n");
+                return;
+            }
+
+            // float -> int: treat %eax as raw float bits, convert via SSE.
+            if (e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) {
+                cg_expr(cg, e->lhs);
+                str_appendf(&cg->out, "  movd %%eax, %%xmm0\n");
+
+                int dst_sz = 8;
+                if (e->ptr > 0) {
+                    die("cast float->ptr not supported");
+                } else if (e->base == BT_CHAR) {
+                    dst_sz = 1;
+                } else if (e->base == BT_SHORT) {
+                    dst_sz = 2;
+                } else if (e->base == BT_INT) {
+                    dst_sz = 4;
+                } else if (e->base == BT_LONG) {
+                    dst_sz = 8;
+                }
+
+                if (dst_sz == 8) {
+                    str_appendf(&cg->out, "  cvttss2si %%xmm0, %%rax\n");
+                } else {
+                    str_appendf(&cg->out, "  cvttss2si %%xmm0, %%eax\n");
+                }
+
+                // Normalize to match destination integer type.
+                if (dst_sz == 1) {
+                    if (e->is_unsigned) {
+                        str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+                    } else {
+                        str_appendf(&cg->out, "  movsbq %%al, %%rax\n");
+                    }
+                } else if (dst_sz == 2) {
+                    if (e->is_unsigned) {
+                        str_appendf(&cg->out, "  movzw %%ax, %%eax\n");
+                    } else {
+                        str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
+                    }
+                } else if (dst_sz == 4) {
+                    // cvttss2si to %eax already produces a 32-bit value.
+                }
+                return;
+            }
+
+            cg_expr(cg, e->lhs);
             // Normalize the value in %rax to match the destination type size/signedness.
             // This is important for correct comparisons of smaller integer types.
             int dst_sz = 8;
@@ -2130,6 +2630,36 @@ static void cg_expr(CG *cg, const Expr *e) {
                 dst_sz = 8;
             }
 
+            int src_sz = 8;
+            if (e->lhs) {
+                src_sz = type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id);
+            }
+
+            // Widening casts to 64-bit now need explicit extension because we no longer
+            // keep 32-bit signed values sign-extended in %rax.
+            if (dst_sz == 8 && src_sz < 8) {
+                if (src_sz == 1) {
+                    if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) {
+                        str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+                    } else {
+                        str_appendf(&cg->out, "  movsbq %%al, %%rax\n");
+                    }
+                } else if (src_sz == 2) {
+                    if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) {
+                        str_appendf(&cg->out, "  movzw %%ax, %%eax\n");
+                    } else {
+                        str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
+                    }
+                } else if (src_sz == 4) {
+                    if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) {
+                        // 32-bit values in %eax are already zero-extended into %rax.
+                    } else {
+                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                    }
+                }
+                return;
+            }
+
             if (dst_sz == 1) {
                 if (e->is_unsigned) {
                     str_appendf(&cg->out, "  movzb %%al, %%eax\n");
@@ -2143,10 +2673,10 @@ static void cg_expr(CG *cg, const Expr *e) {
                     str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
                 }
             } else if (dst_sz == 4) {
-                if (e->is_unsigned) {
+                // Truncating to 32-bit: only force a 32-bit write when the source
+                // is wider than 32-bit (e.g. cast from long/pointer).
+                if (src_sz > 4) {
                     str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-                } else {
-                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
                 }
             }
             return;
@@ -2164,14 +2694,26 @@ static void cg_expr(CG *cg, const Expr *e) {
             long long delta = (long long)(e->post_delta > 0 ? e->post_delta : 1);
             if (e->kind == EXPR_PREDEC) delta = -delta;
 
-            if (delta == 1) {
-                str_appendf(&cg->out, "  add $1, %%rax\n");
-            } else if (delta == -1) {
-                str_appendf(&cg->out, "  sub $1, %%rax\n");
-            } else if (delta > 0) {
-                str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", delta);
+            if (sz == 4) {
+                if (delta == 1) {
+                    str_appendf(&cg->out, "  add $1, %%eax\n");
+                } else if (delta == -1) {
+                    str_appendf(&cg->out, "  sub $1, %%eax\n");
+                } else if (delta > 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, %%eax\n", delta);
+                } else {
+                    str_appendf_i64(&cg->out, "  sub $%lld, %%eax\n", -delta);
+                }
             } else {
-                str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", -delta);
+                if (delta == 1) {
+                    str_appendf(&cg->out, "  add $1, %%rax\n");
+                } else if (delta == -1) {
+                    str_appendf(&cg->out, "  sub $1, %%rax\n");
+                } else if (delta > 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", delta);
+                } else {
+                    str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", -delta);
+                }
             }
 
             // Truncate to the lvalue type (wrap like the store does).
@@ -2184,11 +2726,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                     str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
                 }
             } else if (sz == 4) {
-                if (e->is_unsigned) {
-                    str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-                } else {
-                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
-                }
+                // 32-bit ops already wrap and clear the high 32 bits.
             }
 
             emit_store_mem(cg, "(%rcx)", sz);
@@ -2210,14 +2748,26 @@ static void cg_expr(CG *cg, const Expr *e) {
             long long delta = (long long)(e->post_delta > 0 ? e->post_delta : 1);
             if (e->kind == EXPR_POSTDEC) delta = -delta;
 
-            if (delta == 1) {
-                str_appendf(&cg->out, "  add $1, %%rax\n");
-            } else if (delta == -1) {
-                str_appendf(&cg->out, "  sub $1, %%rax\n");
-            } else if (delta > 0) {
-                str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", delta);
+            if (sz == 4) {
+                if (delta == 1) {
+                    str_appendf(&cg->out, "  add $1, %%eax\n");
+                } else if (delta == -1) {
+                    str_appendf(&cg->out, "  sub $1, %%eax\n");
+                } else if (delta > 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, %%eax\n", delta);
+                } else {
+                    str_appendf_i64(&cg->out, "  sub $%lld, %%eax\n", -delta);
+                }
             } else {
-                str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", -delta);
+                if (delta == 1) {
+                    str_appendf(&cg->out, "  add $1, %%rax\n");
+                } else if (delta == -1) {
+                    str_appendf(&cg->out, "  sub $1, %%rax\n");
+                } else if (delta > 0) {
+                    str_appendf_i64(&cg->out, "  add $%lld, %%rax\n", delta);
+                } else {
+                    str_appendf_i64(&cg->out, "  sub $%lld, %%rax\n", -delta);
+                }
             }
 
             // Truncate to the lvalue type (wrap like the store does).
@@ -2230,11 +2780,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                     str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
                 }
             } else if (sz == 4) {
-                if (e->is_unsigned) {
-                    str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-                } else {
-                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
-                }
+                // 32-bit ops already wrap and clear the high 32 bits.
             }
 
             emit_store_mem(cg, "(%rcx)", sz);
@@ -2257,7 +2803,12 @@ static void cg_expr(CG *cg, const Expr *e) {
             // Constant-index rvalue fast path for addressable objects.
             if (e->lval_size && e->lval_size <= 8 && e->lhs && e->rhs && e->rhs->kind == EXPR_NUM) {
                 long long idx = e->rhs->num;
-                int scale = (e->ptr_scale > 0) ? e->ptr_scale : 8;
+                int scale = 8;
+                if (e->ptr_scale > 0) {
+                    scale = e->ptr_scale;
+                } else if (e->lval_size > 0) {
+                    scale = e->lval_size;
+                }
                 long long off = idx * (long long)scale;
                 if (off >= -2147483648LL && off <= 2147483647LL) {
                     const Expr *base = e->lhs;
@@ -2388,11 +2939,7 @@ static void cg_normalize_scalar_result(CG *cg, const Expr *e) {
             str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
         }
     } else if (e->lval_size == 4) {
-        if (e->is_unsigned) {
-            str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-        } else {
-            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
-        }
+        // 32-bit ops already wrap and keep %rax zero-extended.
     }
 }
 
@@ -2521,51 +3068,468 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
 
     // Handle comparison expressions directly.
     if (expr_is_comparison(e)) {
-        int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
-                           (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+        // Float comparisons: branch directly using SSE flags from ucomiss.
+        // Must handle unordered (NaN): all ordered comparisons are false, != is true.
+        if ((e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) ||
+            (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT)) {
+            int lhs_in_ecx = 1;  // default for push/pop fallback: lhs in %ecx, rhs in %eax
 
-        // Check for constant RHS - common case like "x >= 0" or "x < 0"
-        if (e->rhs && e->rhs->kind == EXPR_NUM) {
-            long long imm = e->rhs->num;
-            cg_expr(cg, e->lhs);
-            if (imm == 0) {
-                str_appendf(&cg->out, "  test %%rax, %%rax\n");
-            } else if (imm >= -2147483648LL && imm <= 2147483647LL) {
-                str_appendf_i64(&cg->out, "  cmp $%d, %%rax\n", imm);
+            if (expr_is_simple_arg(e->lhs) && expr_is_simple_arg(e->rhs) &&
+                cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx") &&
+                cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rax", "%eax")) {
+                lhs_in_ecx = 1;
             } else {
-                goto general_cmp;
+                mc_usize old_len = cg->out.len;
+
+                // Try: compute LHS (possibly complex) into %eax, load RHS as simple into %ecx.
+                cg_expr(cg, e->lhs);
+                if (cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rcx", "%ecx")) {
+                    lhs_in_ecx = 0; // lhs in %eax, rhs in %ecx
+                } else {
+                    // Roll back and try the other direction.
+                    cg->out.len = old_len;
+                    if (cg->out.buf) cg->out.buf[old_len] = 0;
+
+                    cg_expr(cg, e->rhs);
+                    if (cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx")) {
+                        lhs_in_ecx = 1; // lhs in %ecx, rhs in %eax
+                    } else {
+                        // Roll back and use the conservative push/pop evaluation.
+                        cg->out.len = old_len;
+                        if (cg->out.buf) cg->out.buf[old_len] = 0;
+
+                        cg_expr(cg, e->lhs);
+                        str_appendf(&cg->out, "  push %%rax\n");
+                        cg_expr(cg, e->rhs);
+                        str_appendf(&cg->out, "  pop %%rcx\n");
+                        lhs_in_ecx = 1;
+                    }
+                }
             }
 
-            // Determine jump condition
+            const char *lhs32 = lhs_in_ecx ? "%ecx" : "%eax";
+            const char *lhs64 = lhs_in_ecx ? "%rcx" : "%rax";
+            const char *rhs32 = lhs_in_ecx ? "%eax" : "%ecx";
+            const char *rhs64 = lhs_in_ecx ? "%rax" : "%rcx";
+
+            // xmm1 = lhs, xmm0 = rhs (promote integers to float as needed)
+            if (e->lhs && e->lhs->ptr == 0 && e->lhs->base == BT_FLOAT) {
+                str_appendf_s(&cg->out, "  movd %s, %%xmm1\n", lhs32);
+            } else {
+                int lhs_sz = e->lhs ? type_sizeof(cg->prg, e->lhs->base, e->lhs->ptr, e->lhs->struct_id) : 8;
+                if (lhs_sz == 4 && e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG) {
+                    str_appendf_s(&cg->out, "  cvtsi2ss %s, %%xmm1\n", lhs32);
+                } else {
+                    str_appendf_s(&cg->out, "  cvtsi2ss %s, %%xmm1\n", lhs64);
+                }
+            }
+            if (e->rhs && e->rhs->ptr == 0 && e->rhs->base == BT_FLOAT) {
+                str_appendf_s(&cg->out, "  movd %s, %%xmm0\n", rhs32);
+            } else {
+                int rhs_sz = e->rhs ? type_sizeof(cg->prg, e->rhs->base, e->rhs->ptr, e->rhs->struct_id) : 8;
+                if (rhs_sz == 4 && e->rhs && e->rhs->ptr == 0 && e->rhs->base != BT_LONG) {
+                    str_appendf_s(&cg->out, "  cvtsi2ss %s, %%xmm0\n", rhs32);
+                } else {
+                    str_appendf_s(&cg->out, "  cvtsi2ss %s, %%xmm0\n", rhs64);
+                }
+            }
+            str_appendf(&cg->out, "  ucomiss %%xmm0, %%xmm1\n");
+
             const char *jcc = "je";
+            int need_skip = 0;
             if (jump_on_false) {
-                // Jump when condition is FALSE
-                if (e->kind == EXPR_EQ) jcc = "jne";
-                else if (e->kind == EXPR_NE) jcc = "je";
-                else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
-                else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
-                else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
-                else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                if (e->kind == EXPR_EQ) {
+                    // false if unordered or not equal
+                    str_appendf_i64(&cg->out, "  jp .L%d\n", (long long)label);
+                    jcc = "jne";
+                } else if (e->kind == EXPR_NE) {
+                    // false only if ordered and equal
+                    need_skip = 1;
+                    jcc = "je";
+                } else if (e->kind == EXPR_LT) {
+                    // false if unordered or >=
+                    str_appendf_i64(&cg->out, "  jp .L%d\n", (long long)label);
+                    jcc = "jae";
+                } else if (e->kind == EXPR_LE) {
+                    // false if unordered or >
+                    str_appendf_i64(&cg->out, "  jp .L%d\n", (long long)label);
+                    jcc = "ja";
+                } else if (e->kind == EXPR_GT) {
+                    // false if <= or unordered (unordered satisfies jbe)
+                    jcc = "jbe";
+                } else if (e->kind == EXPR_GE) {
+                    // false if < or unordered (unordered satisfies jb)
+                    jcc = "jb";
+                }
             } else {
-                // Jump when condition is TRUE
-                if (e->kind == EXPR_EQ) jcc = "je";
-                else if (e->kind == EXPR_NE) jcc = "jne";
-                else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
-                else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
-                else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
-                else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                if (e->kind == EXPR_EQ) {
+                    // true only if ordered and equal
+                    need_skip = 1;
+                    jcc = "je";
+                } else if (e->kind == EXPR_NE) {
+                    // true if unordered or not equal
+                    str_appendf_i64(&cg->out, "  jp .L%d\n", (long long)label);
+                    jcc = "jne";
+                } else if (e->kind == EXPR_LT) {
+                    // true only if ordered and <
+                    need_skip = 1;
+                    jcc = "jb";
+                } else if (e->kind == EXPR_LE) {
+                    // true only if ordered and <=
+                    need_skip = 1;
+                    jcc = "jbe";
+                } else if (e->kind == EXPR_GT) {
+                    // true if > (unordered does not satisfy ja)
+                    jcc = "ja";
+                } else if (e->kind == EXPR_GE) {
+                    // true if >= (unordered does not satisfy jae)
+                    jcc = "jae";
+                }
             }
-            str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+
+            if (need_skip) {
+                int l_skip = new_label(cg);
+                str_appendf_i64(&cg->out, "  jp .L%d\n", (long long)l_skip);
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                str_appendf_i64(&cg->out, ".L%d:\n", (long long)l_skip);
+            } else {
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+            }
             return 1;
         }
 
-    general_cmp:
-        // General case: evaluate both sides
+        int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
+                           (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+
+        int lhs_i32 = (e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG &&
+                       e->lhs->base != BT_FLOAT && e->lhs->base != BT_STRUCT &&
+                       e->lhs->lval_size == 4);
+        int rhs_i32 = (e->rhs && e->rhs->ptr == 0 && e->rhs->base != BT_LONG &&
+                       e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT &&
+                       e->rhs->lval_size == 4);
+        int cmp_i32 = lhs_i32 && rhs_i32;
+        int lhs_i32_signed = lhs_i32 && e->lhs && !e->lhs->is_unsigned;
+        int rhs_i32_signed = rhs_i32 && e->rhs && !e->rhs->is_unsigned;
+        int lhs_is64 = (e->lhs && (e->lhs->ptr > 0 || e->lhs->base == BT_LONG));
+        int rhs_is64 = (e->rhs && (e->rhs->ptr > 0 || e->rhs->base == BT_LONG));
+
+        // Constant RHS (common: x == 0, x < 0, ...). Only use immediates that fit.
+        if (e->rhs && e->rhs->kind == EXPR_NUM) {
+            long long imm = e->rhs->num;
+            int use32 = lhs_i32;
+            int use64 = !use32 && lhs_is64;
+
+            // Common zero-compare branch peepholes.
+            // For signed compares, `test` gives SF/ZF with OF=0, enabling js/jns/jle/jg.
+            // For unsigned compares against 0, many outcomes are constant.
+            if ((imm == 0) && (use32 || use64)) {
+                cg_expr(cg, e->lhs);
+                if (use32) str_appendf(&cg->out, "  test %%eax, %%eax\n");
+                else str_appendf(&cg->out, "  test %%rax, %%rax\n");
+
+                // Unsigned/pointer comparisons against 0.
+                if (use_unsigned) {
+                    // x < 0  -> false
+                    // x >= 0 -> true
+                    if (e->kind == EXPR_LT || e->kind == EXPR_GE) {
+                        int always_true = (e->kind == EXPR_GE);
+                        if ((!jump_on_false && always_true) || (jump_on_false && !always_true)) {
+                            str_appendf_i64(&cg->out, "  jmp .L%d\n", (long long)label);
+                        }
+                        return 1;
+                    }
+
+                    // x <= 0 -> x == 0
+                    // x > 0  -> x != 0
+                    const char *jcc = "jz";
+                    if (e->kind == EXPR_LE) {
+                        jcc = jump_on_false ? "jnz" : "jz";
+                    } else if (e->kind == EXPR_GT) {
+                        jcc = jump_on_false ? "jz" : "jnz";
+                    } else if (e->kind == EXPR_EQ) {
+                        jcc = jump_on_false ? "jnz" : "jz";
+                    } else if (e->kind == EXPR_NE) {
+                        jcc = jump_on_false ? "jz" : "jnz";
+                    } else {
+                        // EXPR_LE/GT/EQ/NE handled; LT/GE returned above.
+                        jcc = "jz";
+                    }
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                    return 1;
+                }
+
+                // Signed compares against 0.
+                if (e->kind == EXPR_EQ || e->kind == EXPR_NE) {
+                    const char *jcc = "je";
+                    if (jump_on_false) {
+                        jcc = (e->kind == EXPR_EQ) ? "jne" : "je";
+                    } else {
+                        jcc = (e->kind == EXPR_EQ) ? "je" : "jne";
+                    }
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                    return 1;
+                }
+                if (e->kind == EXPR_LT) {
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jump_on_false ? "jge" : "jl", (long long)label);
+                    return 1;
+                }
+                if (e->kind == EXPR_GE) {
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jump_on_false ? "jl" : "jge", (long long)label);
+                    return 1;
+                }
+                if (e->kind == EXPR_LE) {
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jump_on_false ? "jg" : "jle", (long long)label);
+                    return 1;
+                }
+                if (e->kind == EXPR_GT) {
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jump_on_false ? "jle" : "jg", (long long)label);
+                    return 1;
+                }
+            }
+
+            if ((imm == 0) && (e->kind == EXPR_EQ || e->kind == EXPR_NE) && (use32 || use64)) {
+                cg_expr(cg, e->lhs);
+                if (use32) str_appendf(&cg->out, "  test %%eax, %%eax\n");
+                else str_appendf(&cg->out, "  test %%rax, %%rax\n");
+
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    jcc = (e->kind == EXPR_EQ) ? "jne" : "je";
+                } else {
+                    jcc = (e->kind == EXPR_EQ) ? "je" : "jne";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
+
+            if ((imm >= -2147483648LL && imm <= 2147483647LL) && (use32 || use64)) {
+                cg_expr(cg, e->lhs);
+                if (use32) str_appendf_i64(&cg->out, "  cmp $%lld, %%eax\n", imm);
+                else str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", imm);
+
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    if (e->kind == EXPR_EQ) jcc = "jne";
+                    else if (e->kind == EXPR_NE) jcc = "je";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                } else {
+                    if (e->kind == EXPR_EQ) jcc = "je";
+                    else if (e->kind == EXPR_NE) jcc = "jne";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
+        }
+
+        // Fast path: RHS is a plain stack/global scalar memory operand.
+        if (e->rhs && (e->rhs->kind == EXPR_VAR || e->rhs->kind == EXPR_GLOBAL) &&
+            (e->rhs->lval_size == 4 || e->rhs->lval_size == 8) && e->ptr_scale == 0) {
+            char mem[160];
+            int have_mem = 0;
+            if (e->rhs->kind == EXPR_VAR) {
+                int n = mc_snprint_cstr_i64_cstr(mem, sizeof(mem), "", (mc_i64)e->rhs->var_offset, "(%rbp)");
+                have_mem = (n > 0 && (mc_usize)n < sizeof(mem));
+            } else {
+                const GlobalVar *gv = &cg->prg->globals[e->rhs->global_id];
+                int n = mc_snprint_cstr_cstr(mem, sizeof(mem), gv->name, "(%rip)");
+                have_mem = (n > 0 && (mc_usize)n < sizeof(mem));
+            }
+
+            if (have_mem) {
+                int can_cmp32 = cmp_i32 && e->rhs->lval_size == 4;
+                int can_cmp64 = lhs_is64 && e->rhs->lval_size == 8;
+                if (can_cmp32 || can_cmp64) {
+                    cg_expr(cg, e->lhs);
+                    if (can_cmp64) str_appendf_s(&cg->out, "  cmp %s, %%rax\n", mem);
+                    else str_appendf_s(&cg->out, "  cmp %s, %%eax\n", mem);
+
+                    const char *jcc = "je";
+                    if (jump_on_false) {
+                        if (e->kind == EXPR_EQ) jcc = "jne";
+                        else if (e->kind == EXPR_NE) jcc = "je";
+                        else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                        else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                        else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                        else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                    } else {
+                        if (e->kind == EXPR_EQ) jcc = "je";
+                        else if (e->kind == EXPR_NE) jcc = "jne";
+                        else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                        else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                        else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                        else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                    }
+                    str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                    return 1;
+                }
+            }
+        }
+
+        // Fast path: avoid push/pop if either side can be loaded as a simple arg.
+        // This is especially common around loops and call-result compares.
+        {
+            mc_usize old_len = cg->out.len;
+
+            int lhs_trivial = (e->lhs && (e->lhs->kind == EXPR_VAR || e->lhs->kind == EXPR_GLOBAL ||
+                                          e->lhs->kind == EXPR_NUM || e->lhs->kind == EXPR_STR ||
+                                          e->lhs->kind == EXPR_FNADDR));
+            int rhs_trivial = (e->rhs && (e->rhs->kind == EXPR_VAR || e->rhs->kind == EXPR_GLOBAL ||
+                                          e->rhs->kind == EXPR_NUM || e->rhs->kind == EXPR_STR ||
+                                          e->rhs->kind == EXPR_FNADDR));
+
+            // Try: lhs computed into %rax, rhs loaded into %rcx.
             cg_expr(cg, e->lhs);
-            str_appendf(&cg->out, "  push %%rax\n");
+            if (rhs_trivial && cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rcx", "%ecx")) {
+                if (cmp_i32) {
+                    str_appendf(&cg->out, "  cmp %%ecx, %%eax\n");
+                } else {
+                    if (rhs_is64 && lhs_i32_signed) {
+                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                    }
+                    if (lhs_is64 && rhs_i32_signed) {
+                        str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
+                    }
+                    str_appendf(&cg->out, "  cmp %%rcx, %%rax\n");
+                }
+
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    if (e->kind == EXPR_EQ) jcc = "jne";
+                    else if (e->kind == EXPR_NE) jcc = "je";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                } else {
+                    if (e->kind == EXPR_EQ) jcc = "je";
+                    else if (e->kind == EXPR_NE) jcc = "jne";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
+
+            // Roll back and try: rhs computed into %rax, lhs loaded into %rcx.
+            cg->out.len = old_len;
+            if (cg->out.buf) cg->out.buf[old_len] = 0;
+
             cg_expr(cg, e->rhs);
-            str_appendf(&cg->out, "  pop %%rcx\n");
-        str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
+            if (lhs_trivial && cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx")) {
+                if (cmp_i32) {
+                    str_appendf(&cg->out, "  cmp %%eax, %%ecx\n");
+                } else {
+                    if (rhs_is64 && lhs_i32_signed) {
+                        str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
+                    }
+                    if (lhs_is64 && rhs_i32_signed) {
+                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                    }
+                    str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
+                }
+
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    if (e->kind == EXPR_EQ) jcc = "jne";
+                    else if (e->kind == EXPR_NE) jcc = "je";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                } else {
+                    if (e->kind == EXPR_EQ) jcc = "je";
+                    else if (e->kind == EXPR_NE) jcc = "jne";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
+
+            cg->out.len = old_len;
+            if (cg->out.buf) cg->out.buf[old_len] = 0;
+        }
+
+        // Fast path: compare against a dereferenced pointer RHS when we can load the
+        // pointer expression as a simple arg. Avoids push/pop; uses %rdx for saved LHS.
+        if (e->rhs && e->rhs->kind == EXPR_DEREF && e->rhs->lhs && (e->rhs->lval_size == 4 || e->rhs->lval_size == 8)) {
+            int rhs_sz = e->rhs->lval_size;
+            int can_cmp32 = cmp_i32 && rhs_sz == 4;
+            int can_cmp64 = lhs_is64 && rhs_sz == 8;
+            if (can_cmp32 || can_cmp64) {
+                mc_usize old_len = cg->out.len;
+
+                cg_expr(cg, e->lhs);
+                if (can_cmp64) {
+                    str_appendf(&cg->out, "  mov %%rax, %%rdx\n");
+                } else {
+                    str_appendf(&cg->out, "  mov %%eax, %%edx\n");
+                }
+
+                // Load pointer value into %rcx without clobbering %rdx.
+                if (!cg_expr_to_reg_simple_arg_try(cg, e->rhs->lhs, "%rcx", "%ecx")) {
+                    cg->out.len = old_len;
+                    if (cg->out.buf) cg->out.buf[old_len] = 0;
+                    goto general_cmp;
+                }
+
+                if (can_cmp64) {
+                    str_appendf(&cg->out, "  cmp (%%rcx), %%rdx\n");
+                } else {
+                    str_appendf(&cg->out, "  cmp (%%rcx), %%edx\n");
+                }
+
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    if (e->kind == EXPR_EQ) jcc = "jne";
+                    else if (e->kind == EXPR_NE) jcc = "je";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                } else {
+                    if (e->kind == EXPR_EQ) jcc = "je";
+                    else if (e->kind == EXPR_NE) jcc = "jne";
+                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
+                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
+                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
+                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
+        }
+
+    general_cmp:
+        // General case: evaluate both sides.
+        cg_expr(cg, e->lhs);
+        str_appendf(&cg->out, "  push %%rax\n");
+        cg_expr(cg, e->rhs);
+        str_appendf(&cg->out, "  pop %%rcx\n");
+        if (cmp_i32) {
+            str_appendf(&cg->out, "  cmp %%eax, %%ecx\n");
+        } else {
+            // Mixed-width compare: ensure signed 32-bit operands are sign-extended
+            // before a 64-bit cmp. (Unsigned 32-bit values are already zero-extended.)
+            if (rhs_is64 && lhs_i32_signed) {
+                str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
+            }
+            if (lhs_is64 && rhs_i32_signed) {
+                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+            }
+            str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
+        }
 
         const char *jcc = "je";
         if (jump_on_false) {
@@ -2950,7 +3914,9 @@ static void cg_asm_stmt(CG *cg, const Stmt *s) {
 
         // Conservative fallback: preserve value across address computation.
         const char *dst = (sz == 1) ? "%al" : (sz == 2) ? "%ax" : (sz == 4) ? "%eax" : "%rax";
-        str_appendf_ss(&cg->out, "  mov %s, %s\n", src, dst);
+        if (mc_strcmp(src, dst) != 0) {
+            str_appendf_ss(&cg->out, "  mov %s, %s\n", src, dst);
+        }
         str_appendf(&cg->out, "  push %rax\n");
         (void)cg_lval_addr(cg, b->expr);
         str_appendf(&cg->out, "  mov %rax, %rcx\n");
@@ -3002,6 +3968,48 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                 str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
             } else {
                 cg_expr(cg, s->expr);
+
+                // Ensure the return value in %rax matches the function's return type width.
+                // With the 32-bit-int optimization, signed 32-bit values are no longer
+                // kept sign-extended in %rax, so widening returns must extend explicitly.
+                int dst_sz = 8;
+                if (cg->ret_ptr > 0) {
+                    dst_sz = 8;
+                } else if (cg->ret_base == BT_CHAR) {
+                    dst_sz = 1;
+                } else if (cg->ret_base == BT_SHORT) {
+                    dst_sz = 2;
+                } else if (cg->ret_base == BT_INT) {
+                    dst_sz = 4;
+                } else if (cg->ret_base == BT_LONG) {
+                    dst_sz = 8;
+                } else if (cg->ret_base == BT_FLOAT) {
+                    dst_sz = 4;
+                }
+
+                if (dst_sz == 8 && s->expr) {
+                    int src_sz = type_sizeof(cg->prg, s->expr->base, s->expr->ptr, s->expr->struct_id);
+                    if (src_sz == 1) {
+                        if (s->expr->ptr > 0 || s->expr->is_unsigned) {
+                            str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+                        } else {
+                            str_appendf(&cg->out, "  movsbq %%al, %%rax\n");
+                        }
+                    } else if (src_sz == 2) {
+                        if (s->expr->ptr > 0 || s->expr->is_unsigned) {
+                            str_appendf(&cg->out, "  movzw %%ax, %%eax\n");
+                        } else {
+                            str_appendf(&cg->out, "  movswq %%ax, %%rax\n");
+                        }
+                    } else if (src_sz == 4) {
+                        if (s->expr->ptr > 0 || s->expr->is_unsigned) {
+                            // 32-bit return values in %eax are already zero-extended.
+                        } else {
+                            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                        }
+                    }
+                }
+
                 str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
             }
             return;
@@ -3067,7 +4075,7 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                         }
                     } else { // sz == 4
                         if (is_unsigned) {
-                            str_appendf(&cg->out, "  mov %%eax, %%eax\n");
+                            // %eax write already zero-extends into %rax.
                         } else {
                             str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
                         }

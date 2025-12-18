@@ -80,6 +80,9 @@ This document describes the current multi-toolchain “matrix” test harness, w
    - `size-report.sh`: emits `toolchain<TAB>tool<TAB>bytes` to stdout (Makefile redirects to `build/matrix/report.tsv`).
    - `tsv-to-html.sh`: converts the two TSV files into `build/matrix/report.html`.
 - Orchestration uses host `sh` (not `./bin/sh`).
+- Matrix builds can be parallelized:
+   - `make -jN MULTI=1 test` is honored (matrix scripts read `MAKEFLAGS`).
+   - Or set `MATRIX_JOBS=N` to force a specific job count.
 - Note on `awk`: the HTML generator prefers `./bin/awk` only if it supports required features; otherwise it uses system `awk`.
 
 ## Success Criteria

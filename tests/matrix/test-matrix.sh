@@ -60,8 +60,13 @@ smoke_one_tc() {
 }
 
 for tc in $TCS; do
-	smoke_one_tc "$tc"
-	rc=$?
+	# Under `set -e`, a non-zero return would abort the script.
+	# Run via `if` so we can treat "missing" as a normal SKIP.
+	if smoke_one_tc "$tc"; then
+		rc=0
+	else
+		rc=$?
+	fi
 	if [ "$rc" -eq 0 ]; then
 		say "matrix: OK tc=$tc"
 	elif [ "$rc" -eq 2 ]; then

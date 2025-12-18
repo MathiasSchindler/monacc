@@ -44,7 +44,10 @@ static int more_prompt(mc_i32 ttyfd) {
 
 static int more_cat_fd(const char *argv0, mc_i32 in_fd, mc_i32 ttyfd) {
 	(void)argv0;
-	struct r rr = { .fd = in_fd, .off = 0, .len = 0 };
+	struct r rr;
+	rr.fd = in_fd;
+	rr.off = 0;
+	rr.len = 0;
 	mc_u32 lines = 0;
 
 	while (1) {

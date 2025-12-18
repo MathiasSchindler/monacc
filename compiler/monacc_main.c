@@ -1,5 +1,34 @@
 #include "monacc.h"
 
+static int g_trace_force = 0;
+static int g_trace_cached = -1;
+
+static int trace_enabled(void) {
+    if (g_trace_force) return 1;
+    if (g_trace_cached >= 0) return g_trace_cached;
+    g_trace_cached = 0;
+    char **envp = mc_get_start_envp();
+    const char *v = envp ? mc_getenv_kv(envp, "MONACC_TRACE=") : NULL;
+    if (v && *v && mc_strcmp(v, "0") != 0) g_trace_cached = 1;
+    return g_trace_cached;
+}
+
+static void trace_write(const char *s) {
+    if (!s) s = "";
+    xwrite_best_effort(2, s, mc_strlen(s));
+}
+
+static void trace_checkpoint(const char *what, const char *path) {
+    if (!trace_enabled()) return;
+    trace_write("TRACE: ");
+    trace_write(what ? what : "?");
+    if (path && *path) {
+        trace_write(": ");
+        trace_write(path);
+    }
+    trace_write("\n");
+}
+
 // Post-link ELF shrinking: Linux only needs program headers at runtime.
 // Dropping the section header table (SHT) and truncating the file to the end of
 // PT_LOAD data reduces file size for all produced tools.
@@ -113,12 +142,20 @@ static void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
 #endif
     _exit(2);
+}
+
+static int ends_with_lit(const char *s, const char *lit) {
+    if (!s || !lit) return 0;
+    mc_usize ns = mc_strlen(s);
+    mc_usize nl = mc_strlen(lit);
+    if (nl > ns) return 0;
+    return mc_memcmp(s + (ns - nl), lit, nl) == 0;
 }
 
 typedef struct {
@@ -169,6 +206,8 @@ static void mt_apply_cmd_defines(MacroTable *mt, const CmdDefine *defs, int ndef
 
 static void compile_to_obj(const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
                            const CmdDefine *defs, int ndefs, int with_start, const char *dump_pp_path, const char *as_prog, int emit_obj) {
+    trace_checkpoint("read input", in_path);
+
     MacroTable mt;
     mc_memset(&mt, 0, sizeof(mt));
     mt_apply_cmd_defines(&mt, defs, ndefs);
@@ -177,7 +216,10 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
     mc_memset(&ot, 0, sizeof(ot));
     Str pp;
     mc_memset(&pp, 0, sizeof(pp));
+
+    trace_checkpoint("preprocess start", in_path);
     preprocess_file(cfg, &mt, &ot, in_path, &pp);
+    trace_checkpoint("preprocess end", in_path);
 
     if (dump_pp_path) {
         write_file(dump_pp_path, pp.buf ? pp.buf : "", pp.len);
@@ -197,26 +239,32 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
     Program prg;
     mc_memset(&prg, 0, sizeof(prg));
     p.prg = &prg;
+
+    trace_checkpoint("parse start", in_path);
     parse_program(&p, &prg);
+    trace_checkpoint("parse end", in_path);
 
     Str out_asm;
     mc_memset(&out_asm, 0, sizeof(out_asm));
+
+    trace_checkpoint("codegen start", in_path);
     emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
+    trace_checkpoint("codegen end", in_path);
 
     // Always emit the textual assembly as well; it's used by the external 'as' path
     // and helps diagnose internal object emission failures.
     write_file(tmp_s, out_asm.buf, out_asm.len);
 
     if (emit_obj) {
-#ifndef SELFHOST
+        trace_checkpoint("assemble (internal) start", tmp_o);
         assemble_x86_64_elfobj(out_asm.buf ? out_asm.buf : "", out_asm.len, tmp_o);
-#else
-        die("--emit-obj is not supported in SELFHOST mode");
-#endif
+        trace_checkpoint("assemble (internal) end", tmp_o);
     } else {
+        trace_checkpoint("assemble (external) start", tmp_o);
         char *as_argv[6] = {(char *)(as_prog ? as_prog : "as"), "--64", (char *)tmp_s, "-o", (char *)tmp_o, NULL};
         int rc = run_cmd(as_argv);
         if (rc != 0) die_i64("as failed (", rc, ")");
+        trace_checkpoint("assemble (external) end", tmp_o);
     }
 
     monacc_free(out_asm.buf);
@@ -316,6 +364,10 @@ int main(int argc, char **argv) {
                 link_internal = 1;
                 continue;
             }
+            if (!mc_strcmp(argv[i], "--trace-selfhost")) {
+                g_trace_force = 1;
+                continue;
+            }
             if (!mc_strcmp(argv[i], "--toolchain")) {
                 if (i + 1 >= argc) usage(argv[0]);
                 const char *dir = argv[++i];
@@ -364,6 +416,86 @@ int main(int argc, char **argv) {
     }
 
     if (nin_paths < 1 || !out_path) usage(argv[0]);
+
+    if (trace_enabled()) {
+        trace_checkpoint("start", argv[0]);
+        trace_checkpoint(emit_obj ? "mode: --emit-obj" : "mode: external as", NULL);
+        trace_checkpoint(link_internal ? "mode: --link-internal" : "mode: external ld", NULL);
+    }
+
+    // Link-only mode: if all inputs are .o files, skip compilation.
+    // This is primarily used to run the internal linker in a fresh process.
+    int all_obj_inputs = 1;
+    for (int i = 0; i < nin_paths; i++) {
+        if (!ends_with_lit(in_paths[i], ".o")) {
+            all_obj_inputs = 0;
+            break;
+        }
+    }
+
+    if (all_obj_inputs) {
+        if (compile_only) die("-c does not accept .o inputs");
+
+        if (link_internal) {
+            trace_checkpoint("link (internal) start", out_path);
+            link_internal_exec_objs((const char **)in_paths, nin_paths, out_path, keep_shdr);
+            trace_checkpoint("link (internal) end", out_path);
+        } else {
+            trace_checkpoint("link (external) start", out_path);
+            int base = 0;
+            int argc_ld = nin_paths + 32;
+            char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
+            if (!ld_argv) die("oom");
+            ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+            ld_argv[base++] = "-nostdlib";
+            ld_argv[base++] = "-static";
+            ld_argv[base++] = "-s";
+            ld_argv[base++] = "--gc-sections";
+            ld_argv[base++] = "--build-id=none";
+            if (use_nmagic) {
+                ld_argv[base++] = "-n";
+            }
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "noseparate-code";
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "max-page-size=0x1000";
+            ld_argv[base++] = "-z";
+            ld_argv[base++] = "common-page-size=0x1000";
+            ld_argv[base++] = "-e";
+            ld_argv[base++] = "_start";
+
+            if (xpath_exists("scripts/minimal.ld")) {
+                ld_argv[base++] = "-T";
+                ld_argv[base++] = "scripts/minimal.ld";
+            }
+
+            for (int i = 0; i < nin_paths; i++) {
+                ld_argv[base++] = in_paths[i];
+            }
+            ld_argv[base++] = "-o";
+            ld_argv[base++] = (char *)out_path;
+            ld_argv[base] = NULL;
+            int rc = run_cmd(ld_argv);
+            monacc_free(ld_argv);
+            if (rc != 0) die_i64("ld failed (", rc, ")");
+            trace_checkpoint("link (external) end", out_path);
+        }
+
+        if (!keep_shdr) {
+            elf_trim_shdr_best_effort(out_path);
+        }
+
+        if (as_prog_alloc) monacc_free(as_prog_alloc);
+        if (ld_prog_alloc) monacc_free(ld_prog_alloc);
+        monacc_free(cfg.include_dirs);
+        for (int i = 0; i < ndefs; i++) {
+            monacc_free(defs[i].name);
+            monacc_free(defs[i].repl);
+        }
+        monacc_free(defs);
+        monacc_free(in_paths);
+        return 0;
+    }
 
     if (compile_only) {
         if (nin_paths != 1) {
@@ -421,8 +553,33 @@ int main(int argc, char **argv) {
     // Size-oriented defaults: we emit per-function/per-string sections and link with --gc-sections.
     {
         if (link_internal) {
-            link_internal_exec_objs((const char **)obj_paths, nin_paths, out_path, keep_shdr);
+            trace_checkpoint("link (internal) re-exec start", out_path);
+            // Run the internal linker in a fresh process to isolate it from any allocator state
+            // left behind by the compile phase (important for large self-host builds).
+            int argc_lnk = nin_paths + 9;
+            char **lnk_argv = (char **)monacc_calloc((mc_usize)argc_lnk + 1, sizeof(char *));
+            if (!lnk_argv) die("oom");
+            int base = 0;
+            lnk_argv[base++] = argv[0];
+            lnk_argv[base++] = "--link-internal";
+            if (g_trace_force) {
+                lnk_argv[base++] = "--trace-selfhost";
+            }
+            if (keep_shdr) {
+                lnk_argv[base++] = "--keep-shdr";
+            }
+            for (int i = 0; i < nin_paths; i++) {
+                lnk_argv[base++] = obj_paths[i];
+            }
+            lnk_argv[base++] = "-o";
+            lnk_argv[base++] = (char *)out_path;
+            lnk_argv[base] = NULL;
+            int rc = run_cmd(lnk_argv);
+            monacc_free(lnk_argv);
+            if (rc != 0) die_i64("link-internal failed (", rc, ")");
+            trace_checkpoint("link (internal) re-exec end", out_path);
         } else {
+            trace_checkpoint("link (external) start", out_path);
             int base = 0;
             // Allocate with slack to keep this robust as flags change.
             int argc_ld = nin_paths + 32;
@@ -466,6 +623,7 @@ int main(int argc, char **argv) {
             int rc = run_cmd(ld_argv);
             monacc_free(ld_argv);
             if (rc != 0) die_i64("ld failed (", rc, ")");
+            trace_checkpoint("link (external) end", out_path);
         }
     }
 

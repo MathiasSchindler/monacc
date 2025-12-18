@@ -175,9 +175,6 @@ typedef struct {
     const char *strtab;
     mc_usize strtab_sz;
 
-    Elf64_Shdr *relsecs;
-    mc_u16 nrelsecs;
-
     mc_u64 *sec_vaddr;   // indexed by shndx
     mc_u64 *sec_fileoff; // indexed by shndx (0 for NOBITS)
     unsigned char *sec_keep; // indexed by shndx (GC reachability)
@@ -303,8 +300,11 @@ static void input_obj_parse(InputObj *in, const char *obj_path) {
     if (!in->symtab || !in->strtab) die("link-internal: %s: missing symtab/strtab", obj_path);
 
     // Collect relocation sections (RELA only).
+
+    // Validate relocations: RELA only.
+    // We intentionally do not build a separate relocation-section list; callers scan shdrs.
     for (mc_u16 i = 0; i < in->eh->e_shnum; i++) {
-        Elf64_Shdr *sh = &in->shdrs[i];
+        const Elf64_Shdr *sh = &in->shdrs[i];
         if (sh->sh_type == SHT_REL && sh->sh_size != 0) {
             const char *nm = "";
             if (sh->sh_name < (mc_u32)in->shstr_sz) nm = in->shstrtab + sh->sh_name;
@@ -313,24 +313,11 @@ static void input_obj_parse(InputObj *in, const char *obj_path) {
         if (sh->sh_type != SHT_RELA) continue;
         if (sh->sh_size == 0) continue;
         if (sh->sh_entsize != sizeof(Elf64_Rela)) die("link-internal: unexpected RELA entsize");
-        in->nrelsecs++;
-    }
-    if (in->nrelsecs) {
-        in->relsecs = (Elf64_Shdr *)monacc_malloc((mc_usize)in->nrelsecs * sizeof(*in->relsecs));
-        if (!in->relsecs) die("oom");
-        mc_u16 w = 0;
-        for (mc_u16 i = 0; i < in->eh->e_shnum; i++) {
-            Elf64_Shdr *sh = &in->shdrs[i];
-            if (sh->sh_type != SHT_RELA) continue;
-            if (sh->sh_size == 0) continue;
-            in->relsecs[w++] = *sh;
-        }
     }
 }
 
 static void input_obj_free(InputObj *in) {
     if (!in) return;
-    if (in->relsecs) monacc_free(in->relsecs);
     if (in->sec_vaddr) monacc_free(in->sec_vaddr);
     if (in->sec_fileoff) monacc_free(in->sec_fileoff);
     if (in->sec_keep) monacc_free(in->sec_keep);
@@ -431,6 +418,9 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
 
         // Root: section containing _start.
         {
+            if (gs[start_gi].obji < 0 || gs[start_gi].obji >= nobj_paths) {
+                die("link-internal: internal error: bad _start object index");
+            }
             InputObj *def = &ins[gs[start_gi].obji];
             const Elf64_Sym *s = &def->symtab[gs[start_gi].symi];
             mc_u16 shndx = s->st_shndx;
@@ -445,10 +435,15 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
             wn--;
             int oi = work_oi[wn];
             mc_u16 si = work_si[wn];
+            if (oi < 0 || oi >= nobj_paths) {
+                die("link-internal: internal error: bad work object index");
+            }
             InputObj *in = &ins[oi];
 
-            for (mc_u16 rsi = 0; rsi < in->nrelsecs; rsi++) {
-                const Elf64_Shdr *rsh = &in->relsecs[rsi];
+            for (mc_u16 rsi = 0; rsi < in->eh->e_shnum; rsi++) {
+                const Elf64_Shdr *rsh = &in->shdrs[rsi];
+                if (rsh->sh_type != SHT_RELA) continue;
+                if (rsh->sh_size == 0) continue;
                 if (rsh->sh_info != si) continue;
                 if (rsh->sh_info >= in->eh->e_shnum) die("link-internal: bad relocation target section index");
 
@@ -461,9 +456,11 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                     const Elf64_Sym *s = &in->symtab[rsym];
 
                     InputObj *def = NULL;
+                    int def_oi = -1;
                     mc_u32 def_symi = 0;
                     if (s->st_shndx != SHN_UNDEF) {
                         def = in;
+                        def_oi = oi;
                         def_symi = rsym;
                     } else {
                         const char *nm = sym_name(in, rsym);
@@ -471,7 +468,11 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                         if (gi < 0 || !gs[gi].defined) {
                             die("link-internal: undefined symbol %s", nm && *nm ? nm : "<noname>");
                         }
-                        def = &ins[gs[gi].obji];
+                        if (gs[gi].obji < 0 || gs[gi].obji >= nobj_paths) {
+                            die("link-internal: internal error: bad global def object index");
+                        }
+                        def_oi = gs[gi].obji;
+                        def = &ins[def_oi];
                         def_symi = gs[gi].symi;
                     }
 
@@ -483,7 +484,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                     if (!def->sec_keep[shndx]) {
                         def->sec_keep[shndx] = 1;
                         if (wn >= wcap) die("link-internal: internal error: gc work overflow");
-                        work_oi[wn] = (int)(def - ins);
+                        work_oi[wn] = def_oi;
                         work_si[wn] = shndx;
                         wn++;
                     }
@@ -643,8 +644,10 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
     // Apply relocations.
     for (int oi = 0; oi < nobj_paths; oi++) {
         InputObj *in = &ins[oi];
-        for (mc_u16 rsi = 0; rsi < in->nrelsecs; rsi++) {
-            const Elf64_Shdr *rsh = &in->relsecs[rsi];
+        for (mc_u16 rsi = 0; rsi < in->eh->e_shnum; rsi++) {
+            const Elf64_Shdr *rsh = &in->shdrs[rsi];
+            if (rsh->sh_type != SHT_RELA) continue;
+            if (rsh->sh_size == 0) continue;
             if (rsh->sh_info >= in->eh->e_shnum) die("link-internal: bad relocation target section index");
             mc_u16 tgt = (mc_u16)rsh->sh_info;
             if (!in->sec_keep[tgt]) continue;
@@ -671,6 +674,9 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                     int gi = find_global_sym(gs, ngs, nm);
                     if (gi < 0 || !gs[gi].defined) {
                         die("link-internal: undefined symbol %s", nm && *nm ? nm : "<noname>");
+                    }
+                    if (gs[gi].obji < 0 || gs[gi].obji >= nobj_paths) {
+                        die("link-internal: internal error: bad global def object index");
                     }
                     InputObj *def = &ins[gs[gi].obji];
                     S = sym_addr_in_obj(def, gs[gi].symi);

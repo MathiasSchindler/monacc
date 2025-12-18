@@ -85,46 +85,114 @@ for tc in $TCS; do
 
 	tc_fail=0
 
-	say "matrix: building tc=$tc -> $OUT_BIN"
+	JOBS="$(matrix_jobs)"
+	if [ "$JOBS" -lt 1 ]; then JOBS=1; fi
 
+	say "matrix: building tc=$tc -> $OUT_BIN (jobs=$JOBS)"
+
+	# Build each tool, optionally in parallel. Each job writes a per-tool TSV line,
+	# then we merge in deterministic order.
+	LINES_DIR="$OUT_BASE/lines/$TC_DIR"
+	rm -rf "$LINES_DIR"
+	mkdir -p "$LINES_DIR"
+
+	# Export context for the worker shell.
+	export tc TC_DIR CC_CMD OUT_BIN OUT_BASE LINES_DIR
+	export HOST_CFLAGS HOST_LDFLAGS CORE_COMMON CORE_START
+
+	if [ "$JOBS" -gt 1 ] && have_cmd xargs && printf '%s\n' x | xargs -n 1 -P 1 echo >/dev/null 2>/dev/null; then
+		printf '%s\n' $TOOLS | xargs -n 1 -P "$JOBS" sh -c '
+			src="$1"
+			tool="$(basename "$src" .c)"
+			out="$OUT_BIN/$tool"
+			line="$LINES_DIR/$tool.tsv"
+			err="$OUT_BASE/${TC_DIR}-${tool}.err"
+			outlog="$OUT_BASE/${TC_DIR}-${tool}.out"
+			status="OK"
+			mode=""
+
+			if [ "$tc" = "monacc" ]; then
+				if ./bin/monacc -I core "$src" $CORE_COMMON -o "$out" >/dev/null 2>"$err"; then
+					mode="monacc"
+				else
+					status="FAIL"
+					mode=""
+				fi
+			else
+				if "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -static -o "$out" >"$outlog" 2>"$err"; then
+					mode="static"
+				elif "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -o "$out" >"$outlog" 2>"$err"; then
+					mode="dynamic"
+				else
+					status="FAIL"
+					mode=""
+				fi
+			fi
+
+			bytes="0"
+			if [ -f "$out" ]; then
+				bytes="$(wc -c <"$out" | tr -d " ")"
+			fi
+			printf "%s\t%s\t%s\t%s\t%s\n" "$tc" "$tool" "$status" "$mode" "$bytes" >"$line"
+			exit 0
+		' sh
+	else
+		# Fallback: sequential build.
+		for src in $TOOLS; do
+			tool="$(basename "$src" .c)"
+			out="$OUT_BIN/$tool"
+			line="$LINES_DIR/$tool.tsv"
+			err="$OUT_BASE/${TC_DIR}-${tool}.err"
+			outlog="$OUT_BASE/${TC_DIR}-${tool}.out"
+			status="OK"
+			mode=""
+			if [ "$tc" = "monacc" ]; then
+				if ./bin/monacc -I core "$src" $CORE_COMMON -o "$out" >/dev/null 2>"$err"; then
+					mode="monacc"
+				else
+					status="FAIL"
+					mode=""
+				fi
+			else
+				if "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -static -o "$out" >"$outlog" 2>"$err"; then
+					mode="static"
+				elif "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -o "$out" >"$outlog" 2>"$err"; then
+					mode="dynamic"
+				else
+					status="FAIL"
+					mode=""
+				fi
+			fi
+			bytes="0"
+			if [ -f "$out" ]; then
+				bytes="$(wc -c <"$out" | tr -d ' ')"
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\n' "$tc" "$tool" "$status" "$mode" "$bytes" >"$line"
+		done
+	fi
+
+	# Merge per-tool lines in source order and update failure state.
 	for src in $TOOLS; do
 		tool="$(basename "$src" .c)"
-		out="$OUT_BIN/$tool"
-
-		mode=""
-		if [ "$tc" = "monacc" ]; then
-			# Build with monacc similarly to the main Makefile.
-			if ./bin/monacc -I core "$src" $CORE_COMMON -o "$out" >/dev/null 2>"$OUT_BASE/${TC_DIR}-${tool}.err"; then
-				mode="monacc"
-			else
-				say "matrix: FAIL tc=$tc tool=$tool (see $OUT_BASE/${TC_DIR}-${tool}.err)" >&2
-				tc_fail=1
-				fail=1
-				printf '%s\t%s\t%s\t%s\n' "$tc" "$tool" "FAIL" "" >>"$BUILD_TSV"
-				continue
-			fi
-		else
-			# Hosted compiler: try static first, then fall back to non-static.
-			err="$OUT_BASE/${TC_DIR}-${tool}.err"
-			if "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -static -o "$out" >"$OUT_BASE/${TC_DIR}-${tool}.out" 2>"$err"; then
-				mode="static"
-			elif "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -o "$out" >"$OUT_BASE/${TC_DIR}-${tool}.out" 2>"$err"; then
-				mode="dynamic"
-			else
-				say "matrix: FAIL tc=$tc tool=$tool (see $err)" >&2
-				tc_fail=1
-				fail=1
-				printf '%s\t%s\t%s\t%s\n' "$tc" "$tool" "FAIL" "" >>"$BUILD_TSV"
-				continue
-			fi
+		line="$LINES_DIR/$tool.tsv"
+		if [ ! -f "$line" ]; then
+			# Unexpected; treat as failure.
+			say "matrix: FAIL tc=$tc tool=$tool (no result line)" >&2
+			tc_fail=1
+			fail=1
+			printf '%s\t%s\t%s\t%s\t%s\n' "$tc" "$tool" "FAIL" "" "" >>"$BUILD_TSV"
+			continue
 		fi
-
-		# Record size.
-		bytes="0"
-		if [ -f "$out" ]; then
-			bytes="$(wc -c <"$out" | tr -d ' ')"
+		cat "$line" >>"$BUILD_TSV"
+		# Detect failures.
+		# shellcheck disable=SC2162
+		tab="$(printf '\t')"
+		IFS="$tab" read st_tc st_tool st_status st_mode st_bytes <"$line" || true
+		if [ "${st_status:-}" != "OK" ]; then
+			say "matrix: FAIL tc=$tc tool=$tool (see $OUT_BASE/${TC_DIR}-${tool}.err)" >&2
+			tc_fail=1
+			fail=1
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\n' "$tc" "$tool" "OK" "$mode" "$bytes" >>"$BUILD_TSV"
 	done
 
 	# Aliases (match top-level build): realpath <- readlink, [ <- test.

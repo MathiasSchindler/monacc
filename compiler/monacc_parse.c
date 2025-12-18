@@ -55,12 +55,12 @@ static void expr_set_int_literal(Expr *e, long long v) {
     // Minimal literal typing:
     // - Prefer 32-bit int/unsigned int when representable.
     // - Fall back to 64-bit long for larger values.
-    if (v >= -2147483648LL && v <= 2147483647LL) {
+    if (v >= MC_I32_MIN && v <= MC_I32_MAX) {
         e->is_unsigned = 0;
         e->lval_size = 4;
         return;
     }
-    if (v >= 0 && v <= 0xffffffffLL) {
+    if (v >= 0 && v <= (long long)MC_U32_MAX) {
         e->is_unsigned = 1;
         e->lval_size = 4;
         return;
@@ -1209,7 +1209,13 @@ static Expr *parse_unary(Parser *p, Locals *ls) {
         }
         Expr *e = new_expr(EXPR_NUM);
         e->num = sz;
-        expr_set_int(e);
+        // Keep sizeof as an unsigned 32-bit constant for compact codegen.
+        // (We don't currently model a distinct size_t type in the front-end.)
+        e->base = BT_INT;
+        e->ptr = 0;
+        e->struct_id = -1;
+        e->is_unsigned = 1;
+        e->lval_size = 4;
         return e;
     }
     if (consume(p, TOK_PLUS)) {

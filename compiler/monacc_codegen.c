@@ -421,7 +421,7 @@ static int expr_is_simple_arg(const Expr *e) {
             if (!(e->ptr_scale == 1 || e->ptr_scale == 2 || e->ptr_scale == 4 || e->ptr_scale == 8)) return 0;
             if (imm_e->kind == EXPR_NUM) {
                 long long off = imm_e->num * (long long)e->ptr_scale;
-                if (off >= -2147483648LL && off <= 2147483647LL) {
+                if (off >= MC_I32_MIN && off <= MC_I32_MAX) {
                     return expr_is_simple_arg(ptr_e);
                 }
             } else {
@@ -551,7 +551,7 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
             imm = e->lhs->num;
         }
         if (base) {
-            if (imm < -2147483648LL || imm > 2147483647LL) return 0;
+            if (imm < MC_I32_MIN || imm > MC_I32_MAX) return 0;
             if (!cg_expr_to_reg_simple_arg(cg, base, reg64, reg32)) return 0;
             if (imm != 0) {
                 if (imm > 0) {
@@ -593,7 +593,7 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
             if (imm_e->kind == EXPR_NUM) {
                 long long off = imm_e->num * (long long)e->ptr_scale;
                 off *= (long long)sign;
-                if (off >= -2147483648LL && off <= 2147483647LL) {
+                if (off >= MC_I32_MIN && off <= MC_I32_MAX) {
                     if (!cg_expr_to_reg_simple_arg(cg, ptr_e, reg64, reg32)) return 0;
                     if (off != 0) {
                         if (off > 0) {
@@ -675,7 +675,7 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
             long long idx = lhs->rhs->num;
             int scale = (lhs->ptr_scale > 0) ? lhs->ptr_scale : 8;
             long long off = idx * (long long)scale;
-            if (off < -2147483648LL || off > 2147483647LL) return 0;
+            if (off < MC_I32_MIN || off > MC_I32_MAX) return 0;
 
             const Expr *base = lhs->lhs;
             if (base->kind == EXPR_COMPOUND) {
@@ -1227,19 +1227,19 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
             long long offset = idx * (long long)scale;
             // If the base is a known addressable object, fold into the lea.
             if (e->lhs && e->lhs->kind == EXPR_VAR && e->lhs->lval_size == 0 &&
-                offset >= -2147483648LL && offset <= 2147483647LL) {
+                offset >= MC_I32_MIN && offset <= MC_I32_MAX) {
                 int disp = e->lhs->var_offset + (int)offset;
                 str_appendf_i64(&cg->out, "  lea %d(%%rbp), %%rax\n", disp);
                 return e->lval_size ? e->lval_size : 8;
             }
             if (e->lhs && e->lhs->kind == EXPR_COMPOUND &&
-                offset >= -2147483648LL && offset <= 2147483647LL) {
+                offset >= MC_I32_MIN && offset <= MC_I32_MAX) {
                 int disp = e->lhs->var_offset + (int)offset;
                 str_appendf_i64(&cg->out, "  lea %d(%%rbp), %%rax\n", disp);
                 return e->lval_size ? e->lval_size : 8;
             }
             if (e->lhs && e->lhs->kind == EXPR_GLOBAL && e->lhs->lval_size == 0 &&
-                offset >= -2147483648LL && offset <= 2147483647LL) {
+                offset >= MC_I32_MIN && offset <= MC_I32_MAX) {
                 const GlobalVar *gv = &cg->prg->globals[e->lhs->global_id];
                 if (offset == 0) {
                     str_appendf_s(&cg->out, "  lea %s(%%rip), %%rax\n", gv->name);
@@ -1253,7 +1253,7 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
             cg_expr(cg, e->lhs);
             if (offset == 0) {
                 // Index 0: base address is already correct
-            } else if (offset >= -2147483648LL && offset <= 2147483647LL) {
+            } else if (offset >= MC_I32_MIN && offset <= MC_I32_MAX) {
                 // Fits in imm32
                 if (offset == 1) {
                     str_appendf(&cg->out, "  inc %%rax\n");
@@ -1275,8 +1275,12 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
         str_appendf(&cg->out, "  push %%rax\n");
         cg_expr(cg, e->rhs);
         str_appendf(&cg->out, "  pop %%rcx\n");
-        if (e->rhs && e->rhs->ptr == 0 && e->rhs->lval_size == 4 && !e->rhs->is_unsigned &&
-            e->rhs->base != BT_LONG && e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
+
+        // The index operand is an integer that participates in pointer arithmetic.
+        // Ensure it's sign-extended before using it in 64-bit address arithmetic.
+        // Note: don't rely on lval_size here (rvalue expressions often have lval_size==0).
+        if (e->rhs && e->rhs->ptr == 0 && !e->rhs->is_unsigned &&
+            e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
             str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
         }
         if (scale != 1) {
@@ -1704,15 +1708,16 @@ static int cg_cmp_imm(CG *cg, const Expr *e, long long imm, int is_lhs_const) {
     if (imm == 0) {
         if (use32) str_appendf(&cg->out, "  test %%eax, %%eax\n");
         else str_appendf(&cg->out, "  test %%rax, %%rax\n");
-    } else if (imm >= -2147483648LL && imm <= 2147483647LL) {
+    } else if (imm >= MC_I32_MIN && imm <= MC_I32_MAX) {
         if (use32) str_appendf_i64(&cg->out, "  cmp $%lld, %%eax\n", imm);
         else str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", imm);
     } else {
         return 0;
     }
 
-    int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
-                       (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+    int use_unsigned = 0;
+    if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+    if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
 
     // Flags were computed for (%rax - imm). Choose cc for either:
     // - lhs OP rhs, when rhs is the immediate
@@ -1721,16 +1726,38 @@ static int cg_cmp_imm(CG *cg, const Expr *e, long long imm, int is_lhs_const) {
     if (e->kind == EXPR_EQ) cc = "e";
     else if (e->kind == EXPR_NE) cc = "ne";
     else if (!is_lhs_const) {
-        if (e->kind == EXPR_LT) cc = use_unsigned ? "b" : "l";
-        else if (e->kind == EXPR_LE) cc = use_unsigned ? "be" : "le";
-        else if (e->kind == EXPR_GT) cc = use_unsigned ? "a" : "g";
-        else if (e->kind == EXPR_GE) cc = use_unsigned ? "ae" : "ge";
+        if (e->kind == EXPR_LT) {
+            if (use_unsigned) cc = "b";
+            else cc = "l";
+        } else if (e->kind == EXPR_LE) {
+            if (use_unsigned) cc = "be";
+            else cc = "le";
+        } else if (e->kind == EXPR_GT) {
+            if (use_unsigned) cc = "a";
+            else cc = "g";
+        } else if (e->kind == EXPR_GE) {
+            if (use_unsigned) cc = "ae";
+            else cc = "ge";
+        }
     } else {
         // imm OP %rax
-        if (e->kind == EXPR_LT) cc = use_unsigned ? "a" : "g";   // imm < rhs  <=> rhs > imm
-        else if (e->kind == EXPR_LE) cc = use_unsigned ? "ae" : "ge"; // imm <= rhs <=> rhs >= imm
-        else if (e->kind == EXPR_GT) cc = use_unsigned ? "b" : "l";   // imm > rhs  <=> rhs < imm
-        else if (e->kind == EXPR_GE) cc = use_unsigned ? "be" : "le"; // imm >= rhs <=> rhs <= imm
+        if (e->kind == EXPR_LT) {
+            // imm < rhs  <=> rhs > imm
+            if (use_unsigned) cc = "a";
+            else cc = "g";
+        } else if (e->kind == EXPR_LE) {
+            // imm <= rhs <=> rhs >= imm
+            if (use_unsigned) cc = "ae";
+            else cc = "ge";
+        } else if (e->kind == EXPR_GT) {
+            // imm > rhs  <=> rhs < imm
+            if (use_unsigned) cc = "b";
+            else cc = "l";
+        } else if (e->kind == EXPR_GE) {
+            // imm >= rhs <=> rhs <= imm
+            if (use_unsigned) cc = "be";
+            else cc = "le";
+        }
     }
 
     str_appendf_s(&cg->out, "  set%s %%al\n", cc);
@@ -1750,14 +1777,14 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
 
     // Add/sub/bitwise/mul immediate peepholes. (Shifts/div/mod have their own logic.)
     if (e->kind == EXPR_ADD) {
-        if (!(imm >= -2147483648LL && imm <= 2147483647LL)) return 0;
+        if (!(imm >= MC_I32_MIN && imm <= MC_I32_MAX)) return 0;
 
         long long addimm = imm;
         if (e->ptr_scale > 0) {
             // For pointer arithmetic, only optimize when the immediate is on the index side.
             if ((is_lhs_const && e->ptr_index_side != 2) || (!is_lhs_const && e->ptr_index_side != 1)) return 0;
             addimm = imm * (long long)e->ptr_scale;
-            if (addimm < -2147483648LL || addimm > 2147483647LL) return 0;
+            if (addimm < MC_I32_MIN || addimm > MC_I32_MAX) return 0;
         }
 
         cg_expr(cg, other);
@@ -1775,7 +1802,7 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
     }
 
     if (e->kind == EXPR_SUB) {
-        if (!(imm >= -2147483648LL && imm <= 2147483647LL)) return 0;
+        if (!(imm >= MC_I32_MIN && imm <= MC_I32_MAX)) return 0;
 
         if (is_lhs_const) {
             if (e->ptr_scale != 0) return 0;
@@ -1795,7 +1822,7 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
         long long subimm = imm;
         if (e->ptr_scale > 0) {
             subimm = imm * (long long)e->ptr_scale;
-            if (subimm < -2147483648LL || subimm > 2147483647LL) return 0;
+            if (subimm < MC_I32_MIN || subimm > MC_I32_MAX) return 0;
         }
 
         cg_expr(cg, other);
@@ -1812,7 +1839,7 @@ static int cg_binop_imm_simple(CG *cg, const Expr *e, long long imm, int is_lhs_
         return 1;
     }
 
-    if (!(imm >= -2147483648LL && imm <= 2147483647LL)) return 0;
+    if (!(imm >= MC_I32_MIN && imm <= MC_I32_MAX)) return 0;
 
     if (e->kind == EXPR_BAND) {
         cg_expr(cg, other);
@@ -1944,15 +1971,25 @@ static int cg_binop_mem_rhs(CG *cg, const Expr *e, int use32) {
             if (use32) str_appendf_s(&cg->out, "  cmp %s, %%eax\n", mem);
             else str_appendf_s(&cg->out, "  cmp %s, %%rax\n", mem);
 
-            int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
-                               (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
             const char *cc = "e";
             if (e->kind == EXPR_EQ) cc = "e";
             else if (e->kind == EXPR_NE) cc = "ne";
-            else if (e->kind == EXPR_LT) cc = use_unsigned ? "b" : "l";
-            else if (e->kind == EXPR_LE) cc = use_unsigned ? "be" : "le";
-            else if (e->kind == EXPR_GT) cc = use_unsigned ? "a" : "g";
-            else if (e->kind == EXPR_GE) cc = use_unsigned ? "ae" : "ge";
+            else if (e->kind == EXPR_LT) {
+                if (use_unsigned) cc = "b";
+                else cc = "l";
+            } else if (e->kind == EXPR_LE) {
+                if (use_unsigned) cc = "be";
+                else cc = "le";
+            } else if (e->kind == EXPR_GT) {
+                if (use_unsigned) cc = "a";
+                else cc = "g";
+            } else if (e->kind == EXPR_GE) {
+                if (use_unsigned) cc = "ae";
+                else cc = "ge";
+            }
 
             str_appendf_s(&cg->out, "  set%s %%al\n", cc);
             str_appendf(&cg->out, "  movzb %%al, %%eax\n");
@@ -2130,8 +2167,9 @@ static void cg_binop(CG *cg, const Expr *e) {
         // Unsigned division/modulo by a power of two.
         // For unsigned/pointer values, x / 2^k == x >> k, and x % 2^k == x & (2^k-1).
         if ((e->kind == EXPR_DIV || e->kind == EXPR_MOD) && imm > 1) {
-            int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
-                               (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
             if (use_unsigned) {
                 unsigned long long uimm = (unsigned long long)imm;
                 int sh = u64_pow2_shift(uimm);
@@ -2291,14 +2329,25 @@ slow_binop:
             // Compare lhs (rcx) vs rhs (rax) => setcc into al
             if (use32) str_appendf(&cg->out, "  cmp %%eax, %%ecx\n");
             else str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
-            int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
             const char *cc = "e";
             if (e->kind == EXPR_EQ) cc = "e";
             else if (e->kind == EXPR_NE) cc = "ne";
-            else if (e->kind == EXPR_LT) cc = use_unsigned ? "b" : "l";
-            else if (e->kind == EXPR_LE) cc = use_unsigned ? "be" : "le";
-            else if (e->kind == EXPR_GT) cc = use_unsigned ? "a" : "g";
-            else if (e->kind == EXPR_GE) cc = use_unsigned ? "ae" : "ge";
+            else if (e->kind == EXPR_LT) {
+                if (use_unsigned) cc = "b";
+                else cc = "l";
+            } else if (e->kind == EXPR_LE) {
+                if (use_unsigned) cc = "be";
+                else cc = "le";
+            } else if (e->kind == EXPR_GT) {
+                if (use_unsigned) cc = "a";
+                else cc = "g";
+            } else if (e->kind == EXPR_GE) {
+                if (use_unsigned) cc = "ae";
+                else cc = "ge";
+            }
             str_appendf_s(&cg->out, "  set%s %%al\n", cc);
             str_appendf(&cg->out, "  movzb %%al, %%eax\n");
             return;
@@ -2408,7 +2457,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                         int scale = (e->lhs->ptr_scale > 0) ? e->lhs->ptr_scale : 8;
                         long long off = idx * (long long)scale;
                         // Only handle imm32 offsets.
-                        if (off >= -2147483648LL && off <= 2147483647LL) {
+                        if (off >= MC_I32_MIN && off <= MC_I32_MAX) {
                             const Expr *base = e->lhs->lhs;
                             if (base->kind == EXPR_COMPOUND) {
                                 // Addressable stack object.
@@ -2513,8 +2562,13 @@ static void cg_expr(CG *cg, const Expr *e) {
                 cg_normalize_scalar_result(cg, e);
                 return;
             }
-            if (e->ptr == 0 && e->base != BT_LONG && e->base != BT_STRUCT && e->lval_size == 4) {
-                str_appendf(&cg->out, "  neg %%eax\n");
+            if (e->ptr == 0 && e->base != BT_FLOAT && e->base != BT_STRUCT) {
+                int sz = type_sizeof(cg->prg, e->base, e->ptr, e->struct_id);
+                if (sz == 4) {
+                    str_appendf(&cg->out, "  neg %%eax\n");
+                } else {
+                    str_appendf(&cg->out, "  neg %%rax\n");
+                }
             } else {
                 str_appendf(&cg->out, "  neg %%rax\n");
             }
@@ -2810,7 +2864,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                     scale = e->lval_size;
                 }
                 long long off = idx * (long long)scale;
-                if (off >= -2147483648LL && off <= 2147483647LL) {
+                if (off >= MC_I32_MIN && off <= MC_I32_MAX) {
                     const Expr *base = e->lhs;
                     if (base->kind == EXPR_COMPOUND) {
                         emit_load_disp(cg, base->var_offset + (int)off, "%rbp", e->lval_size, e->is_unsigned);
@@ -3198,8 +3252,9 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
             return 1;
         }
 
-        int use_unsigned = (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) ||
-                           (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned));
+        int use_unsigned = 0;
+        if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+        if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
 
         int lhs_i32 = (e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG &&
                        e->lhs->base != BT_FLOAT && e->lhs->base != BT_STRUCT &&
@@ -3228,7 +3283,13 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                 else str_appendf(&cg->out, "  test %%rax, %%rax\n");
 
                 // Unsigned/pointer comparisons against 0.
-                if (use_unsigned) {
+                // NOTE: For the imm==0 peephole, decide based on the LHS only.
+                // This avoids self-hosted miscompilations where the broader
+                // use_unsigned computation can become unreliable, which would
+                // incorrectly treat signed `x >= 0` as an unsigned tautology.
+                int lhs_unsignedish = 0;
+                if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) lhs_unsignedish = 1;
+                if (lhs_unsignedish) {
                     // x < 0  -> false
                     // x >= 0 -> true
                     if (e->kind == EXPR_LT || e->kind == EXPR_GE) {
@@ -3302,7 +3363,7 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                 return 1;
             }
 
-            if ((imm >= -2147483648LL && imm <= 2147483647LL) && (use32 || use64)) {
+            if ((imm >= MC_I32_MIN && imm <= MC_I32_MAX) && (use32 || use64)) {
                 cg_expr(cg, e->lhs);
                 if (use32) str_appendf_i64(&cg->out, "  cmp $%lld, %%eax\n", imm);
                 else str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", imm);
@@ -3311,17 +3372,35 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                 if (jump_on_false) {
                     if (e->kind == EXPR_EQ) jcc = "jne";
                     else if (e->kind == EXPR_NE) jcc = "je";
-                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
-                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
-                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
-                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                    else if (e->kind == EXPR_LT) {
+                        if (use_unsigned) jcc = "jae";
+                        else jcc = "jge";
+                    } else if (e->kind == EXPR_LE) {
+                        if (use_unsigned) jcc = "ja";
+                        else jcc = "jg";
+                    } else if (e->kind == EXPR_GT) {
+                        if (use_unsigned) jcc = "jbe";
+                        else jcc = "jle";
+                    } else if (e->kind == EXPR_GE) {
+                        if (use_unsigned) jcc = "jb";
+                        else jcc = "jl";
+                    }
                 } else {
                     if (e->kind == EXPR_EQ) jcc = "je";
                     else if (e->kind == EXPR_NE) jcc = "jne";
-                    else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
-                    else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
-                    else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
-                    else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                    else if (e->kind == EXPR_LT) {
+                        if (use_unsigned) jcc = "jb";
+                        else jcc = "jl";
+                    } else if (e->kind == EXPR_LE) {
+                        if (use_unsigned) jcc = "jbe";
+                        else jcc = "jle";
+                    } else if (e->kind == EXPR_GT) {
+                        if (use_unsigned) jcc = "ja";
+                        else jcc = "jg";
+                    } else if (e->kind == EXPR_GE) {
+                        if (use_unsigned) jcc = "jae";
+                        else jcc = "jge";
+                    }
                 }
                 str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
                 return 1;
@@ -3354,17 +3433,35 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                     if (jump_on_false) {
                         if (e->kind == EXPR_EQ) jcc = "jne";
                         else if (e->kind == EXPR_NE) jcc = "je";
-                        else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jae" : "jge";
-                        else if (e->kind == EXPR_LE) jcc = use_unsigned ? "ja" : "jg";
-                        else if (e->kind == EXPR_GT) jcc = use_unsigned ? "jbe" : "jle";
-                        else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jb" : "jl";
+                        else if (e->kind == EXPR_LT) {
+                            if (use_unsigned) jcc = "jae";
+                            else jcc = "jge";
+                        } else if (e->kind == EXPR_LE) {
+                            if (use_unsigned) jcc = "ja";
+                            else jcc = "jg";
+                        } else if (e->kind == EXPR_GT) {
+                            if (use_unsigned) jcc = "jbe";
+                            else jcc = "jle";
+                        } else if (e->kind == EXPR_GE) {
+                            if (use_unsigned) jcc = "jb";
+                            else jcc = "jl";
+                        }
                     } else {
                         if (e->kind == EXPR_EQ) jcc = "je";
                         else if (e->kind == EXPR_NE) jcc = "jne";
-                        else if (e->kind == EXPR_LT) jcc = use_unsigned ? "jb" : "jl";
-                        else if (e->kind == EXPR_LE) jcc = use_unsigned ? "jbe" : "jle";
-                        else if (e->kind == EXPR_GT) jcc = use_unsigned ? "ja" : "jg";
-                        else if (e->kind == EXPR_GE) jcc = use_unsigned ? "jae" : "jge";
+                        else if (e->kind == EXPR_LT) {
+                            if (use_unsigned) jcc = "jb";
+                            else jcc = "jl";
+                        } else if (e->kind == EXPR_LE) {
+                            if (use_unsigned) jcc = "jbe";
+                            else jcc = "jle";
+                        } else if (e->kind == EXPR_GT) {
+                            if (use_unsigned) jcc = "ja";
+                            else jcc = "jg";
+                        } else if (e->kind == EXPR_GE) {
+                            if (use_unsigned) jcc = "jae";
+                            else jcc = "jge";
+                        }
                     }
                     str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
                     return 1;

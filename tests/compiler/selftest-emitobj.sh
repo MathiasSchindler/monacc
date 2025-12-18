@@ -105,6 +105,7 @@ if command -v cc >/dev/null 2>&1; then
   # Follow-up: use the self-built compiler to build+run a few known examples.
   examples=(
     examples/hello.c
+    examples/cmp_signed0.c
     examples/loop.c
     examples/pp.c
     examples/ptr.c

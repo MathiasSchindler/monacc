@@ -6,7 +6,13 @@ set -e
 export LC_NUMERIC=C  # Use period for decimals
 
 BINDIR="${BINDIR:-bin}"
-MONACC_DIR="$BINDIR"  # monacc binaries are directly in bin/
+# Prefer matrix-built monacc tool binaries (bin/monacc_/) when available.
+# Fall back to the top-level bin/ for non-matrix builds.
+if [[ -d "$BINDIR/monacc_" ]]; then
+    MONACC_DIR="$BINDIR/monacc_"
+else
+    MONACC_DIR="$BINDIR"
+fi
 COMPILER_DIRS="gcc_15_ clang_20_ gcc_14_ gcc_12_ clang_19_"
 
 # Find smallest binary among reference compilers

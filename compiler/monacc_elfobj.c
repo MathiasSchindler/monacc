@@ -425,6 +425,9 @@ typedef struct {
 static int parse_int64(const char *p, const char *end, long long *out) {
     p = skip_ws(p, end);
     if (p >= end) return 0;
+
+    // Parse into a 64-bit bit-pattern with wraparound. This matches typical
+    // assembler behavior and avoids relying on 64-bit division in SELFHOST.
     int neg = 0;
     if (*p == '-') {
         neg = 1;
@@ -449,9 +452,6 @@ static int parse_int64(const char *p, const char *end, long long *out) {
         else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (int)(c - 'a');
         else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (int)(c - 'A');
         else break;
-
-        // Overflow check: v*base + d <= ULLONG_MAX
-        if (v > (~0ULL - (unsigned long long)d) / (unsigned long long)base) return 0;
         v = v * (unsigned long long)base + (unsigned long long)d;
         nd++;
     }
@@ -461,11 +461,20 @@ static int parse_int64(const char *p, const char *end, long long *out) {
     if (p != end) return 0;
 
     if (neg) {
-        // allow -2^63
-        if (v > 0x8000000000000000ULL) return 0;
-        *out = (v == 0x8000000000000000ULL) ? (long long)(-9223372036854775807LL - 1LL) : -(long long)v;
+        // Apply two's complement to get the final bit-pattern.
+        v = (~v) + 1ULL;
+    }
+
+    // Convert the bit-pattern to a signed value.
+    const unsigned long long signbit = (unsigned long long)1ULL << 63;
+    if (v & signbit) {
+        unsigned long long mag = (~v) + 1ULL;
+        if (mag == signbit) {
+            *out = (long long)(-9223372036854775807LL - 1LL);
+        } else {
+            *out = -(long long)mag;
+        }
     } else {
-        if (v > 0x7fffffffffffffffULL) return 0;
         *out = (long long)v;
     }
     return 1;
@@ -819,7 +828,12 @@ static Operand parse_operand(AsmState *st, const char *p, const char *end) {
     if (*p == '$') {
         if (op.indirect) die("asm: indirect immediate");
         long long v = 0;
-        if (!parse_int64(p + 1, end, &v)) die("asm: bad immediate");
+        if (!parse_int64(p + 1, end, &v)) {
+            xwrite_best_effort(2, "asm: bad immediate token: '", 27);
+            xwrite_best_effort(2, p + 1, (mc_usize)(end - (p + 1)));
+            xwrite_best_effort(2, "'\n", 2);
+            die("asm: bad immediate\n");
+        }
         op.kind = OP_IMM;
         op.imm = v;
         return op;
@@ -893,7 +907,7 @@ static void encode_mov_imm_reg(Str *s, long long imm, const Reg *dst) {
         // Prefer the shorter sign-extended imm32 form when possible:
         //   REX.W + C7 /0 r/m64, imm32
         // This is 7 bytes vs 10 bytes for B8+rd imm64.
-        if (imm >= -2147483648LL && imm <= 2147483647LL) {
+        if (imm >= MC_I32_MIN && imm <= MC_I32_MAX) {
             emit_rex(s, 1, 0, 0, rex_b, 0);
             bin_put_u8(s, 0xC7);
             // ModRM: mod=11 (reg), reg=000 (/0), rm=dst

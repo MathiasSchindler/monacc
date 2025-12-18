@@ -31,12 +31,20 @@ DEBUG ?= 0
 LTO ?= 1
 MULTI ?= 0
 
+# Most distros default to PIE, which makes bin/monacc an ET_DYN + adds dynamic
+# linker metadata. monacc doesn't need it (no external libs), so default to a
+# smaller ET_EXEC binary. Set HOST_PIE=1 to keep the distro default.
+HOST_PIE ?= 0
+
 # Optional compiler probes.
 # Note: the emit-obj probe is enabled by default and is treated as a normal test.
 SELFTEST ?= 0
 SELFTEST_EMITOBJ ?= 1
 SELFTEST_ELFREAD ?= 1
 SELFTEST_LINKINT ?= 1
+SELFTEST_STAGE2 ?= 0
+SELFTEST_STAGE3 ?= 0
+SELFTEST_BINSHELL ?= 0
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
 ifeq ($(DEBUG),1)
@@ -53,26 +61,39 @@ CFLAGS += -flto
 LDFLAGS += -flto
 endif
 
+ifeq ($(HOST_PIE),0)
+CFLAGS += -fno-pie
+LDFLAGS += -no-pie
+endif
+
 
 # Core sources
-CORE_COMMON_SRC := \
+# Keep the compiler (bin/monacc) small by only linking the minimal core subset
+# it actually uses. Tools still build against the full core.
+CORE_MIN_SRC := \
 	core/mc_str.c \
 	core/mc_fmt.c \
 	core/mc_snprint.c \
 	core/mc_libc_compat.c \
 	core/mc_start_env.c \
 	core/mc_io.c \
-	core/mc_regex.c \
+	core/mc_regex.c
+
+CORE_CRYPTO_SRC := \
 	core/mc_sha256.c \
 	core/mc_hmac.c \
 	core/mc_hkdf.c \
-	core/mc_tls13.c \
-	core/mc_tls13_transcript.c \
-	core/mc_tls13_handshake.c \
 	core/mc_aes.c \
 	core/mc_gcm.c \
-	core/mc_x25519.c \
-	core/mc_tls_record.c
+	core/mc_x25519.c
+
+CORE_TLS_SRC := \
+	core/mc_tls_record.c \
+	core/mc_tls13.c \
+	core/mc_tls13_transcript.c \
+	core/mc_tls13_handshake.c
+
+CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC)
 
 # Hosted-only core sources (not built into MONACC tools)
 CORE_HOSTED_SRC := \
@@ -80,7 +101,7 @@ CORE_HOSTED_SRC := \
 
 
 CORE_TOOL_SRC := $(CORE_COMMON_SRC)
-CORE_COMPILER_SRC := $(CORE_COMMON_SRC) $(CORE_HOSTED_SRC)
+CORE_COMPILER_SRC := $(CORE_MIN_SRC) $(CORE_HOSTED_SRC)
 
 COMPILER_SRC := \
 	compiler/monacc_front.c \
@@ -122,6 +143,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 
 .PHONY: all all-split tools-ld tools-internal test clean debug selfhost
 .PHONY: matrix-tool matrix-mandelbrot
+.PHONY: binsh-smoke
 
 # === Initramfs image (for booting sysbox) ===
 
@@ -145,11 +167,22 @@ all-split: $(MONACC) tools-ld tools-internal
 # === Self-hosting probe: build compiler with monacc ===
 
 MONACC_SELF := bin/monacc-self
+MONACC_SELF2 := bin/monacc-self2
+MONACC_SELF3 := bin/monacc-self3
+
+# Stage-2 knobs: keep defaults conservative while stage-2 correctness is being
+# brought up. You can opt into the fully-internal pipeline once stable.
+SELFHOST2_EMITOBJ ?= 1
+SELFHOST2_LINKINT ?= 0
+
+# Stage-3 knobs (default to stage-2 settings).
+SELFHOST3_EMITOBJ ?= $(SELFHOST2_EMITOBJ)
+SELFHOST3_LINKINT ?= $(SELFHOST2_LINKINT)
 # monacc emits _start only for the first input file. Ensure that translation unit
 # contains main(), otherwise the produced binary will be a trivial exit stub.
 COMPILER_SELFHOST_SRC := \
 	compiler/monacc_main.c \
-	$(filter-out core/mc_start.c core/mc_vsnprintf.c compiler/monacc_elfobj.c compiler/monacc_main.c,$(COMPILER_SRC))
+	$(filter-out core/mc_start.c core/mc_vsnprintf.c compiler/monacc_main.c,$(COMPILER_SRC))
 
 selfhost: $(MONACC_SELF)
 	@echo ""
@@ -158,6 +191,52 @@ selfhost: $(MONACC_SELF)
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
 	@$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+
+# Stage-2 selfhost: rebuild the compiler using the self-built compiler.
+# The assembler/linker internalization is controlled by SELFHOST2_EMITOBJ and
+# SELFHOST2_LINKINT.
+.PHONY: selfhost2
+selfhost2: $(MONACC_SELF2)
+	@echo ""
+	@echo "Stage-2 self-host build complete: $(MONACC_SELF2)"
+
+$(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
+	@echo "==> Building stage-2 self-hosted compiler"
+	@$(MONACC_SELF) $(if $(filter 1,$(SELFHOST2_EMITOBJ)),--emit-obj,) $(if $(filter 1,$(SELFHOST2_LINKINT)),--link-internal,) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+
+.PHONY: selfhost2-smoke
+selfhost2-smoke: $(MONACC_SELF2)
+	@echo "==> Stage-2 smoke: compile+run examples/hello.c"
+	@mkdir -p build/selfhost2
+	@./$(MONACC_SELF2) examples/hello.c -o build/selfhost2/hello-self2
+	@set +e; ./build/selfhost2/hello-self2 >/dev/null; rc=$$?; set -e; \
+		if [ $$rc -ne 42 ]; then echo "selfhost2-smoke: FAIL (rc=$$rc, expected 42)"; exit 1; fi
+	@echo "selfhost2-smoke: OK"
+
+# Step-8 bring-up: a minimal script that runs under ./bin/sh.
+binsh-smoke: all
+	@echo "==> bin/sh smoke: run minimal script"
+	@./bin/sh tests/tools/binsh-minimal.sh
+	@echo "binsh-smoke: OK"
+
+# Stage-3 selfhost: rebuild the compiler using the stage-2 compiler.
+.PHONY: selfhost3
+selfhost3: $(MONACC_SELF3)
+	@echo ""
+	@echo "Stage-3 self-host build complete: $(MONACC_SELF3)"
+
+$(MONACC_SELF3): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF2) | bin
+	@echo "==> Building stage-3 self-hosted compiler"
+	@$(MONACC_SELF2) $(if $(filter 1,$(SELFHOST3_EMITOBJ)),--emit-obj,) $(if $(filter 1,$(SELFHOST3_LINKINT)),--link-internal,) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+
+.PHONY: selfhost3-smoke
+selfhost3-smoke: $(MONACC_SELF3)
+	@echo "==> Stage-3 smoke: compile+run examples/hello.c"
+	@mkdir -p build/selfhost3
+	@./$(MONACC_SELF3) examples/hello.c -o build/selfhost3/hello-self3
+	@set +e; ./build/selfhost3/hello-self3 >/dev/null; rc=$$?; set -e; \
+		if [ $$rc -ne 42 ]; then echo "selfhost3-smoke: FAIL (rc=$$rc, expected 42)"; exit 1; fi
+	@echo "selfhost3-smoke: OK"
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -269,6 +348,9 @@ test: all
 	elfread_rc=0; \
 	linkint_rc=0; \
 	emitobj_rc=0; \
+	stage2_rc=0; \
+	stage3_rc=0; \
+	binsh_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
 		$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
@@ -306,6 +388,21 @@ test: all
 		bash tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
 		echo ""; \
 	fi; \
+	if [ "$(SELFTEST_STAGE2)" = "1" ]; then \
+		echo "==> Selftest: stage-2 (monacc-self -> monacc-self2)"; \
+		SELFTEST_STAGE2_STRICT=1 bash tests/compiler/selftest-stage2.sh; stage2_rc=$$?; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_STAGE3)" = "1" ]; then \
+		echo "==> Selftest: stage-3 (monacc-self2 -> monacc-self3)"; \
+		SELFTEST_STAGE3_STRICT=1 bash tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
+		echo "==> Probe: run minimal script under ./bin/sh"; \
+		./bin/sh tests/tools/binsh-minimal.sh; binsh_rc=$$?; \
+		echo ""; \
+	fi; \
 	if [ "$(MULTI)" = "1" ]; then \
 		echo "==> Matrix: build (monacc/gcc/clang)"; \
 		sh tests/matrix/build-matrix.sh; matrix_rc=$$?; \
@@ -321,10 +418,10 @@ test: all
 		echo "Wrote build/matrix/report.html"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

@@ -1,229 +1,153 @@
+# Floating-Point Support (Current Status)
 
-# Floating-Point Support Proposal (Mandelbrot First)
+Date: 2025-12-18
 
-Date: 2025-12-17
+monacc now supports a practical subset of IEEE-754 **binary32** (`float`) that is sufficient for non-libc, syscall-only programs and for the Mandelbrot benchmark tool.
 
-This document proposes a concrete, repo-aligned plan to add floating-point support to monacc, with a first “big milestone” of generating a Mandelbrot BMP.
+## What was implemented
 
-Unlike older drafts, this version is written to match the current codebase:
+- **Frontend support for `float`**: the `float` keyword is a first-class scalar type (`BT_FLOAT`) in the existing `{ base, ptr, struct_id, is_unsigned }` type representation.
+- **Float literals without host FP**: decimal literals (including `.5`, `5.`, `1e2`, and `f` suffix) are parsed and converted to an IEEE-754 binary32 bit-pattern in the compiler itself (no libc / no host floating-point dependency).
+- **Codegen using scalar SSE**:
+  - Arithmetic: `+ - * /` lowered to `addss/subss/mulss/divss`.
+  - Comparisons lowered via `ucomiss` and conditional branches.
+  - Conversions: `int -> float` via `cvtsi2ss`, `float -> int` via `cvttss2si` (trunc toward zero).
+  - Implementation detail: floats are tracked as **raw 32-bit bits** in integer registers and moved into XMM registers only for actual FP operations.
+- **Internal assembler + linker compatibility**: the instructions and patterns emitted by float codegen work with `--emit-obj` and `--link-internal` (no new runtime deps).
 
-- monacc already ships an internal assembler (`--emit-obj`) and internal linker (`--link-internal`) and the default build does not require external `as`/`ld`.
-- The compiler’s type representation is centered around `BaseType` + `ptr` + `struct_id` fields (not a separate `Type` object).
-- The internal linker’s relocation support is currently narrow (PC-relative only), which influences how we should encode float constants.
+## Coverage / tests
 
----
+These are exercised by the example programs:
 
-## Goals
+- `examples/float_arith.c` (basic ops + conversions)
+- `examples/float_div.c` (division + truncation semantics)
+- `examples/float_cmp.c` (comparisons)
+- `examples/float_neg.c` (unary minus)
+- `examples/float_lits.c` (literal parsing: dot forms + exponents)
 
-**Milestone A (Mandelbrot):**
+There is also a syscall-only benchmark tool:
 
-- Support `float` (32-bit IEEE-754) in the language subset.
-- Support float literals, `+ - * /`, comparisons, `if/while/for` conditions, and `int ↔ float` conversions.
-- Support passing/returning `float` in function calls (SysV ABI).
-- Add a new tool: `tools/mandelbrot.c` that writes a BMP to stdout.
+- `tools/mandelbrot.c`
 
-**Milestone B (later):**
+## What is still missing
 
-- Optional `double`.
-- Minimal math helpers (`sqrtss`-based `mc_sqrtf`, then approximations for `expf/tanhf` if/when needed).
+- **SysV ABI for floats in calls**: passing/returning `float` in `%xmm0..%xmm7` and mixed int/float argument assignment is not yet fully implemented/tested.
+- **`double` support** (binary64) and any `long double`.
+- **Full C/IEEE edge semantics**: NaNs/infinities/signed-zero corner cases are not a goal yet, and behavior may differ from full C.
+- **Varargs and float formatting/parsing**: no `printf` float formatting and no libm-like surface.
+- **Broader typing/usage surface**: more coverage for floats inside structs/arrays, globals, and more complex expressions would be useful.
 
-## Non-goals (initially)
+## Implementation plan (towards a syscall-only GPT-2 124M runner)
 
-- Full C FP semantics (NaNs, infinities, signed zero edge cases).
-- `printf` float formatting.
-- Complex libm equivalents.
+This plan is written to keep changes incremental and regression-tested. The guiding idea is:
 
----
+- Keep produced binaries syscall-only.
+- Keep the toolchain self-contained (`--emit-obj` + `--link-internal`).
+- Prefer adding tests/examples before or together with each new capability.
 
-## Hard Constraints (project-aligned)
+### Phase 1: Float calling convention (SysV x86_64)
 
-1. **No new runtime deps**: produced binaries remain syscall-only.
-2. **Keep toolchain self-contained**: float support must work with `--emit-obj` + `--link-internal`.
-3. **Compiler must remain self-hostable**: any new compiler-side logic (especially literal parsing) must not require floats in the compiler implementation.
+Goal: allow idiomatic C code for inference kernels without “pass everything via pointers” contortions.
 
-Notes on current behavior:
+Implementation:
 
-- `--keep-shdr` is a debug aid: monacc trims section headers by default.
-- `--emit-obj` is currently not supported when compiling the compiler in `SELFHOST` mode (the selfhosted compiler can still compile code, but it won’t be able to assemble internally unless that limitation is lifted).
+- Extend the type checker / call lowering so `float` parameters are passed in `%xmm0..%xmm7` and returned in `%xmm0`.
+- Support **mixed int/pointer + float** argument assignment per SysV ABI (separate integer and SSE register sequences).
+- Define stack spill behavior when float args exceed `%xmm7`.
 
----
+Tests to add:
 
-## Phase 0: Baseline Tests + Observability
+- `examples/float_call_ret.c`: function takes/returns `float`, caller checks via `(int)` conversion.
+- `examples/float_call_mixed.c`: signature like `f(int a, float b, int c, float d, ...)` verifying each arg arrives intact.
+- `examples/float_call_many.c`: >8 float args to force stack passing.
 
-Add tests first so each later phase can be validated via `make test`.
+### Phase 2: Internal assembler coverage for XMM/SSE patterns used by Phase 1
 
-### 0.1 New example tests (return 42 on success)
+Goal: ensure `--emit-obj` stays first-class for float code.
 
-Add example programs under `examples/`:
+Implementation:
 
-- `float_basic.c`: declare a `float`, return a value derived from it.
-- `float_arith.c`: `+ - * /` with a few constants.
-- `float_cmp.c`: comparisons in `if`/`while`.
-- `float_convert.c`: `int ↔ float` conversions.
-- `float_call.c`: `float` args and return values.
+- Ensure parsing/encoding covers the exact instruction forms emitted for call/ret paths (moves between GPRs/XMM and stack).
+- Keep scope tight: only forms the codegen emits.
 
-### 0.2 Multi-object internal link test
+Tests to add:
 
-Add:
+- Add a `SELFTEST_EMITOBJ`-style probe compiling the new float-call examples with `--emit-obj` + `--link-internal`.
 
-- `multi_obj_main.c` calls `helper()`.
-- `multi_obj_helper.c` defines `helper()`.
+### Phase 3: Broaden float storage semantics (globals/arrays/structs)
 
-This keeps pressure on `link_internal_exec_objs()` as float support expands.
+Goal: make float tensors representable in “normal C” layouts.
 
-### 0.3 Debug workflow
+Implementation:
 
-When debugging float bring-up:
+- Validate and fix (if needed) `float` loads/stores through:
+  - global `float` variables
+  - global/local arrays of float (`float a[N]`)
+  - pointers to float (`float *p`) and indexing
+  - float struct fields (`struct { float x; }`)
 
-- Use `--keep-shdr` and `--dump-elfsec` to inspect output layout.
-- Use `--dump-elfobj` to inspect internal `.o` generation.
+Tests to add:
 
----
+- `examples/float_global.c`: global float init + readback.
+- `examples/float_array.c`: fill + sum + compare.
+- `examples/float_struct.c`: store/load float members.
 
-## Phase 1: Frontend Representation (float as a first-class type)
+### Phase 4: “No-libm” math primitives needed by Transformers
 
-### 1.1 Tokenizer
+Goal: provide the handful of operations needed for stable softmax + layernorm without pulling in libc.
 
-Extend `compiler/monacc_front.c` to recognize float literals and emit a distinct token kind (e.g. `TOK_FLOAT_LIT`).
+Implementation (core helpers):
 
-Supported literal spellings for Milestone A:
+- `mc_expf(float)`: polynomial/range-reduced approximation suitable for softmax.
+- `mc_rsqrtf(float)` or `mc_sqrtf(float)`: use `rsqrtss` + Newton refinement, or `sqrtss`.
+- Optional: `mc_tanhf(float)` *or* choose a GELU approximation that avoids `tanhf`.
 
-- `123.0`, `0.5`, `.5`, `5.`, `1e-3`, `1.0e+2`
-- Optional `f` suffix
+Tests to add:
 
-### 1.2 Type system
+- `examples/float_expf.c`: sanity points and monotonicity checks.
+- `examples/float_rsqrtf.c`: relative error bound checks for a small set of inputs.
+- `examples/float_softmax.c`: stable softmax invariants (sum ≈ 1, argmax preserved under shifting by constant).
 
-Extend `BaseType` in `compiler/monacc.h` with:
+### Phase 5: Performance path for matmul (SSE first)
 
-- `BT_FLOAT` (and later `BT_DOUBLE` if desired)
+Goal: GPT-2 124M in FP32 is dominated by GEMMs; scalar FP will be too slow for “nostalgic” interactive runs.
 
-Propagate float-ness through the existing structs that carry `{ base, ptr, struct_id, is_unsigned }`:
+Implementation:
 
-- `Expr`
-- `Local`
-- `Function` (params/return)
-- `GlobalVar`
+- Add a minimal packed-float SSE toolbox (either via inline asm in the GPT tool, or via carefully-scoped assembler support if emitting it from C/codegen).
+- Implement a baseline matmul kernel:
+  - Start with scalar correctness kernel.
+  - Add an SSE kernel (e.g. 4-float wide inner loop) behind a runtime CPU feature check if desired.
 
-### 1.3 Parser + semantic rules
+Tests to add:
 
-Update `compiler/monacc_parse.c`:
+- `tools/gemmtest.c` (or an example): compare SIMD kernel output to scalar reference for a few small matrix sizes.
+- A performance “smoke benchmark” (non-failing) can be added later; correctness tests should remain deterministic.
 
-- Parse `float` as a declspec.
-- Produce float-typed expressions for float literals.
-- Implement minimal usual arithmetic conversions:
-  - `int op float` → convert int to float
-  - comparisons: compare as floats
+### Phase 6: Build a syscall-only `gpt2` tool around the primitives
 
----
+Goal: prove the point with the real GPT-2 124M weights.
 
-## Phase 2: Float literal → bits (without using floats in the compiler)
+Implementation:
 
-The compiler must be able to turn a float literal token into an IEEE-754 bit pattern *without* relying on host floating-point or libc.
+- Weight loading:
+  - Prefer `mmap` of a flat weight file format (generated by a tiny conversion script).
+  - Keep the on-disk format simple (little-endian, aligned, with a header).
+- Token I/O:
+  - Start with token IDs as input (space-separated ints) and emit token IDs.
+  - Optional later: implement GPT-2 BPE using `encoder.json` + `vocab.bpe` loaded from disk.
+- Core forward pass:
+  - Embedding + attention + MLP + logits + sampling.
+  - Keep everything in contiguous buffers; avoid dynamic allocation where possible.
 
-Proposal:
+Tests to add:
 
-- Implement a small decimal parser that produces a normalized mantissa/exponent and rounds to nearest-even for `float`.
-- Store the result as `mc_u32 fbits` on the float-literal AST node.
+- `tools/gpt2-smoke.c` or a test mode in `tools/gpt2.c` that runs a tiny synthetic model (e.g. 1 layer, small dims) with a known output.
+- Optional “golden” test vectors produced by a reference implementation for the same tiny model.
 
-This avoids bootstrapping traps and keeps self-hosting viable.
+### Notes on scope control
 
----
-
-## Phase 3: Codegen (SSE scalar, SysV ABI)
-
-### 3.1 Register model
-
-Introduce a float evaluation path that uses:
-
-- `%xmm0` for the “current expression result”
-- `%xmm1` as a scratch register
-
-Stack spilling is fine early on; optimize later.
-
-### 3.2 Instructions needed for Mandelbrot
-
-Emit:
-
-- `movss` (load/store/reg-reg)
-- `addss`, `subss`, `mulss`, `divss`
-- `ucomiss` + conditional jumps (`jb/jbe/ja/jae/je/jne`) for comparisons
-- `cvtsi2ss`, `cvtss2si` for conversions
-
-### 3.3 Calling convention
-
-Implement SysV x86_64 float calling convention:
-
-- float args: `%xmm0..%xmm7`
-- float return: `%xmm0`
-
-For Milestone A, it’s acceptable to first support:
-
-- “all-float params” functions (plus `int` for loop counters),
-
-and then extend to full mixed int/float argument assignment.
-
----
-
-## Phase 4: Internal assembler support (XMM + SSE encodings)
-
-monacc’s internal assembler in `compiler/monacc_elfobj.c` must be extended to accept the new assembly patterns codegen will emit.
-
-### 4.1 Parse XMM registers
-
-Add `%xmm0..%xmm15` to the register parser.
-
-### 4.2 Encode SSE scalar instructions
-
-Implement encoders for the instruction forms codegen uses.
-
-Key point: prioritize only the exact forms emitted (reg/reg and reg/mem variants) to keep the assembler minimal.
-
----
-
-## Phase 5: Constants + relocations (keep internal linker happy)
-
-The internal linker currently supports only PC-relative relocations (`R_X86_64_PC32` / `R_X86_64_PLT32`).
-
-To avoid widening relocation support early, design constant loads so that:
-
-- float constants live in `.rodata` labels
-- codegen uses RIP-relative addressing to load them
-- the internal assembler emits PC-relative relocations for those references
-
-### 5.1 Prefer `.byte` for constant emission (first)
-
-Today the internal assembler already supports `.byte` and `.zero`.
-
-For the first bring-up, emit float constants as four `.byte` values (little-endian IEEE-754 bits). This avoids needing `.long`.
-
-Later (pure QoL): add `.long` once the system works.
-
-### 5.2 If new relocation types are needed
-
-If the internal `.o` ends up containing relocations that aren’t PC32/PLT32, extend both:
-
-- `compiler/monacc_elfobj.c` (emission of that relocation)
-- `compiler/monacc_link.c` (application of that relocation)
-
-Likely candidates: `R_X86_64_32S`.
-
----
-
-## Phase 6: Mandelbrot tool
-
-Add `tools/mandelbrot.c`:
-
-- Minimal CLI: `-w/-h/-i` plus optional center/zoom
-- Write a 24-bit BMP to stdout
-- Fixed palette (or simple grayscale) to keep it tiny
-
-Once float arithmetic works, Mandelbrot becomes a very strong “visual correctness” test.
-
----
-
-## Risks + mitigations
-
-- **ABI complexity**: mixed int/float arguments are subtle. Start with a constrained subset, then generalize.
-- **Assembler surface area**: keep instruction support exactly to what codegen emits.
-- **Relocations**: keep constant references RIP-relative to stay within current internal linker support.
+- `double` can be deferred: GPT-2 inference is typically float32.
+- Full IEEE corner semantics can be deferred: focus on stable numerics for exp/softmax/layernorm.
+- Keep each phase shippable with tests and keep `SELFTEST_EMITOBJ=1` green.
 

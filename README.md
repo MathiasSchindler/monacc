@@ -9,9 +9,11 @@ monacc is a small C compiler that can compile itself and a full suite of Unix co
 This project combines two pieces:
 
 1. **monacc** — A C compiler targeting Linux x86_64 (SysV ABI)
-2. **A userland toolkit** — 85 syscall-only command-line tools (`cat`, `ls`, `grep`, `sh`, `awk`, plus crypto + net tools)
+2. **A userland toolkit** — 86 syscall-only command-line tools (`cat`, `ls`, `grep`, `sh`, `awk`, plus crypto + net tools)
 
-The compiler compiles the tools. The tools provide the environment needed to build and test the compiler. It's a closed loop.
+The compiler compiles the tools. The tools provide the environment needed to build and test the compiler.
+
+The long-term goal is a fully self-contained loop where the repository’s build/test scripts can run under the monacc-built `bin/sh` and tools. That closure is in progress and is already partially exercised via opt-in probes.
 
 ## Goals
 
@@ -26,7 +28,7 @@ The compiler compiles the tools. The tools provide the environment needed to bui
 monacc-unified/
 ├── compiler/       # C compiler implementation
 ├── core/           # Shared core library (mc_*) used by compiler + tools
-├── tools/          # 85 syscall-only command-line tools
+├── tools/          # 86 syscall-only command-line tools
 ├── examples/       # Compiler test programs
 ├── tests/          # Unified test suite
 ├── scripts/        # Build helpers
@@ -59,9 +61,9 @@ After `make`, the `bin/` directory contains:
 | `monacc` | The C compiler |
 | `cat`, `ls`, `cp`, `rm`, ... | File utilities |
 | `grep`, `sed`, `awk`, ... | Text processing |
-| `sh` | A minimal POSIX-ish shell |
+| `sh` | A minimal POSIX-ish shell (enough for the project’s scripts; compatibility is actively improved) |
 | `find`, `xargs`, `test`, ... | Scripting utilities |
-| ... | 85 tools total |
+| ... | 86 tools total (+ a couple aliases like `[` and `realpath`) |
 
 ## Bootstrapping Sequence
 
@@ -75,7 +77,7 @@ Phase 1: Build userland tools with bin/monacc
 Phase 2: Self-host the compiler
          └─> bin/monacc-self (built by bin/monacc)
 
-Phase 3: (Future) Run build/tests using bin/sh and bin/* tools
+Phase 3: (In progress) Run build/tests using bin/sh and bin/* tools
          └─> Fully self-contained build environment
 ```
 
@@ -90,16 +92,16 @@ monacc implements a subset of C sufficient for systems programming:
 - Operators: arithmetic, bitwise, logical, comparison
 - Function pointers, variadic parameter marker (`...`)
 - Preprocessor: `#include`, `#define` (object-like), `#ifdef/#ifndef/#else/#endif`, `#pragma once`
+- Floating-point (subset; see `examples/float_*`)
 
 **Not supported:**
-- Floating-point
 - Function-like macros
 - `long long` as distinct from `long`
 - Full `#if` expression evaluation
 
 ## Userland Tools
 
-85 syscall-only utilities covering common Unix operations (plus a small set of crypto + network tools):
+86 syscall-only utilities covering common Unix operations (plus a small set of crypto + network tools):
 
 | Category | Tools |
 |----------|-------|
@@ -125,12 +127,16 @@ All tools:
 - Linux x86_64
 
 **After Phase 0 (once you already have `bin/monacc`):**
-- You can build the tools and run `make test` without a host C compiler.
+- You can build the tools and run `make test` without a host C compiler (as long as `bin/monacc` is already present and not being rebuilt).
 - The default build uses internal ELF object emission (`--emit-obj`), so an external `as` is not required.
 - The default build links with monacc’s internal linker, so an external `ld` is not required.
 - Fallbacks exist for bring-up/debugging:
     - Force external assembler with `EMITOBJ=0`
     - Force external linker with `LINKINT=0`
+
+Notes:
+- The top-level `Makefile` still defaults to the host `/bin/sh` for orchestration, but there are opt-in probes to run key scripts under `./bin/sh`.
+- Example: `SELFTEST_BINSHELL_TOOLS_HARNESS=1 make test` runs `tests/tools/run.sh smoke` under `./bin/sh`.
 
 ## Current Status
 
@@ -143,7 +149,7 @@ All tools:
 | Self-hosted compiler runs examples | ✅ |
 | Internal ELF object emission (`--emit-obj`) | ✅ |
 | Internal linker (`--link-internal`) | ✅ |
-| Build scripts run on built `sh` | 🔜 Planned |
+| Build scripts run on built `sh` | 🟡 In progress (opt-in smoke/probes exist; full closure is not yet the default) |
 
 ## Design Principles
 

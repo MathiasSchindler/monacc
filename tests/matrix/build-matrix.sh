@@ -31,7 +31,8 @@ fi
 HOST_CFLAGS="-Os -DNDEBUG -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-ident -fno-pic -fno-pie -ffunction-sections -fdata-sections"
 HOST_LDFLAGS="-nostdlib -nostartfiles -Wl,--gc-sections -Wl,-s -Wl,--build-id=none -Wl,-z,noseparate-code -Wl,-e,_start -no-pie"
 
-CORE_COMMON="core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c"
+# Core sources — keep in sync with CORE_COMMON_SRC in Makefile
+CORE_COMMON="core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c core/mc_sha256.c core/mc_hmac.c core/mc_hkdf.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c core/mc_aes.c core/mc_gcm.c core/mc_x25519.c core/mc_tls_record.c"
 CORE_START="core/mc_start.c"
 
 OUT_BASE="build/matrix"

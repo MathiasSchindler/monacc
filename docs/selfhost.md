@@ -13,6 +13,7 @@ The goal is to make progress in small increments, with regression probes at each
 - **Stage 0 (host)**: build `bin/monacc` with host `cc`.
 - **Stage 1 (self)**: build `bin/monacc-self` using `bin/monacc`.
 - **Stage 2 (self²)**: build `bin/monacc-self2` using `bin/monacc-self`.
+- **Stage 3 (self³)**: build `bin/monacc-self3` using `bin/monacc-self2`.
 
 Two orthogonal “internalization” axes:
 
@@ -35,7 +36,9 @@ When this document says “fully internal”, it means `--emit-obj --link-intern
 - Stage 2 works: `bin/monacc-self2` builds and can compile+run a representative example set.
 - Stage-2 gating exists and passes when enabled: `SELFTEST_STAGE2=1 make test`.
 - Stage 2 can also be run as a simple smoke test: `make selfhost2-smoke`.
-- An opt-in stage-2 “fully internal” probe exists (`SELFTEST_STAGE2_INTERNAL=1`) and now passes.
+- An opt-in stage-2 “fully internal” probe exists and passes:
+  - `SELFTEST_STAGE2=1 SELFTEST_STAGE2_INTERNAL=1 make test`
+- Stage 3 works and has an opt-in probe: `SELFTEST_STAGE3=1 make test`.
 
 ---
 
@@ -201,10 +204,16 @@ Phased closure plan:
 
   Bring-up probe (very small):
   - `make binsh-smoke`
-  - `SELFTEST_BINSHELL=1 make test`
+  - `make binsh-tools-smoke`
+  - `make closure-smoke`
+  - `SELFTEST_BINSHELL=1 SELFTEST_BINSHELL_TOOLS=1 make test`
 
-  Note: `bin/sh` intentionally has no variable expansion or `$(...)` command substitution yet.
-  The initial probe runs a minimal script (`tests/tools/binsh-minimal.sh`) that avoids those features.
+  Heavier closure probe (still opt-in):
+  - `make selfcontained-build-smoke`
+  - `SELFTEST_BINSHELL_BUILD=1 make test`
+
+  Note: `bin/sh` supports basic variables (`NAME=VALUE`, `$NAME`, `$1`, `$#`, `$@`).
+  It still intentionally lacks `$(...)` command substitution.
 
 2. **Minimal host dependency set**
    - Keep only the host `cc` for bootstrapping.
@@ -215,6 +224,30 @@ Phased closure plan:
 
 Deliverable at the end:
 - A documented command like: `bin/sh scripts/selfcontained-build.sh` that rebuilds monacc and runs tests.
+
+### Toward “selfhost + ./bin/sh” as the default
+
+The long-term objective is for the *default* developer workflow (`make` / `make test`)
+to primarily exercise:
+- monacc-built toolchain pieces (as early as feasible after the stage-0 bootstrap)
+- `./bin/sh` as the script runner wherever it’s practical
+
+To get there without destabilizing daily work, the safest path is:
+
+1. **Centralize host shell dependencies and migrate callsites gradually**
+   - The Makefile exposes `HOST_SH` and `HOST_BASH` so we can replace hard-coded
+     `sh`/`bash` callsites one-by-one.
+   - Early phase: keep defaults (`HOST_SH=sh`, `HOST_BASH=bash`) and only switch
+     specific probes to `./bin/sh` behind toggles.
+
+2. **Increase `./bin/sh` compatibility driven by real regressions**
+   - Add shell features only when needed by meaningful tests (not theoretical POSIX completeness).
+   - Pair every new feature with a regression under `tests/tools/binsh-*.sh`.
+
+3. **Flip defaults after soak time**
+   - First make probes “strict” in CI-style runs, then enable by default.
+   - Eventually: enable stage-2/3 probes and the `./bin/sh` closure probes by default,
+     and move most Makefile-invoked scripts onto `HOST_SH=./bin/sh`.
 
 ---
 
@@ -240,6 +273,6 @@ If the crash is in generated code:
 - [x] Stage 2: `bin/monacc-self2` builds and compiles+runs `examples/hello.c`
 - [x] Stage 2: gateable `SELFTEST_STAGE2=1 make test` passes
 - [x] Stage 2 fully internal: `--emit-obj --link-internal` works end-to-end
-- [ ] Stage 3 convergence (optional)
+- [x] Stage 3 convergence (optional)
 - [ ] `make test` scripts runnable under `bin/sh`
 - [ ] Self-contained build script runnable under monacc-built tools

@@ -21,6 +21,7 @@ MONACC_SELF2="${MONACC_SELF2:-./bin/monacc-self2}"
 if [[ ! -x "$MONACC_BIN" ]]; then
   echo "selftest-stage3: missing monacc binary at $MONACC_BIN" >&2
   echo "selftest-stage3: run 'make' first" >&2
+  if [[ $STRICT -eq 1 ]]; then exit 1; fi
   exit 0
 fi
 
@@ -29,7 +30,18 @@ if [[ ! -x "$MONACC_SELF2" ]]; then
   if [[ ! -x "$MONACC_SELF" ]]; then
     echo "selftest-stage3: missing monacc-self at $MONACC_SELF" >&2
     echo "selftest-stage3: run 'make selfhost' first" >&2
-    exit 0
+    if [[ $STRICT -eq 1 ]]; then
+      set +e
+      make selfhost MONACC_BIN="$MONACC_BIN" 1>/dev/null
+      mk_ec=$?
+      set -e
+      if [[ $mk_ec -ne 0 ]] || [[ ! -x "$MONACC_SELF" ]]; then
+        echo "selftest-stage3: build selfhost: FAIL" >&2
+        exit 1
+      fi
+    else
+      exit 0
+    fi
   fi
 
   out_dir="build/selftest-stage3"

@@ -8,6 +8,12 @@
 CC ?= cc
 MONACC := bin/monacc
 
+# Host shell executables used by Makefile-driven scripts.
+# Keep these as the host defaults for now; as Step 8 closure matures, we can
+# switch more callsites to HOST_SH=./bin/sh behind toggles.
+HOST_SH ?= sh
+HOST_BASH ?= bash
+
 # Use the internal ELF object emitter by default (replaces external `as`).
 # Set EMITOBJ=0 to force using the system assembler instead.
 EMITOBJ ?= 1
@@ -43,8 +49,12 @@ SELFTEST_EMITOBJ ?= 1
 SELFTEST_ELFREAD ?= 1
 SELFTEST_LINKINT ?= 1
 SELFTEST_STAGE2 ?= 0
+SELFTEST_STAGE2_INTERNAL ?= 0
 SELFTEST_STAGE3 ?= 0
 SELFTEST_BINSHELL ?= 0
+SELFTEST_BINSHELL_BUILD ?= 0
+SELFTEST_BINSHELL_TOOLS ?= 0
+SELFTEST_BINSHELL_TOOLS_HARNESS ?= 0
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
 ifeq ($(DEBUG),1)
@@ -144,6 +154,10 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 .PHONY: all all-split tools-ld tools-internal test clean debug selfhost
 .PHONY: matrix-tool matrix-mandelbrot
 .PHONY: binsh-smoke
+.PHONY: binsh-tools-smoke
+.PHONY: binsh-tools-harness-smoke
+.PHONY: closure-smoke
+.PHONY: selfcontained-build-smoke
 
 # === Initramfs image (for booting sysbox) ===
 
@@ -218,6 +232,30 @@ binsh-smoke: all
 	@echo "==> bin/sh smoke: run minimal script"
 	@./bin/sh tests/tools/binsh-minimal.sh
 	@echo "binsh-smoke: OK"
+
+# Step-8 bring-up: run a small real tools smoke under ./bin/sh.
+binsh-tools-smoke: all
+	@echo "==> bin/sh tools smoke: run small suite"
+	@./bin/sh tests/tools/binsh-tools-smoke.sh
+	@echo "binsh-tools-smoke: OK"
+
+# Step-8 bring-up: run the canonical tools harness (smoke suite) under ./bin/sh.
+binsh-tools-harness-smoke: all
+	@echo "==> bin/sh tools harness: smoke suite"
+	@SB_TEST_BIN="$$(pwd)/bin" SB_TEST_SHOW_SUITES=1 ./bin/sh tests/tools/run.sh smoke
+	@echo "binsh-tools-harness-smoke: OK"
+
+# Step-8 closure: run a self-contained smoke script under ./bin/sh.
+closure-smoke: all
+	@echo "==> closure smoke: compile+run under ./bin/sh"
+	@./bin/sh scripts/selfcontained-smoke.sh
+	@echo "closure-smoke: OK"
+
+# Step-8 closure: rebuild compiler stages under ./bin/sh (heavier).
+selfcontained-build-smoke: all
+	@echo "==> selfcontained build: rebuild stages under ./bin/sh"
+	@./bin/sh scripts/selfcontained-build.sh
+	@echo "selfcontained-build-smoke: OK"
 
 # Stage-3 selfhost: rebuild the compiler using the stage-2 compiler.
 .PHONY: selfhost3
@@ -365,37 +403,37 @@ test: all
 	done; \
 	echo ""; \
 	echo "==> Testing tools"; \
-	SB_TEST_BIN="$$(pwd)/bin" sh tests/tools/run.sh; \
+	SB_TEST_BIN="$$(pwd)/bin" $(HOST_SH) tests/tools/run.sh; \
 	tool_rc=$$?; \
 	echo ""; \
 	if [ "$(SELFTEST_ELFREAD)" = "1" ]; then \
 		echo "==> Probe: ELF ET_REL reader"; \
-		bash tests/compiler/elfobj-dump.sh; elfread_rc=$$?; \
+		$(HOST_BASH) tests/compiler/elfobj-dump.sh; elfread_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_LINKINT)" = "1" ]; then \
 		echo "==> Probe: --link-internal"; \
-		bash tests/compiler/link-internal-smoke.sh; linkint_rc=$$?; \
+		$(HOST_BASH) tests/compiler/link-internal-smoke.sh; linkint_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST)" = "1" ]; then \
 		echo "==> Selftest: host-built monacc -> monacc-self"; \
-		bash tests/compiler/selftest.sh; \
+		$(HOST_BASH) tests/compiler/selftest.sh; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_EMITOBJ)" = "1" ]; then \
 		echo "==> Selftest: --emit-obj"; \
-		bash tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
+		$(HOST_BASH) tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_STAGE2)" = "1" ]; then \
 		echo "==> Selftest: stage-2 (monacc-self -> monacc-self2)"; \
-		SELFTEST_STAGE2_STRICT=1 bash tests/compiler/selftest-stage2.sh; stage2_rc=$$?; \
+		SELFTEST_STAGE2_STRICT=1 SELFTEST_STAGE2_INTERNAL="$(SELFTEST_STAGE2_INTERNAL)" $(HOST_BASH) tests/compiler/selftest-stage2.sh; stage2_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_STAGE3)" = "1" ]; then \
 		echo "==> Selftest: stage-3 (monacc-self2 -> monacc-self3)"; \
-		SELFTEST_STAGE3_STRICT=1 bash tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
+		SELFTEST_STAGE3_STRICT=1 $(HOST_BASH) tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
@@ -403,18 +441,38 @@ test: all
 		./bin/sh tests/tools/binsh-minimal.sh; binsh_rc=$$?; \
 		echo ""; \
 	fi; \
+	if [ "$(SELFTEST_BINSHELL_TOOLS)" = "1" ]; then \
+		echo "==> Probe: tools smoke under ./bin/sh"; \
+		./bin/sh tests/tools/binsh-tools-smoke.sh || binsh_rc=1; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_BINSHELL_TOOLS_HARNESS)" = "1" ]; then \
+		echo "==> Probe: tools harness smoke under ./bin/sh"; \
+		SB_TEST_BIN="$$(pwd)/bin" SB_TEST_SHOW_SUITES=1 ./bin/sh tests/tools/run.sh smoke || binsh_rc=1; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
+		echo "==> Probe: closure smoke under ./bin/sh"; \
+		./bin/sh scripts/selfcontained-smoke.sh || binsh_rc=1; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_BINSHELL_BUILD)" = "1" ]; then \
+		echo "==> Probe: selfcontained build under ./bin/sh"; \
+		./bin/sh scripts/selfcontained-build.sh || binsh_rc=1; \
+		echo ""; \
+	fi; \
 	if [ "$(MULTI)" = "1" ]; then \
 		echo "==> Matrix: build (monacc/gcc/clang)"; \
-		sh tests/matrix/build-matrix.sh; matrix_rc=$$?; \
+		$(HOST_SH) tests/matrix/build-matrix.sh; matrix_rc=$$?; \
 		echo ""; \
 		echo "==> Matrix: smoke tests"; \
-		sh tests/matrix/test-matrix.sh || matrix_rc=1; \
+		$(HOST_SH) tests/matrix/test-matrix.sh || matrix_rc=1; \
 		echo ""; \
 		echo "==> Matrix: size report (TSV)"; \
 		mkdir -p build/matrix; \
-		sh tests/matrix/size-report.sh > build/matrix/report.tsv || matrix_rc=1; \
+		$(HOST_SH) tests/matrix/size-report.sh > build/matrix/report.tsv || matrix_rc=1; \
 		echo "Wrote build/matrix/report.tsv"; \
-		sh tests/matrix/tsv-to-html.sh --out build/matrix/report.html || matrix_rc=1; \
+		$(HOST_SH) tests/matrix/tsv-to-html.sh --out build/matrix/report.html || matrix_rc=1; \
 		echo "Wrote build/matrix/report.html"; \
 		echo ""; \
 	fi; \

@@ -619,7 +619,11 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         if (entry == 0) die("link-internal: _start is undefined");
     }
 
-    mc_u64 seg_file_end = has_rw ? rw_file_end : rx_file_end;
+    // If the RW segment has no file-backed bytes (only NOBITS/.bss), avoid
+    // rounding the output file up to the RW p_offset. A zero-sized p_filesz
+    // PT_LOAD does not need a meaningful p_offset.
+    mc_u64 rw_filesz = has_rw ? (rw_file_end - rw_file_start) : 0;
+    mc_u64 seg_file_end = (has_rw && rw_filesz != 0) ? rw_file_end : rx_file_end;
     // Note: for RX-only outputs, the memory image is just RX.
     unsigned char *out = (unsigned char *)monacc_calloc((mc_usize)seg_file_end, 1);
     if (!out) die("oom");
@@ -938,10 +942,12 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         if (has_rw) {
             ph[1].p_type = PT_LOAD;
             ph[1].p_flags = PF_R | PF_W;
-            ph[1].p_offset = rw_file_start;
+            // If the RW segment is BSS-only (p_filesz==0), keep p_offset at 0 so
+            // the file doesn't have to be padded out to rw_file_start.
+            ph[1].p_offset = (rw_filesz == 0) ? 0 : rw_file_start;
             ph[1].p_vaddr = base_vaddr + rw_mem_start;
             ph[1].p_paddr = base_vaddr + rw_mem_start;
-            ph[1].p_filesz = rw_file_end - rw_file_start;
+            ph[1].p_filesz = rw_filesz;
             ph[1].p_memsz = rw_mem_end - rw_mem_start;
             ph[1].p_align = 0x1000ull;
         }

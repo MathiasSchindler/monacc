@@ -110,7 +110,7 @@ Additional “compiler quality” counters:
 
 - `prologue_fp` – frame-pointer prologues (`push rbp; mov rbp, rsp`).
 - `stack_sub` / `stack_add` – stack pointer adjustments (`sub/add rsp, imm`).
-- `stack_load` / `stack_store` – stack slot traffic proxy (common `mov` loads/stores from/to `[rsp+disp]`).
+- `stack_load` / `stack_store` – stack slot traffic proxy (common `mov` loads/stores from/to stack slots like `[rsp+disp]` and `[rbp+disp]`).
 - `xor_zero` – `xor reg, reg` zeroing idiom.
 - `mov_imm0` – `mov reg, 0` immediate-zero idiom.
 - `lea` – `lea` usage density (addressing-mode/strength-reduction proxy).
@@ -118,6 +118,14 @@ Additional “compiler quality” counters:
 Derived density columns (ppm-ish):
 
 - `push_ppm`, `call_ppm`, `setcc_ppm`, `movsxd_ppm` – events per 1,000,000 `text_bytes`.
+
+Scan context columns (to interpret signal/noise):
+
+- `scan_mode` – `shdr` when scanning executable section headers (typically gcc/clang outputs), `phdr` when falling back to executable `PT_LOAD` segments (typical for monacc sectionless outputs), `mixed` when both were used.
+- `n_exec_regions` – number of executable regions scanned for this row.
+- `n_exec_off0` – number of executable regions whose file offset was 0 (common in minimal single-segment layouts; means ELF headers are included in scanned bytes).
+- `exec_coverage_ppm` – `text_bytes * 1_000_000 / file_bytes` (high values indicate “we scanned most of the file”).
+- `n_scan_shdr` / `n_scan_phdr` – how many files in this row were scanned via each method.
 
 ## `--top` fields
 

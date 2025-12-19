@@ -311,16 +311,17 @@ static int dns_name_decode(const mc_u8 *msg, mc_usize msglen, mc_usize off, char
 
 static int make_ptr_qname(char out[96], const mc_u8 ip6[16]) {
 	// 32 nibbles reversed, dot-separated, then ip6.arpa
-	static const char hex[] = "0123456789abcdef";
+	// Avoid a lookup table here: under monacc today, small static tables can end
+	// up in writable .data, which can force an extra page of file padding.
 	mc_usize n = 0;
 	for (int i = 15; i >= 0; i--) {
 		mc_u8 b = ip6[i];
 		mc_u8 lo = (mc_u8)(b & 0xFu);
 		mc_u8 hi = (mc_u8)((b >> 4) & 0xFu);
 		if (n + 4 >= sizeof(out)) return 0;
-		out[n++] = hex[lo];
+		out[n++] = (lo < 10) ? (char)('0' + lo) : (char)('a' + (lo - 10));
 		out[n++] = '.';
-		out[n++] = hex[hi];
+		out[n++] = (hi < 10) ? (char)('0' + hi) : (char)('a' + (hi - 10));
 		out[n++] = '.';
 	}
 	const char *suf = "ip6.arpa";

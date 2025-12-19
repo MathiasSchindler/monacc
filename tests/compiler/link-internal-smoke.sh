@@ -95,6 +95,25 @@ if [ "$sz" -ge 60000 ]; then
   exit 1
 fi
 
+# Step 8 regression: BSS-only RW segment should not force file padding.
+cat > build/test/linkint_bssonly.c <<'EOF'
+static unsigned char big_bss[65536];
+int main(void) {
+  return (int)big_bss[0];
+}
+EOF
+
+bss_out="build/test/linkint-bssonly"
+./bin/monacc --emit-obj --link-internal build/test/linkint_bssonly.c -o "$bss_out" >/dev/null 2>&1
+
+sz=$(stat -c%s "$bss_out" 2>/dev/null || echo 0)
+# Historically this regressed to >=8192 due to RW p_offset being page-aligned
+# even when p_filesz==0.
+if [ "$sz" -ge 8192 ]; then
+  echo "link-internal-smoke: FAIL (bssonly: output too large: $sz bytes)"
+  exit 1
+fi
+
 # Optional oracle check: if external `ld` is available, build one tool both ways
 # and compare its observable behavior. This catches subtle link/layout regressions
 # without making external ld a hard dependency.

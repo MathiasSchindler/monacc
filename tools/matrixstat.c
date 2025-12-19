@@ -94,6 +94,12 @@ struct stats {
     mc_u64 xor_zero;       // xor reg, reg
     mc_u64 mov_imm0;       // mov reg, 0
     mc_u64 lea;            // lea usage
+
+    // Scan context (helps interpret signal/noise and sectionless ELFs).
+    mc_u64 n_scan_shdr;        // files scanned via section headers
+    mc_u64 n_scan_phdr;        // files scanned via program headers fallback
+    mc_u64 n_exec_regions;     // number of executable regions scanned
+    mc_u64 n_exec_off0;        // exec regions scanned with file offset 0 (often includes ELF headers)
 };
 
 typedef enum {
@@ -222,6 +228,11 @@ static void stats_add(struct stats *dst, const struct stats *src) {
     dst->xor_zero += src->xor_zero;
     dst->mov_imm0 += src->mov_imm0;
     dst->lea += src->lea;
+
+    dst->n_scan_shdr += src->n_scan_shdr;
+    dst->n_scan_phdr += src->n_scan_phdr;
+    dst->n_exec_regions += src->n_exec_regions;
+    dst->n_exec_off0 += src->n_exec_off0;
 }
 
 static mc_u64 ppm_u64(mc_u64 v, mc_u64 denom) {
@@ -244,6 +255,18 @@ static int is_rsp_sib_mem(mc_u8 modrm, mc_u8 sib) {
     if (rm != 4u) return 0; // needs SIB
     mc_u8 base = sib & 7u;
     return base == 4u; // rsp
+}
+
+static int is_bp_disp_mem(mc_u8 modrm, mc_u8 rex) {
+    // Match [rbp+disp] and [r13+disp] addressing forms.
+    // Note: mod=0, rm=5 is RIP-relative (NOT stack), so only accept mod 1/2.
+    (void)rex;
+    mc_u8 mod = (modrm >> 6) & 3u;
+    mc_u8 rm = modrm & 7u;
+    if (mod != 1u && mod != 2u) return 0;
+    if (rm != 5u) return 0;
+    // With rex.B=1 this is r13; without it's rbp.
+    return 1;
 }
 
 static int is_dirname_matrix(const char *name) {
@@ -366,13 +389,12 @@ static void scan_exec_bytes(const mc_u8 *p, mc_usize n, struct stats *out) {
         }
 
         // Stack slot traffic proxy: mov/load/store involving [rsp+disp]
-        // (minimal ModRM+SIB handling; counts only common mov forms).
+        // (minimal ModRM/SIB handling; counts only common mov forms).
         {
             mc_usize j = i;
             mc_u8 rex = 0;
             if (j < n && p[j] >= 0x40 && p[j] <= 0x4F) {
                 rex = p[j];
-                (void)rex;
                 j++;
             }
             if (j < n) {
@@ -395,6 +417,14 @@ static void scan_exec_bytes(const mc_u8 *p, mc_usize n, struct stats *out) {
                             if (len > 0) i += (len - 1);
                             continue;
                         }
+                    } else if (mod != 3u && is_bp_disp_mem(modrm, rex)) {
+                        // [rbp+disp] / [r13+disp]
+                        if (is_load) out->stack_load++; else out->stack_store++;
+                        mc_usize disp = (mod == 1u) ? 1u : 4u;
+                        // Skip over: [rex?] op modrm disp
+                        mc_usize len = (j - i) + 1 + 1 + disp;
+                        if (len > 0) i += (len - 1);
+                        continue;
                     }
                 }
             }
@@ -518,6 +548,8 @@ static int analyze_elf_fd(mc_i32 fd, struct stats *out) {
     if (eh->e_ident[5] != 1) return 0;
 
     int scanned_any = 0;
+    int scanned_via_shdr = 0;
+    int scanned_via_phdr = 0;
 
     // Prefer section headers when they exist (gcc/clang typically keep them).
     // monacc intentionally produces section-header-less ELFs to reduce size.
@@ -532,8 +564,11 @@ static int analyze_elf_fd(mc_i32 fd, struct stats *out) {
                 if ((sh[i].sh_flags & (mc_u64)SHF_EXECINSTR) == 0) continue;
                 if (sh[i].sh_size == 0) continue;
                 if (sh[i].sh_offset + sh[i].sh_size > (mc_u64)st.st_size) continue;
+                out->n_exec_regions++;
+                if (sh[i].sh_offset == 0) out->n_exec_off0++;
                 scan_exec_bytes(base + (mc_usize)sh[i].sh_offset, (mc_usize)sh[i].sh_size, out);
                 scanned_any = 1;
+                scanned_via_shdr = 1;
             }
         }
     }
@@ -554,15 +589,37 @@ static int analyze_elf_fd(mc_i32 fd, struct stats *out) {
                     if ((ph[i].p_flags & (mc_u32)PF_X) == 0) continue;
                     if (ph[i].p_filesz == 0) continue;
                     if (ph[i].p_offset + ph[i].p_filesz > (mc_u64)st.st_size) continue;
+                    out->n_exec_regions++;
+                    if (ph[i].p_offset == 0) out->n_exec_off0++;
                     scan_exec_bytes(base + (mc_usize)ph[i].p_offset, (mc_usize)ph[i].p_filesz, out);
                     scanned_any = 1;
+                    scanned_via_phdr = 1;
                 }
             }
         }
     }
 
+    if (scanned_any) {
+        if (scanned_via_shdr) out->n_scan_shdr++;
+        if (scanned_via_phdr) out->n_scan_phdr++;
+    }
+
     (void)mc_sys_munmap((void *)(mc_usize)map, (mc_usize)st.st_size);
     return scanned_any;
+}
+
+static const char *scan_mode_str(const struct stats *s) {
+    if (s->n_ok == 0 && s->n_err != 0) return "none";
+    if (s->n_scan_shdr != 0 && s->n_scan_phdr != 0) return "mixed";
+    if (s->n_scan_shdr != 0) return "shdr";
+    if (s->n_scan_phdr != 0) return "phdr";
+    return "unknown";
+}
+
+static void write_str_field(const char *s) {
+    if (!s) s = "";
+    (void)mc_write_str(1, s);
+    (void)mc_write_str(1, "\t");
 }
 
 static void write_u64_field(mc_u64 v) {
@@ -575,7 +632,8 @@ static void print_header(void) {
         "compiler\ttool\tn_files\tn_ok\tn_err\tfile_bytes\ttext_bytes\t"
         "push\tpop\tcall\ticall\tret\tleave\tjcc\tjmp\tsetcc\tmovsxd\tsyscall\t"
         "prologue_fp\tstack_sub\tstack_add\tstack_load\tstack_store\txor_zero\tmov_imm0\tlea\t"
-        "push_ppm\tcall_ppm\tsetcc_ppm\tmovsxd_ppm\n");
+    "push_ppm\tcall_ppm\tsetcc_ppm\tmovsxd_ppm\t"
+    "scan_mode\tn_exec_regions\tn_exec_off0\texec_coverage_ppm\tn_scan_shdr\tn_scan_phdr\n");
 }
 
 static void print_row(const char *compiler, const char *tool, const struct stats *s) {
@@ -617,8 +675,17 @@ static void print_row(const char *compiler, const char *tool, const struct stats
     write_u64_field(ppm_u64(s->call, s->text_bytes));
     write_u64_field(ppm_u64(s->setcc, s->text_bytes));
 
+    write_u64_field(ppm_u64(s->movsxd, s->text_bytes));
+
+    // Scan context (helps interpret phdr scans and offset-0 layouts).
+    write_str_field(scan_mode_str(s));
+    write_u64_field(s->n_exec_regions);
+    write_u64_field(s->n_exec_off0);
+    write_u64_field(ppm_u64(s->text_bytes, s->file_bytes));
+    write_u64_field(s->n_scan_shdr);
+
     // Last field ends the line.
-    (void)mc_write_u64_dec(1, ppm_u64(s->movsxd, s->text_bytes));
+    (void)mc_write_u64_dec(1, s->n_scan_phdr);
     (void)mc_write_str(1, "\n");
 }
 

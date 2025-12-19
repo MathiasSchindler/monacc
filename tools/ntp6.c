@@ -466,63 +466,39 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	mc_u8 ip6[16];
 	int have_ip = parse_ipv6_literal(server, ip6);
 	if (!have_ip) {
-		int default_google = 0;
-		if (!have_dns_server) {
-			if (!resolv_conf_pick_v6(dns_server)) {
-				(void)parse_ipv6_literal("2001:4860:4860::8888", dns_server);
-				default_google = 1;
-			}
-			have_dns_server = 1;
-		}
-		if (!dns6_resolve_first_aaaa(argv0, dns_server, 53, server, timeout_ms, ip6)) {
-			if (default_google) {
-				mc_u8 dns2[16];
-				(void)parse_ipv6_literal("2001:4860:4860::8844", dns2);
-				if (!dns6_resolve_first_aaaa(argv0, dns2, 53, server, timeout_ms, ip6)) {
-					if (!server_is_default) {
-						(void)mc_write_str(2, argv0);
-						(void)mc_write_str(2, ": resolve failed\n");
-						return 1;
-					}
-					// pool.ntp.org may not publish AAAA; try numbered pool names.
-					static const char *alts[] = { "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org" };
-					int ok = 0;
-					for (mc_usize ai = 0; ai < (mc_usize)(sizeof(alts) / sizeof(alts[0])); ai++) {
-						if (dns6_resolve_first_aaaa(argv0, dns2, 53, alts[ai], timeout_ms, ip6)) {
-							ok = 1;
-							break;
-						}
-						if (dns6_resolve_first_aaaa(argv0, dns_server, 53, alts[ai], timeout_ms, ip6)) {
-							ok = 1;
-							break;
-						}
-					}
-					if (!ok) {
-						(void)mc_write_str(2, argv0);
-						(void)mc_write_str(2, ": resolve failed\n");
-						return 1;
-					}
-				}
+		mc_u8 dns_list[2][16];
+		int n_dns = 0;
+		if (have_dns_server) {
+			for (int k = 0; k < 16; k++) dns_list[0][k] = dns_server[k];
+			n_dns = 1;
+		} else {
+			if (!resolv_conf_pick_v6(dns_list[0])) {
+				(void)parse_ipv6_literal("2001:4860:4860::8888", dns_list[0]);
+				(void)parse_ipv6_literal("2001:4860:4860::8844", dns_list[1]);
+				n_dns = 2;
 			} else {
-				if (!server_is_default) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": resolve failed\n");
-					return 1;
-				}
-				static const char *alts[] = { "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org" };
-				int ok = 0;
-				for (mc_usize ai = 0; ai < (mc_usize)(sizeof(alts) / sizeof(alts[0])); ai++) {
-					if (dns6_resolve_first_aaaa(argv0, dns_server, 53, alts[ai], timeout_ms, ip6)) {
-						ok = 1;
-						break;
-					}
-				}
-				if (!ok) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": resolve failed\n");
-					return 1;
+				n_dns = 1;
+			}
+		}
+
+		static const char *const pool_names[] = { "pool.ntp.org", "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org" };
+		const char *const *names = server_is_default ? pool_names : &server;
+		mc_usize n_names = server_is_default ? (mc_usize)(sizeof(pool_names) / sizeof(pool_names[0])) : 1u;
+
+		int ok = 0;
+		for (mc_usize ni = 0; ni < n_names && !ok; ni++) {
+			for (int di = 0; di < n_dns; di++) {
+				if (dns6_resolve_first_aaaa(argv0, dns_list[di], 53, names[ni], timeout_ms, ip6)) {
+					ok = 1;
+					break;
 				}
 			}
+		}
+
+		if (!ok) {
+			(void)mc_write_str(2, argv0);
+			(void)mc_write_str(2, ": resolve failed\n");
+			return 1;
 		}
 	}
 

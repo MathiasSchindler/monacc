@@ -48,6 +48,7 @@ SELFTEST ?= 0
 SELFTEST_EMITOBJ ?= 1
 SELFTEST_ELFREAD ?= 1
 SELFTEST_LINKINT ?= 1
+SELFTEST_MATHF ?= 1
 SELFTEST_STAGE2 ?= 0
 SELFTEST_STAGE2_INTERNAL ?= 0
 SELFTEST_STAGE3 ?= 0
@@ -103,7 +104,10 @@ CORE_TLS_SRC := \
 	core/mc_tls13_transcript.c \
 	core/mc_tls13_handshake.c
 
-CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC)
+CORE_MATH_SRC := \
+	core/mc_mathf.c
+
+CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC) $(CORE_MATH_SRC)
 
 # Hosted-only core sources (not built into MONACC tools)
 CORE_HOSTED_SRC := \
@@ -388,6 +392,7 @@ test: all
 	elfread_rc=0; \
 	linkint_rc=0; \
 	emitobj_rc=0; \
+	mathf_rc=0; \
 	stage2_rc=0; \
 	stage3_rc=0; \
 	binsh_rc=0; \
@@ -416,6 +421,11 @@ test: all
 	if [ "$(SELFTEST_LINKINT)" = "1" ]; then \
 		echo "==> Probe: --link-internal"; \
 		$(HOST_BASH) tests/compiler/link-internal-smoke.sh; linkint_rc=$$?; \
+		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_MATHF)" = "1" ]; then \
+		echo "==> Selftest: mc_mathf + tensor helpers"; \
+		$(HOST_BASH) tests/compiler/selftest-mathf.sh; mathf_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST)" = "1" ]; then \
@@ -478,10 +488,10 @@ test: all
 		echo "Wrote build/matrix/report.html"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

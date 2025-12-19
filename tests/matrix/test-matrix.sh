@@ -4,7 +4,9 @@ set -eu
 # Smoke-test tool binaries under bin/<tc>/
 # Usage:
 #   sh tests/matrix/test-matrix.sh [tc...]
-# If no args, auto-detects the same set as build-matrix.sh.
+# If no args, uses the same default set as build-matrix.sh.
+# Override defaults via MATRIX_TCS (space-separated), e.g.:
+#   MATRIX_TCS="monacc gcc-15 clang-21" sh tests/matrix/test-matrix.sh
 
 . "$(dirname "$0")/common.sh"
 

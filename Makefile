@@ -254,13 +254,13 @@ binsh-tools-harness-smoke: all
 # Step-8 closure: run a self-contained smoke script under ./bin/sh.
 closure-smoke: all
 	@echo "==> closure smoke: compile+run under ./bin/sh"
-	@./bin/sh scripts/selfcontained-smoke.sh
+	@./bin/sh tests/closure/selfcontained-smoke.sh
 	@echo "closure-smoke: OK"
 
 # Step-8 closure: rebuild compiler stages under ./bin/sh (heavier).
 selfcontained-build-smoke: all
 	@echo "==> selfcontained build: rebuild stages under ./bin/sh"
-	@./bin/sh scripts/selfcontained-build.sh
+	@./bin/sh tests/closure/selfcontained-build.sh
 	@echo "selfcontained-build-smoke: OK"
 
 # Stage-3 selfhost: rebuild the compiler using the stage-2 compiler.
@@ -465,16 +465,16 @@ test: all
 	fi; \
 	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
 		echo "==> Probe: closure smoke under ./bin/sh"; \
-		./bin/sh scripts/selfcontained-smoke.sh || binsh_rc=1; \
+		./bin/sh tests/closure/selfcontained-smoke.sh || binsh_rc=1; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_BINSHELL_BUILD)" = "1" ]; then \
 		echo "==> Probe: selfcontained build under ./bin/sh"; \
-		./bin/sh scripts/selfcontained-build.sh || binsh_rc=1; \
+		./bin/sh tests/closure/selfcontained-build.sh || binsh_rc=1; \
 		echo ""; \
 	fi; \
 	if [ "$(MULTI)" = "1" ]; then \
-		echo "==> Matrix: build (monacc/gcc/clang)"; \
+		echo "==> Matrix: build (override with MATRIX_TCS=\"monacc gcc-15 clang-21\")"; \
 		$(HOST_SH) tests/matrix/build-matrix.sh; matrix_rc=$$?; \
 		echo ""; \
 		echo "==> Matrix: smoke tests"; \
@@ -512,6 +512,7 @@ debug:
 # Examples:
 #   make matrix-tool TOOL=mandelbrot
 #   make matrix-tool TOOL=mandelbrot TCS="monacc gcc-15 clang-20"
+#   MATRIX_TCS="monacc gcc-15 clang-21" make matrix-tool TOOL=mandelbrot
 #
 TOOL ?= mandelbrot
 TCS ?=

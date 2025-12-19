@@ -4,7 +4,9 @@ set -eu
 # Build tools for multiple toolchains into bin/<tc>/
 # Usage:
 #   sh tests/matrix/build-matrix.sh [tc...]
-# If no tc args are given, auto-detects monacc + gcc/clang versions.
+# If no tc args are given, uses a small default set (monacc + gcc/clang if present).
+# Override defaults via MATRIX_TCS (space-separated), e.g.:
+#   MATRIX_TCS="monacc gcc-15 clang-21" sh tests/matrix/build-matrix.sh
 
 . "$(dirname "$0")/common.sh"
 

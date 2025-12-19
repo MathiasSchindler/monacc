@@ -464,9 +464,9 @@ int main(int argc, char **argv) {
             ld_argv[base++] = "-e";
             ld_argv[base++] = "_start";
 
-            if (xpath_exists("scripts/minimal.ld")) {
+            if (xpath_exists("compiler/minimal.ld")) {
                 ld_argv[base++] = "-T";
-                ld_argv[base++] = "scripts/minimal.ld";
+                ld_argv[base++] = "compiler/minimal.ld";
             }
 
             for (int i = 0; i < nin_paths; i++) {
@@ -609,9 +609,9 @@ int main(int argc, char **argv) {
             // Prefer the repo's minimal linker script when available: it keeps a single
             // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
             // This also makes small initialized data (e.g. static-local string init) affordable.
-            if (xpath_exists("scripts/minimal.ld")) {
+            if (xpath_exists("compiler/minimal.ld")) {
                 ld_argv[base++] = "-T";
-                ld_argv[base++] = "scripts/minimal.ld";
+                ld_argv[base++] = "compiler/minimal.ld";
             }
 
             for (int i = 0; i < nin_paths; i++) {

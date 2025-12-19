@@ -223,7 +223,7 @@ Phased closure plan:
    - Use `initramfs` to boot a tiny environment and run a scripted build/test.
 
 Deliverable at the end:
-- A documented command like: `bin/sh scripts/selfcontained-build.sh` that rebuilds monacc and runs tests.
+- A documented command like: `bin/sh tests/closure/selfcontained-build.sh` that rebuilds monacc and runs tests.
 
 ### Toward “selfhost + ./bin/sh” as the default
 

@@ -34,7 +34,7 @@ As of 2025-12-19, float support (including comparisons and call/return ABI) has 
 
 The compiler has solid support for **in-function float arithmetic**, and (as of 2025-12-19) supports practical float comparisons and conversions needed for inference kernels:
 
-- **Arithmetic inside a function works well:** `+ - * /`, accumulation loops, dot-product style loops, and float loads/stores (as exercised by `tests/float_minimal.c`).
+- **Arithmetic inside a function works well:** `+ - * /`, accumulation loops, dot-product style loops, and float loads/stores (as exercised by `tests/compiler/float_minimal.c`).
 - **Float comparisons via C operators work:** `<`, `>`, `<=`, `>=`, `==`, `!=` on `float` assemble and run.
 - **Casts used directly as call arguments work:** patterns like `id_int((int)3.7f)` and `id_float((float)42)` are supported.
 
@@ -216,7 +216,7 @@ Float arithmetic was verified to produce identical results between monacc and gc
 
 ```bash
 # Build and run with monacc
-./bin/monacc --emit-obj --link-internal -I core tests/float_minimal.c \
+./bin/monacc --emit-obj --link-internal -I core tests/compiler/float_minimal.c \
     core/mc_io.c core/mc_str.c core/mc_snprint.c core/mc_start_env.c \
     -o build/float_test/float_minimal
 ./build/float_test/float_minimal

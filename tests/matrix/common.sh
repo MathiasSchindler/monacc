@@ -93,39 +93,55 @@ repo_root() {
 	cd "$(dirname "$0")/../.." && pwd
 }
 
-# Default toolchains: monacc + any discovered gcc/clang.
-# Users can override by passing explicit args to scripts.
+# Default toolchains: monacc + any discovered gcc/clang (including versioned
+# gcc-N / clang-N found on PATH).
+# Users can override by passing explicit args to scripts, or via MATRIX_TCS.
 default_toolchains() {
+	# Allow explicit override from the environment.
+	# Example: MATRIX_TCS="monacc gcc-15 clang-21"
+	if [ -n "${MATRIX_TCS:-}" ]; then
+		# Intentionally split on whitespace.
+		# shellcheck disable=SC2086
+		printf '%s\n' $MATRIX_TCS
+		return 0
+	fi
+
+	seen=""
+	add_tc() {
+		case " $seen " in
+			*" $1 "*) return 0 ;;
+		esac
+		printf '%s\n' "$1"
+		seen="$seen $1"
+	}
+
+	scan_versioned() {
+		prefix="$1"
+		old_ifs="$IFS"
+		IFS=:
+		# shellcheck disable=SC2086
+		for d in $PATH; do
+			[ -n "$d" ] || continue
+			for f in "$d"/"$prefix"-[0-9]*; do
+				[ -f "$f" ] || continue
+				[ -x "$f" ] || continue
+				base=${f##*/}
+				add_tc "$base"
+			done
+		done
+		IFS="$old_ifs"
+	}
+
 	# Always include monacc first.
-	say monacc
+	add_tc monacc
 
-	# Prefer versioned gcc if present.
-	found_gcc=0
-	i=20
-	while [ "$i" -ge 4 ]; do
-		if have_cmd "gcc-$i"; then
-			say "gcc-$i"
-			found_gcc=1
-		fi
-		i=$((i - 1))
-	done
-	if [ "$found_gcc" -eq 0 ] && have_cmd gcc; then
-		say gcc
-	fi
+	# Discover any versioned compilers present on PATH.
+	scan_versioned gcc
+	scan_versioned clang
 
-	# Prefer versioned clang if present.
-	found_clang=0
-	i=20
-	while [ "$i" -ge 4 ]; do
-		if have_cmd "clang-$i"; then
-			say "clang-$i"
-			found_clang=1
-		fi
-		i=$((i - 1))
-	done
-	if [ "$found_clang" -eq 0 ] && have_cmd clang; then
-		say clang
-	fi
+	# Also include unversioned names if present.
+	if have_cmd gcc; then add_tc gcc; fi
+	if have_cmd clang; then add_tc clang; fi
 }
 
 # Map toolchain name -> compiler command.

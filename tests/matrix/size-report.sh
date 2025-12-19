@@ -4,6 +4,9 @@ set -eu
 # Emit a TSV size report for bin/<tc>/*
 # Usage:
 #   ./bin/sh tests/matrix/size-report.sh [tc...]
+# If no args, uses the same default set as build-matrix.sh.
+# Override defaults via MATRIX_TCS (space-separated), e.g.:
+#   MATRIX_TCS="monacc gcc-15 clang-21" ./bin/sh tests/matrix/size-report.sh
 
 . "$(dirname "$0")/common.sh"
 

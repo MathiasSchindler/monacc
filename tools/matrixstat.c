@@ -76,12 +76,24 @@ struct stats {
     mc_u64 push;
     mc_u64 pop;
     mc_u64 call;
+    mc_u64 indirect_call;
     mc_u64 ret;
+    mc_u64 leave;
     mc_u64 jcc;
     mc_u64 jmp;
     mc_u64 setcc;
     mc_u64 movsxd;
     mc_u64 syscall;
+
+    // More actionable “compiler quality” signals.
+    mc_u64 prologue_fp;    // push rbp; mov rbp,rsp
+    mc_u64 stack_sub;      // sub rsp, imm
+    mc_u64 stack_add;      // add rsp, imm
+    mc_u64 stack_load;     // mov/load from [rsp+disp]
+    mc_u64 stack_store;    // mov/store to [rsp+disp]
+    mc_u64 xor_zero;       // xor reg, reg
+    mc_u64 mov_imm0;       // mov reg, 0
+    mc_u64 lea;            // lea usage
 };
 
 typedef enum {
@@ -91,12 +103,23 @@ typedef enum {
     MF_PUSH,
     MF_POP,
     MF_CALL,
+    MF_INDIRECT_CALL,
     MF_RET,
+    MF_LEAVE,
     MF_JCC,
     MF_JMP,
     MF_SETCC,
     MF_MOVSXD,
     MF_SYSCALL,
+
+    MF_PROLOGUE_FP,
+    MF_STACK_SUB,
+    MF_STACK_ADD,
+    MF_STACK_LOAD,
+    MF_STACK_STORE,
+    MF_XOR_ZERO,
+    MF_MOV_IMM0,
+    MF_LEA,
 } MetricField;
 
 static mc_u64 metric_get(const struct stats *s, MetricField f) {
@@ -106,12 +129,23 @@ static mc_u64 metric_get(const struct stats *s, MetricField f) {
         case MF_PUSH: return s->push;
         case MF_POP: return s->pop;
         case MF_CALL: return s->call;
+        case MF_INDIRECT_CALL: return s->indirect_call;
         case MF_RET: return s->ret;
+        case MF_LEAVE: return s->leave;
         case MF_JCC: return s->jcc;
         case MF_JMP: return s->jmp;
         case MF_SETCC: return s->setcc;
         case MF_MOVSXD: return s->movsxd;
         case MF_SYSCALL: return s->syscall;
+
+        case MF_PROLOGUE_FP: return s->prologue_fp;
+        case MF_STACK_SUB: return s->stack_sub;
+        case MF_STACK_ADD: return s->stack_add;
+        case MF_STACK_LOAD: return s->stack_load;
+        case MF_STACK_STORE: return s->stack_store;
+        case MF_XOR_ZERO: return s->xor_zero;
+        case MF_MOV_IMM0: return s->mov_imm0;
+        case MF_LEA: return s->lea;
         case MF_NONE:
         default: return 0;
     }
@@ -134,12 +168,23 @@ static MetricField metric_parse(const char *s) {
     if (mc_streq(s, "push")) return MF_PUSH;
     if (mc_streq(s, "pop")) return MF_POP;
     if (mc_streq(s, "call")) return MF_CALL;
+    if (mc_streq(s, "icall") || mc_streq(s, "indirect_call")) return MF_INDIRECT_CALL;
     if (mc_streq(s, "ret")) return MF_RET;
+    if (mc_streq(s, "leave")) return MF_LEAVE;
     if (mc_streq(s, "jcc")) return MF_JCC;
     if (mc_streq(s, "jmp")) return MF_JMP;
     if (mc_streq(s, "setcc")) return MF_SETCC;
     if (mc_streq(s, "movsxd")) return MF_MOVSXD;
     if (mc_streq(s, "syscall")) return MF_SYSCALL;
+
+    if (mc_streq(s, "prologue_fp")) return MF_PROLOGUE_FP;
+    if (mc_streq(s, "stack_sub")) return MF_STACK_SUB;
+    if (mc_streq(s, "stack_add")) return MF_STACK_ADD;
+    if (mc_streq(s, "stack_load")) return MF_STACK_LOAD;
+    if (mc_streq(s, "stack_store")) return MF_STACK_STORE;
+    if (mc_streq(s, "xor_zero")) return MF_XOR_ZERO;
+    if (mc_streq(s, "mov_imm0")) return MF_MOV_IMM0;
+    if (mc_streq(s, "lea")) return MF_LEA;
     return MF_NONE;
 }
 
@@ -160,12 +205,45 @@ static void stats_add(struct stats *dst, const struct stats *src) {
     dst->push += src->push;
     dst->pop += src->pop;
     dst->call += src->call;
+    dst->indirect_call += src->indirect_call;
     dst->ret += src->ret;
+    dst->leave += src->leave;
     dst->jcc += src->jcc;
     dst->jmp += src->jmp;
     dst->setcc += src->setcc;
     dst->movsxd += src->movsxd;
     dst->syscall += src->syscall;
+
+    dst->prologue_fp += src->prologue_fp;
+    dst->stack_sub += src->stack_sub;
+    dst->stack_add += src->stack_add;
+    dst->stack_load += src->stack_load;
+    dst->stack_store += src->stack_store;
+    dst->xor_zero += src->xor_zero;
+    dst->mov_imm0 += src->mov_imm0;
+    dst->lea += src->lea;
+}
+
+static mc_u64 ppm_u64(mc_u64 v, mc_u64 denom) {
+    if (denom == 0) return 0;
+    if (v > (mc_u64)(~(mc_u64)0) / 1000000ULL) return (mc_u64)(~(mc_u64)0);
+    return (v * 1000000ULL) / denom;
+}
+
+static int all_zero_bytes(const mc_u8 *p, mc_usize n) {
+    for (mc_usize i = 0; i < n; i++) {
+        if (p[i] != 0) return 0;
+    }
+    return 1;
+}
+
+static int is_rsp_sib_mem(mc_u8 modrm, mc_u8 sib) {
+    mc_u8 mod = (modrm >> 6) & 3u;
+    mc_u8 rm = modrm & 7u;
+    if (mod == 3u) return 0;
+    if (rm != 4u) return 0; // needs SIB
+    mc_u8 base = sib & 7u;
+    return base == 4u; // rsp
 }
 
 static int is_dirname_matrix(const char *name) {
@@ -179,11 +257,147 @@ static void scan_exec_bytes(const mc_u8 *p, mc_usize n, struct stats *out) {
     out->text_bytes += (mc_u64)n;
 
     for (mc_usize i = 0; i < n; i++) {
+        // Frame-pointer prologue: 55 48 89 E5
+        if (i + 3 < n && p[i] == 0x55 && p[i + 1] == 0x48 && p[i + 2] == 0x89 && p[i + 3] == 0xE5) {
+            out->prologue_fp++;
+            i += 3;
+            continue;
+        }
+
         // syscall: 0F 05
         if (p[i] == 0x0F && i + 1 < n && p[i + 1] == 0x05) {
             out->syscall++;
             i += 1;
             continue;
+        }
+
+        // leave
+        if (p[i] == 0xC9) {
+            out->leave++;
+            continue;
+        }
+
+        // Stack adjust: sub/add rsp, imm
+        if (i + 3 < n && p[i] == 0x48 && p[i + 1] == 0x83 && p[i + 2] == 0xEC) {
+            out->stack_sub++;
+            i += 3;
+            continue;
+        }
+        if (i + 6 < n && p[i] == 0x48 && p[i + 1] == 0x81 && p[i + 2] == 0xEC) {
+            out->stack_sub++;
+            i += 6;
+            continue;
+        }
+        if (i + 3 < n && p[i] == 0x48 && p[i + 1] == 0x83 && p[i + 2] == 0xC4) {
+            out->stack_add++;
+            i += 3;
+            continue;
+        }
+        if (i + 6 < n && p[i] == 0x48 && p[i + 1] == 0x81 && p[i + 2] == 0xC4) {
+            out->stack_add++;
+            i += 6;
+            continue;
+        }
+
+        // Indirect call: FF /2
+        if (p[i] == 0xFF && i + 1 < n) {
+            mc_u8 modrm = p[i + 1];
+            mc_u8 reg = (modrm >> 3) & 7u;
+            if (reg == 2u) {
+                out->indirect_call++;
+                i += 1;
+                continue;
+            }
+        }
+
+        // lea (with/without REX prefix)
+        if (p[i] == 0x8D) {
+            out->lea++;
+            continue;
+        }
+        if (p[i] >= 0x40 && p[i] <= 0x4F && i + 1 < n && p[i + 1] == 0x8D) {
+            out->lea++;
+            i += 1;
+            continue;
+        }
+
+        // xor reg, reg (with/without REX prefix)
+        if ((p[i] == 0x31 || p[i] == 0x33) && i + 1 < n) {
+            mc_u8 modrm = p[i + 1];
+            mc_u8 mod = (modrm >> 6) & 3u;
+            mc_u8 reg = (modrm >> 3) & 7u;
+            mc_u8 rm = modrm & 7u;
+            if (mod == 3u && reg == rm) {
+                out->xor_zero++;
+                i += 1;
+                continue;
+            }
+        }
+        if (p[i] >= 0x40 && p[i] <= 0x4F && i + 2 < n && (p[i + 1] == 0x31 || p[i + 1] == 0x33)) {
+            mc_u8 modrm = p[i + 2];
+            mc_u8 mod = (modrm >> 6) & 3u;
+            mc_u8 reg = (modrm >> 3) & 7u;
+            mc_u8 rm = modrm & 7u;
+            if (mod == 3u && reg == rm) {
+                out->xor_zero++;
+                i += 2;
+                continue;
+            }
+        }
+
+        // mov reg, 0 (B8+r imm32/imm64)
+        if (p[i] >= 0xB8 && p[i] <= 0xBF) {
+            // imm32
+            if (i + 4 < n && all_zero_bytes(&p[i + 1], 4)) {
+                out->mov_imm0++;
+                i += 4;
+                continue;
+            }
+        }
+        if (p[i] >= 0x40 && p[i] <= 0x4F && i + 1 < n && p[i + 1] >= 0xB8 && p[i + 1] <= 0xBF) {
+            mc_u8 rex = p[i];
+            int w = (rex & 0x08) != 0;
+            mc_usize imm_len = w ? 8u : 4u;
+            if (i + 1 + imm_len < n && all_zero_bytes(&p[i + 2], imm_len)) {
+                out->mov_imm0++;
+                i += 1 + imm_len;
+                continue;
+            }
+        }
+
+        // Stack slot traffic proxy: mov/load/store involving [rsp+disp]
+        // (minimal ModRM+SIB handling; counts only common mov forms).
+        {
+            mc_usize j = i;
+            mc_u8 rex = 0;
+            if (j < n && p[j] >= 0x40 && p[j] <= 0x4F) {
+                rex = p[j];
+                (void)rex;
+                j++;
+            }
+            if (j < n) {
+                mc_u8 op = p[j];
+                int is_load = (op == 0x8A || op == 0x8B);
+                int is_store = (op == 0x88 || op == 0x89);
+                if ((is_load || is_store) && j + 2 < n) {
+                    mc_u8 modrm = p[j + 1];
+                    mc_u8 rm = modrm & 7u;
+                    mc_u8 mod = (modrm >> 6) & 3u;
+                    if (mod != 3u && rm == 4u) {
+                        mc_u8 sib = p[j + 2];
+                        if (is_rsp_sib_mem(modrm, sib)) {
+                            if (is_load) out->stack_load++; else out->stack_store++;
+                            mc_usize disp = 0;
+                            if (mod == 1u) disp = 1;
+                            else if (mod == 2u) disp = 4;
+                            // Skip over the instruction bytes we know about.
+                            mc_usize len = (j - i) + 1 + 1 + 1 + disp;
+                            if (len > 0) i += (len - 1);
+                            continue;
+                        }
+                    }
+                }
+            }
         }
 
         // REX-prefix forms we care about.
@@ -357,7 +571,11 @@ static void write_u64_field(mc_u64 v) {
 }
 
 static void print_header(void) {
-    mc_write_str(1, "compiler\ttool\tn_files\tn_ok\tn_err\tfile_bytes\ttext_bytes\tpush\tpop\tcall\tret\tjcc\tjmp\tsetcc\tmovsxd\tsyscall\n");
+    mc_write_str(1,
+        "compiler\ttool\tn_files\tn_ok\tn_err\tfile_bytes\ttext_bytes\t"
+        "push\tpop\tcall\ticall\tret\tleave\tjcc\tjmp\tsetcc\tmovsxd\tsyscall\t"
+        "prologue_fp\tstack_sub\tstack_add\tstack_load\tstack_store\txor_zero\tmov_imm0\tlea\t"
+        "push_ppm\tcall_ppm\tsetcc_ppm\tmovsxd_ppm\n");
 }
 
 static void print_row(const char *compiler, const char *tool, const struct stats *s) {
@@ -375,14 +593,32 @@ static void print_row(const char *compiler, const char *tool, const struct stats
     write_u64_field(s->push);
     write_u64_field(s->pop);
     write_u64_field(s->call);
+    write_u64_field(s->indirect_call);
     write_u64_field(s->ret);
+    write_u64_field(s->leave);
     write_u64_field(s->jcc);
     write_u64_field(s->jmp);
     write_u64_field(s->setcc);
     write_u64_field(s->movsxd);
 
+    write_u64_field(s->syscall);
+
+    write_u64_field(s->prologue_fp);
+    write_u64_field(s->stack_sub);
+    write_u64_field(s->stack_add);
+    write_u64_field(s->stack_load);
+    write_u64_field(s->stack_store);
+    write_u64_field(s->xor_zero);
+    write_u64_field(s->mov_imm0);
+    write_u64_field(s->lea);
+
+    // Derived densities (ppm-ish): events per 1,000,000 text bytes.
+    write_u64_field(ppm_u64(s->push, s->text_bytes));
+    write_u64_field(ppm_u64(s->call, s->text_bytes));
+    write_u64_field(ppm_u64(s->setcc, s->text_bytes));
+
     // Last field ends the line.
-    (void)mc_write_u64_dec(1, s->syscall);
+    (void)mc_write_u64_dec(1, ppm_u64(s->movsxd, s->text_bytes));
     (void)mc_write_str(1, "\n");
 }
 
@@ -562,7 +798,9 @@ static void usage(const char *argv0) {
     "  --top-ratio FIELD N Like --top, but ranks by FIELD density per text_bytes.\n"
     "\n"
     "Top fields:\n"
-    "  file_bytes text_bytes push pop call ret jcc jmp setcc movsxd syscall\n");
+    "  file_bytes text_bytes\n"
+    "  push pop call icall ret leave jcc jmp setcc movsxd syscall\n"
+    "  prologue_fp stack_sub stack_add stack_load stack_store xor_zero mov_imm0 lea\n");
 }
 
 int main(int argc, char **argv) {

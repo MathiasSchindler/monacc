@@ -14,22 +14,23 @@ MONACC := bin/monacc
 HOST_SH ?= sh
 HOST_BASH ?= bash
 
-# Use the internal ELF object emitter by default (replaces external `as`).
-# Set EMITOBJ=0 to force using the system assembler instead.
+# monacc defaults to internal object emission + internal linking.
+# These knobs exist to force external tools for bring-up/debugging.
+#
+# - EMITOBJ=0 forces external assembler (equivalent to passing --as as)
+# - LINKINT=0 forces external linker (equivalent to passing --ld ld)
 EMITOBJ ?= 1
 ifeq ($(EMITOBJ),1)
-MONACC_EMITOBJ_FLAG := --emit-obj
+MONACC_AS_FLAG :=
 else
-MONACC_EMITOBJ_FLAG :=
+MONACC_AS_FLAG := --as as
 endif
 
-# Use the internal linker by default when building via Makefile.
-# Set LINKINT=0 to force using external `ld`.
 LINKINT ?= 1
 ifeq ($(LINKINT),1)
-MONACC_LINK_FLAG := --link-internal
+MONACC_LD_FLAG :=
 else
-MONACC_LINK_FLAG :=
+MONACC_LD_FLAG := --ld ld
 endif
 
 # Build configuration
@@ -191,7 +192,11 @@ MONACC_SELF2 := bin/monacc-self2
 MONACC_SELF3 := bin/monacc-self3
 
 # Stage-2 knobs: keep defaults conservative while stage-2 correctness is being
-# brought up. You can opt into the fully-internal pipeline once stable.
+# brought up.
+#
+# Notes:
+# - SELFHOST*_EMITOBJ=0 forces external assembler via "--as as".
+# - SELFHOST*_LINKINT=0 forces external linker via "--ld ld".
 SELFHOST2_EMITOBJ ?= 1
 SELFHOST2_LINKINT ?= 0
 
@@ -210,7 +215,7 @@ selfhost: $(MONACC_SELF)
 
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
 # Stage-2 selfhost: rebuild the compiler using the self-built compiler.
 # The assembler/linker internalization is controlled by SELFHOST2_EMITOBJ and
@@ -222,7 +227,10 @@ selfhost2: $(MONACC_SELF2)
 
 $(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
 	@echo "==> Building stage-2 self-hosted compiler"
-	@$(MONACC_SELF) $(if $(filter 1,$(SELFHOST2_EMITOBJ)),--emit-obj,) $(if $(filter 1,$(SELFHOST2_LINKINT)),--link-internal,) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC_SELF) \
+		$(if $(filter 0,$(SELFHOST2_EMITOBJ)),--as as,) \
+		$(if $(filter 0,$(SELFHOST2_LINKINT)),--ld ld,) \
+		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
 .PHONY: selfhost2-smoke
 selfhost2-smoke: $(MONACC_SELF2)
@@ -271,7 +279,10 @@ selfhost3: $(MONACC_SELF3)
 
 $(MONACC_SELF3): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF2) | bin
 	@echo "==> Building stage-3 self-hosted compiler"
-	@$(MONACC_SELF2) $(if $(filter 1,$(SELFHOST3_EMITOBJ)),--emit-obj,) $(if $(filter 1,$(SELFHOST3_LINKINT)),--link-internal,) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC_SELF2) \
+		$(if $(filter 0,$(SELFHOST3_EMITOBJ)),--as as,) \
+		$(if $(filter 0,$(SELFHOST3_LINKINT)),--ld ld,) \
+		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
 .PHONY: selfhost3-smoke
 selfhost3-smoke: $(MONACC_SELF3)
@@ -327,17 +338,17 @@ bin/internal:
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
 
 # External-ld linked toolset (kept separate for comparison)
 bin/ld/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/ld
 	@echo "  ld/$*"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Internal-linker toolset
 bin/internal/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/internal
 	@echo "  internal/$*"
-	@$(MONACC) $(MONACC_EMITOBJ_FLAG) --link-internal -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Print a header before building tools
 $(TOOL_BINS): | tool-header
@@ -398,7 +409,7 @@ test: all
 	binsh_rc=0; \
 	matrix_rc=0; \
 	for ex in $(EXAMPLES); do \
-		$(MONACC) $(MONACC_EMITOBJ_FLAG) $(MONACC_LINK_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
+		$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
 		./build/test/$$ex >/dev/null 2>&1; \
 		if [ $$? -eq 42 ]; then \
 			echo "  ok: $$ex"; \
@@ -486,6 +497,10 @@ test: all
 		echo "Wrote build/matrix/report.tsv"; \
 		$(HOST_SH) tests/matrix/tsv-to-html.sh --out build/matrix/report.html || matrix_rc=1; \
 		echo "Wrote build/matrix/report.html"; \
+		echo ""; \
+		echo "==> Matrix: matrixstat report (TSV)"; \
+		$(HOST_SH) tests/matrix/matrixstat-report.sh > /dev/null || matrix_rc=1; \
+		echo "Wrote build/matrix/matrixstat.tsv"; \
 		echo ""; \
 	fi; \
 	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \

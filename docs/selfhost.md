@@ -1,6 +1,6 @@
 # monacc self-hosting roadmap
 
-Date: 2025-12-18
+Date: 2025-12-19
 
 This document describes a **series of concrete, testable steps** to advance monacc self-hosting from “the compiler can compile itself” to a **closed-loop build and test environment** that can run under monacc-built tooling.
 
@@ -25,11 +25,11 @@ Two orthogonal “internalization” axes:
   - internal linker (default)
   - external `ld` (bring-up/debug: `--ld <path>` or `--toolchain <dir>`)
 
-When this document says “fully internal”, it means the default mode (equivalent to `--emit-obj --link-internal`).
+When this document says “fully internal”, it means the internal-by-default pipeline (historically spelled as `--emit-obj --link-internal`).
 
 ---
 
-## Current state (as of 2025-12-18)
+## Current state (as of 2025-12-19)
 
 - `make test` passes (examples + tools + probes).
 - Stage 1 works (self-host build succeeds).
@@ -115,7 +115,8 @@ Trace points should be coarse and stable, e.g.:
 - `TRACE: link start/end` (internal/external)
 
 Then run:
-- `./bin/monacc-self2 examples/hello.c -o /tmp/x` (external as/ld)
+- `./bin/monacc-self2 examples/hello.c -o /tmp/x` (default internal)
+- `./bin/monacc-self2 --as as --ld ld examples/hello.c -o /tmp/x` (forced external as/ld)
 - `MONACC_TRACE=1 ./bin/monacc-self2 ...` and see the last checkpoint
 
 Notes:
@@ -160,7 +161,7 @@ Strict checks to include:
 
 ### Step 6 — Flip Stage-2 to the fully internal pipeline
 
-**Goal:** stage-2 works with `--emit-obj --link-internal`.
+**Goal:** stage-2 works without forcing external tools (internal-by-default pipeline).
 
 Commands:
 - `make selfhost2 SELFHOST2_LINKINT=1`
@@ -168,7 +169,7 @@ Commands:
 - Optional probe: `SELFTEST_STAGE2=1 SELFTEST_STAGE2_INTERNAL=1 make test`
 
 Notes:
-- This step is intentionally later. First, fix stage-2 correctness; then internalize.
+- The Makefile’s stage-2 default is intentionally conservative and may force external `ld` for bring-up; this step removes that forcing.
 - Implementation detail: for `--link-internal` on multiple `.c` inputs, monacc links in a fresh process using the emitted `.o` files (and `--link-internal` also accepts `.o` inputs directly).
 
 

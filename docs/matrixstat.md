@@ -11,7 +11,7 @@ This tool is intentionally **not** a full disassembler. It uses a small set of s
 
 ## Build
 
-The binary is built like the other sysbox tools:
+The binary is built like the other monacc tools:
 
 - `make bin/matrixstat`
 
@@ -24,6 +24,14 @@ The binary is built like the other sysbox tools:
 - `./bin/matrixstat`
 
 This prints one `__TOTAL__` row per compiler directory (e.g. `monacc_`, `gcc_15_`, `clang_20_`).
+
+### Matrix integration (recommended)
+
+When you run `MULTI=1 make test`, the matrix harness now also writes:
+
+- `build/matrix/matrixstat.tsv`
+
+This is the per-tool TSV output of `matrixstat` for exactly the toolchains selected by the matrix run.
 
 ### Scan one compiler directory
 
@@ -89,12 +97,27 @@ The output is tab-separated and begins with a header row:
 - `text_bytes` – total bytes scanned for opcode patterns (see “How scanning works”).
 - `push` / `pop` – counts of register push/pop opcodes (`50..57`, `58..5F`, and REX forms for r8–r15).
 - `call` – `E8 rel32` call sites.
+- `icall` – indirect calls (`FF /2`).
 - `ret` – `C3` / `C2 imm16`.
+- `leave` – `C9`.
 - `jcc` – conditional branches (`0F 8?` and `7?`).
 - `jmp` – unconditional branches (`E9` and `EB`).
 - `setcc` – `0F 90..9F` (with/without REX).
 - `movsxd` – `movsxd r64, r/m32` (`REX.W + 63` and a conservative `63` fallback).
 - `syscall` – `0F 05`.
+
+Additional “compiler quality” counters:
+
+- `prologue_fp` – frame-pointer prologues (`push rbp; mov rbp, rsp`).
+- `stack_sub` / `stack_add` – stack pointer adjustments (`sub/add rsp, imm`).
+- `stack_load` / `stack_store` – stack slot traffic proxy (common `mov` loads/stores from/to `[rsp+disp]`).
+- `xor_zero` – `xor reg, reg` zeroing idiom.
+- `mov_imm0` – `mov reg, 0` immediate-zero idiom.
+- `lea` – `lea` usage density (addressing-mode/strength-reduction proxy).
+
+Derived density columns (ppm-ish):
+
+- `push_ppm`, `call_ppm`, `setcc_ppm`, `movsxd_ppm` – events per 1,000,000 `text_bytes`.
 
 ## `--top` fields
 
@@ -122,6 +145,68 @@ When scanning executable `PT_LOAD` bytes, the scanned region may include more th
 For this reason:
 - Prefer comparisons **within the same tool** across compilers (`--tool TOOL`) where non-code bytes are often similar.
 - Use `matrixstat` to find *where to look next*, then confirm with `scripts/compare_codegen.sh --detail TOOL`.
+
+## Incremental improvements (easy, high-value)
+
+This section is a concrete backlog of **small, incremental** improvements that keep `matrixstat` fast and syscalls-only.
+
+### 1) Improve correctness / signal-to-noise
+
+These changes mainly reduce false positives from scanning raw bytes.
+
+1. **Expose scan mode in the TSV**
+	- Add a column like `scan_mode` with values `shdr` (section headers) vs `phdr` (program headers fallback).
+	- This makes it obvious when counts may be noisier (single-segment layouts, embedded const/data in `PF_X`).
+
+2. **Expose “coverage” context**
+	- Add per-row columns such as `n_exec_regions` and `exec_bytes_scanned`.
+	- Add derived ratio `text_coverage_ppm = text_bytes * 1_000_000 / file_bytes`.
+	- This helps detect “we scanned more than pure code” quickly.
+
+3. **Make output deterministic by default**
+	- Sort compiler dirs and tool names before printing.
+	- This makes `build/matrix/matrixstat.tsv` diff-friendly and makes regressions easier to spot.
+
+4. **Strengthen filters for “real executables”**
+	- In addition to ELF magic, validate `e_machine == x86_64` and accept only `ET_EXEC` / `ET_DYN`.
+	- This prevents weird files under `bin/*_*/` (or accidental outputs) from polluting stats.
+
+5. **Add an optional “more strict” scan mode**
+	- Keep the current scan as the default (fast).
+	- Add a flag like `--strict` that uses small boundary heuristics for the patterns you count:
+		- validate operand-length expectations (e.g., `E8`/`E9` require imm32, `0F 8?` requires imm32)
+		- require ModRM for patterns that need it
+	- This is still far from a disassembler, but reduces random-byte matches significantly.
+
+### 2) Add metrics that map more directly to compiler quality
+
+These counters give more actionable signals about regalloc, lowering quality, and ABI/stack discipline.
+
+1. **Stack frame/prologue counters (ABI + optimization maturity)**
+	- Count `push rbp; mov rbp, rsp` prologues and `leave` epilogues.
+	- Count stack allocation patterns: `sub rsp, imm` and `add rsp, imm`.
+	- Helps answer: “are we using frame pointers everywhere?” and “how much stack churn do we emit?”.
+
+2. **Stack slot traffic counters (spill pressure proxy)**
+	- Count common `[rsp+disp]` load/store forms (requires minimal ModRM/SIB handling).
+	- Helps identify tools where monacc is spill-heavy relative to gcc/clang.
+
+3. **Zeroing idioms (teaches ‘what others do’)**
+	- Count `xor reg, reg` vs `mov reg, 0`.
+	- This is a classic, easy-to-spot codegen quality marker and correlates with missed peepholes.
+
+4. **Indirect call/jump counts (thunks, PLT-ish shapes, missed devirtualization)**
+	- Count `call r/m64` (`FF /2`) and common RIP-relative indirect jumps.
+	- Useful to spot accidental dynamic-linkage shapes or unusual thunking.
+
+5. **`lea` density (addressing-mode/strength-reduction proxy)**
+	- Count `lea r64, m` (`8D /r` with/without REX.W).
+	- Often correlates with how good the compiler is at folding address arithmetic.
+
+6. **Built-in derived ratios (so you don’t have to post-process)**
+	- Print ppm-style columns for a few key counters:
+		- `push_ppm`, `call_ppm`, `movsxd_ppm`, `setcc_ppm` where `X_ppm = X * 1_000_000 / text_bytes`.
+	- This makes “bad density outliers” easy to sort in a spreadsheet.
 
 ## Recommended workflows (for humans and LLMs)
 

@@ -107,10 +107,37 @@ default_toolchains() {
 	fi
 
 	seen=""
+	seen_paths=""
+	canonical_cmd_path() {
+		p="$(command -v "$1" 2>/dev/null || true)"
+		[ -n "$p" ] || return 1
+		if have_cmd readlink; then
+			readlink -f "$p" 2>/dev/null || printf '%s\n' "$p"
+		else
+			printf '%s\n' "$p"
+		fi
+	}
 	add_tc() {
 		case " $seen " in
 			*" $1 "*) return 0 ;;
 		esac
+
+		# Avoid duplicate work when (for example) gcc and gcc-15 are the same binary.
+		# We prefer versioned names by scanning them first.
+		case "$1" in
+			monacc)
+				# Always include monacc first; not deduped by PATH.
+				;;
+			gcc|gcc-*|clang|clang-*)
+				cp="$(canonical_cmd_path "$1" 2>/dev/null || true)"
+				[ -n "$cp" ] || return 0
+				case " $seen_paths " in
+					*" $cp "*) return 0 ;;
+				esac
+				seen_paths="$seen_paths $cp"
+				;;
+		esac
+
 		printf '%s\n' "$1"
 		seen="$seen $1"
 	}

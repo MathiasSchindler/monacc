@@ -128,11 +128,10 @@ All tools:
 
 **After Phase 0 (once you already have `bin/monacc`):**
 - You can build the tools and run `make test` without a host C compiler (as long as `bin/monacc` is already present and not being rebuilt).
-- The default build uses internal ELF object emission (`--emit-obj`), so an external `as` is not required.
-- The default build links with monacc’s internal linker, so an external `ld` is not required.
-- Fallbacks exist for bring-up/debugging:
-    - Force external assembler with `EMITOBJ=0`
-    - Force external linker with `LINKINT=0`
+- The default build uses monacc’s internal object emission and internal linker, so external `as`/`ld` are not required.
+- Bring-up/debugging: force external tools explicitly:
+    - Force external assembler: `make EMITOBJ=0` (equivalent to `./bin/monacc --as as ...`)
+    - Force external linker: `make LINKINT=0` (equivalent to `./bin/monacc --ld ld ...`)
 
 Notes:
 - The top-level `Makefile` still defaults to the host `/bin/sh` for orchestration, but there are opt-in probes to run key scripts under `./bin/sh`.

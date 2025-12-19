@@ -26,7 +26,7 @@ static MC_NORETURN void tls13_usage(const char *argv0) {
 }
 
 static void hex_encode(const mc_u8 *in, mc_usize in_len, char *out, mc_usize out_cap) {
-	static const char hex[] = "0123456789abcdef";
+	const char *hex = "0123456789abcdef";
 	if (out_cap < in_len * 2u + 1u) return;
 	for (mc_usize i = 0; i < in_len; i++) {
 		mc_u8 b = in[i];
@@ -56,18 +56,15 @@ static int cmd_rec(int argc, char **argv) {
 	// - nonce construction (seq XOR iv)
 	// - AAD header formatting
 	// - inner plaintext type byte
-	static const mc_u8 key[16] = {
-		0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08,
-	};
-	static const mc_u8 iv[12] = {
-		0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,0xde,0xca,0xf8,0x88,
-	};
-	static const mc_u8 msg[] = "hello";
+	const mc_u8 *key = (const mc_u8 *)"\xfe\xff\xe9\x92\x86\x65\x73\x1c\x6d\x6a\x8f\x94\x67\x30\x83\x08";
+	const mc_u8 *iv = (const mc_u8 *)"\xca\xfe\xba\xbe\xfa\xce\xdb\xad\xde\xca\xf8\x88";
+	const mc_u8 *msg = (const mc_u8 *)"hello";
+	mc_usize msg_len = 5u;
 
 	mc_u8 record[256];
 	mc_usize record_len = 0;
 	mc_u64 seq = 1;
-	if (mc_tls_record_encrypt(key, iv, seq, (mc_u8)MC_TLS_CONTENT_HANDSHAKE, msg, sizeof(msg) - 1u,
+	if (mc_tls_record_encrypt(key, iv, seq, (mc_u8)MC_TLS_CONTENT_HANDSHAKE, msg, msg_len,
 		record, sizeof(record), &record_len) != 0) return 1;
 
 	mc_u8 pt[64];
@@ -75,7 +72,7 @@ static int cmd_rec(int argc, char **argv) {
 	mc_u8 inner_type = 0;
 	if (mc_tls_record_decrypt(key, iv, seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) return 2;
 	if (inner_type != (mc_u8)MC_TLS_CONTENT_HANDSHAKE) return 3;
-	if (pt_len != sizeof(msg) - 1u) return 4;
+	if (pt_len != msg_len) return 4;
 	if (mc_memcmp(pt, msg, pt_len) != 0) return 5;
 
 	// Output record hex for test harness pinning.
@@ -110,54 +107,40 @@ static int cmd_kdf(int argc, char **argv) {
 
 	// RFC 8448, Section 3 (Simple 1-RTT Handshake) intermediate values.
 	// We validate early/derived/handshake secrets, traffic secrets, and handshake keys/IVs.
-	static const mc_u8 zeros32[32] = {
-		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-	};
-	static const mc_u8 hash_empty[32] = {
-		0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
-		0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55,
-	};
-	static const mc_u8 expected_early[32] = {
-		0x33,0xad,0x0a,0x1c,0x60,0x7e,0xc0,0x3b,0x09,0xe6,0xcd,0x98,0x93,0x68,0x0c,0xe2,
-		0x10,0xad,0xf3,0x00,0xaa,0x1f,0x26,0x60,0xe1,0xb2,0x2e,0x10,0xf1,0x70,0xf9,0x2a,
-	};
-	static const mc_u8 expected_derived[32] = {
-		0x6f,0x26,0x15,0xa1,0x08,0xc7,0x02,0xc5,0x67,0x8f,0x54,0xfc,0x9d,0xba,0xb6,0x97,
-		0x16,0xc0,0x76,0x18,0x9c,0x48,0x25,0x0c,0xeb,0xea,0xc3,0x57,0x6c,0x36,0x11,0xba,
-	};
-	static const mc_u8 shared_secret[32] = {
-		0x8b,0xd4,0x05,0x4f,0xb5,0x5b,0x9d,0x63,0xfd,0xfb,0xac,0xf9,0xf0,0x4b,0x9f,0x0d,
-		0x35,0xe6,0xd6,0x3f,0x53,0x75,0x63,0xef,0xd4,0x62,0x72,0x90,0x0f,0x89,0x49,0x2d,
-	};
-	static const mc_u8 expected_handshake[32] = {
-		0x1d,0xc8,0x26,0xe9,0x36,0x06,0xaa,0x6f,0xdc,0x0a,0xad,0xc1,0x2f,0x74,0x1b,0x01,
-		0x04,0x6a,0xa6,0xb9,0x9f,0x69,0x1e,0xd2,0x21,0xa9,0xf0,0xca,0x04,0x3f,0xbe,0xac,
-	};
-	static const mc_u8 ch_sh_hash[32] = {
-		0x86,0x0c,0x06,0xed,0xc0,0x78,0x58,0xee,0x8e,0x78,0xf0,0xe7,0x42,0x8c,0x58,0xed,
-		0xd6,0xb4,0x3f,0x2c,0xa3,0xe6,0xe9,0x5f,0x02,0xed,0x06,0x3c,0xf0,0xe1,0xca,0xd8,
-	};
-	static const mc_u8 expected_c_hs[32] = {
-		0xb3,0xed,0xdb,0x12,0x6e,0x06,0x7f,0x35,0xa7,0x80,0xb3,0xab,0xf4,0x5e,0x2d,0x8f,
-		0x3b,0x1a,0x95,0x07,0x38,0xf5,0x2e,0x96,0x00,0x74,0x6a,0x0e,0x27,0xa5,0x5a,0x21,
-	};
-	static const mc_u8 expected_s_hs[32] = {
-		0xb6,0x7b,0x7d,0x69,0x0c,0xc1,0x6c,0x4e,0x75,0xe5,0x42,0x13,0xcb,0x2d,0x37,0xb4,
-		0xe9,0xc9,0x12,0xbc,0xde,0xd9,0x10,0x5d,0x42,0xbe,0xfd,0x59,0xd3,0x91,0xad,0x38,
-	};
-	static const mc_u8 expected_s_key[16] = {
-		0x3f,0xce,0x51,0x60,0x09,0xc2,0x17,0x27,0xd0,0xf2,0xe4,0xe8,0x6e,0xe4,0x03,0xbc,
-	};
-	static const mc_u8 expected_s_iv[12] = {
-		0x5d,0x31,0x3e,0xb2,0x67,0x12,0x76,0xee,0x13,0x00,0x0b,0x30,
-	};
-	static const mc_u8 expected_c_key[16] = {
-		0xdb,0xfa,0xa6,0x93,0xd1,0x76,0x2c,0x5b,0x66,0x6a,0xf5,0xd9,0x50,0x25,0x8d,0x01,
-	};
-	static const mc_u8 expected_c_iv[12] = {
-		0x5b,0xd3,0xc7,0x1b,0x83,0x6e,0x0b,0x76,0xbb,0x73,0x26,0x5f,
-	};
+	mc_u8 zeros32[32];
+	mc_memset(zeros32, 0, sizeof(zeros32));
+	const mc_u8 *hash_empty = (const mc_u8 *)
+		"\xe3\xb0\xc4\x42\x98\xfc\x1c\x14\x9a\xfb\xf4\xc8\x99\x6f\xb9\x24"
+		"\x27\xae\x41\xe4\x64\x9b\x93\x4c\xa4\x95\x99\x1b\x78\x52\xb8\x55";
+	const mc_u8 *expected_early = (const mc_u8 *)
+		"\x33\xad\x0a\x1c\x60\x7e\xc0\x3b\x09\xe6\xcd\x98\x93\x68\x0c\xe2"
+		"\x10\xad\xf3\x00\xaa\x1f\x26\x60\xe1\xb2\x2e\x10\xf1\x70\xf9\x2a";
+	const mc_u8 *expected_derived = (const mc_u8 *)
+		"\x6f\x26\x15\xa1\x08\xc7\x02\xc5\x67\x8f\x54\xfc\x9d\xba\xb6\x97"
+		"\x16\xc0\x76\x18\x9c\x48\x25\x0c\xeb\xea\xc3\x57\x6c\x36\x11\xba";
+	const mc_u8 *shared_secret = (const mc_u8 *)
+		"\x8b\xd4\x05\x4f\xb5\x5b\x9d\x63\xfd\xfb\xac\xf9\xf0\x4b\x9f\x0d"
+		"\x35\xe6\xd6\x3f\x53\x75\x63\xef\xd4\x62\x72\x90\x0f\x89\x49\x2d";
+	const mc_u8 *expected_handshake = (const mc_u8 *)
+		"\x1d\xc8\x26\xe9\x36\x06\xaa\x6f\xdc\x0a\xad\xc1\x2f\x74\x1b\x01"
+		"\x04\x6a\xa6\xb9\x9f\x69\x1e\xd2\x21\xa9\xf0\xca\x04\x3f\xbe\xac";
+	const mc_u8 *ch_sh_hash = (const mc_u8 *)
+		"\x86\x0c\x06\xed\xc0\x78\x58\xee\x8e\x78\xf0\xe7\x42\x8c\x58\xed"
+		"\xd6\xb4\x3f\x2c\xa3\xe6\xe9\x5f\x02\xed\x06\x3c\xf0\xe1\xca\xd8";
+	const mc_u8 *expected_c_hs = (const mc_u8 *)
+		"\xb3\xed\xdb\x12\x6e\x06\x7f\x35\xa7\x80\xb3\xab\xf4\x5e\x2d\x8f"
+		"\x3b\x1a\x95\x07\x38\xf5\x2e\x96\x00\x74\x6a\x0e\x27\xa5\x5a\x21";
+	const mc_u8 *expected_s_hs = (const mc_u8 *)
+		"\xb6\x7b\x7d\x69\x0c\xc1\x6c\x4e\x75\xe5\x42\x13\xcb\x2d\x37\xb4"
+		"\xe9\xc9\x12\xbc\xde\xd9\x10\x5d\x42\xbe\xfd\x59\xd3\x91\xad\x38";
+	const mc_u8 *expected_s_key = (const mc_u8 *)
+		"\x3f\xce\x51\x60\x09\xc2\x17\x27\xd0\xf2\xe4\xe8\x6e\xe4\x03\xbc";
+	const mc_u8 *expected_s_iv = (const mc_u8 *)
+		"\x5d\x31\x3e\xb2\x67\x12\x76\xee\x13\x00\x0b\x30";
+	const mc_u8 *expected_c_key = (const mc_u8 *)
+		"\xdb\xfa\xa6\x93\xd1\x76\x2c\x5b\x66\x6a\xf5\xd9\x50\x25\x8d\x01";
+	const mc_u8 *expected_c_iv = (const mc_u8 *)
+		"\x5b\xd3\xc7\x1b\x83\x6e\x0b\x76\xbb\x73\x26\x5f";
 
 	mc_u8 early[32];
 	mc_hkdf_extract(zeros32, sizeof(zeros32), zeros32, sizeof(zeros32), early);
@@ -168,7 +151,7 @@ static int cmd_kdf(int argc, char **argv) {
 	if (!bytes_eq(derived, expected_derived, 32)) return 12;
 
 	mc_u8 handshake[32];
-	mc_hkdf_extract(derived, sizeof(derived), shared_secret, sizeof(shared_secret), handshake);
+	mc_hkdf_extract(derived, sizeof(derived), shared_secret, 32u, handshake);
 	if (!bytes_eq(handshake, expected_handshake, 32)) return 13;
 
 	mc_u8 c_hs[32];
@@ -246,7 +229,7 @@ static int cmd_hello(int argc, char **argv) {
 	if (!mc_streq(argv[2], "--rfc8448-1rtt")) tls13_hello_usage(argv0);
 
 	// RFC 8448, Section 3 handshake messages (handshake header included).
-	static const char rfc_ch_hex[] =
+	const char *rfc_ch_hex =
 		"01 00 00 c0 03 03 cb 34 ec b1 e7 81 63"
 		" ba 1c 38 c6 da cb 19 6a 6d ff a2 1a 8d 99 12 ec 18 a2 ef 62 83"
 		" 02 4d ec e7 00 00 06 13 01 13 03 13 02 01 00 00 91 00 00 00 0b"
@@ -258,7 +241,7 @@ static int cmd_hello(int argc, char **argv) {
 		" 02 03 08 04 08 05 08 06 04 01 05 01 06 01 02 01 04 02 05 02 06"
 		" 02 02 02 00 2d 00 02 01 01 00 1c 00 02 40 01";
 
-	static const char rfc_sh_hex[] =
+	const char *rfc_sh_hex =
 		"02 00 00 56 03 03 a6 af 06 a4 12 18 60"
 		" dc 5e 6e 60 24 9c d3 4c 95 93 0c 8a c5 cb 14 34 da c1 55 77 2e"
 		" d3 e2 69 28 00 13 01 00 00 2e 00 33 00 24 00 1d 00 20 c9 82 88"
@@ -275,14 +258,12 @@ static int cmd_hello(int argc, char **argv) {
 	if (sh_len != 90u) return 13;
 
 	// Validate our ClientHello builder produces the exact RFC bytes.
-	static const mc_u8 rfc_random[32] = {
-		0xcb,0x34,0xec,0xb1,0xe7,0x81,0x63,0xba,0x1c,0x38,0xc6,0xda,0xcb,0x19,0x6a,0x6d,
-		0xff,0xa2,0x1a,0x8d,0x99,0x12,0xec,0x18,0xa2,0xef,0x62,0x83,0x02,0x4d,0xec,0xe7,
-	};
-	static const mc_u8 rfc_pub[32] = {
-		0x99,0x38,0x1d,0xe5,0x60,0xe4,0xbd,0x43,0xd2,0x3d,0x8e,0x43,0x5a,0x7d,0xba,0xfe,
-		0xb3,0xc0,0x6e,0x51,0xc1,0x3c,0xae,0x4d,0x54,0x13,0x69,0x1e,0x52,0x9a,0xaf,0x2c,
-	};
+	const mc_u8 *rfc_random = (const mc_u8 *)
+		"\xcb\x34\xec\xb1\xe7\x81\x63\xba\x1c\x38\xc6\xda\xcb\x19\x6a\x6d"
+		"\xff\xa2\x1a\x8d\x99\x12\xec\x18\xa2\xef\x62\x83\x02\x4d\xec\xe7";
+	const mc_u8 *rfc_pub = (const mc_u8 *)
+		"\x99\x38\x1d\xe5\x60\xe4\xbd\x43\xd2\x3d\x8e\x43\x5a\x7d\xba\xfe"
+		"\xb3\xc0\x6e\x51\xc1\x3c\xae\x4d\x54\x13\x69\x1e\x52\x9a\xaf\x2c";
 	mc_u8 built[256];
 	mc_usize built_len = 0;
 	if (mc_tls13_build_client_hello_rfc8448_1rtt(rfc_random, rfc_pub, built, sizeof(built), &built_len) != 0) return 20;
@@ -304,10 +285,9 @@ static int cmd_hello(int argc, char **argv) {
 	mc_u8 hash[32];
 	mc_tls13_transcript_final(&t, hash);
 
-	static const mc_u8 expected_hash[32] = {
-		0x86,0x0c,0x06,0xed,0xc0,0x78,0x58,0xee,0x8e,0x78,0xf0,0xe7,0x42,0x8c,0x58,0xed,
-		0xd6,0xb4,0x3f,0x2c,0xa3,0xe6,0xe9,0x5f,0x02,0xed,0x06,0x3c,0xf0,0xe1,0xca,0xd8,
-	};
+	const mc_u8 *expected_hash = (const mc_u8 *)
+		"\x86\x0c\x06\xed\xc0\x78\x58\xee\x8e\x78\xf0\xe7\x42\x8c\x58\xed"
+		"\xd6\xb4\x3f\x2c\xa3\xe6\xe9\x5f\x02\xed\x06\x3c\xf0\xe1\xca\xd8";
 	if (mc_memcmp(hash, expected_hash, 32) != 0) return 40;
 
 	char hex[128];
@@ -730,7 +710,7 @@ static int read_exact_timeout(mc_i32 fd, void *buf, mc_usize len, mc_u32 timeout
 }
 
 static void write_hex_bytes(mc_i32 fd, const mc_u8 *p, mc_usize n) {
-	static const char *hex = "0123456789abcdef";
+	const char *hex = "0123456789abcdef";
 	char out[2];
 	for (mc_usize i = 0; i < n; i++) {
 		out[0] = hex[(p[i] >> 4) & 0xF];
@@ -750,15 +730,11 @@ static void getrandom_or_die(const char *argv0, void *buf, mc_usize len) {
 	}
 }
 
-static const mc_u8 zeros32_hs[32] = {
-	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-};
-
-static const mc_u8 sha256_empty_hs[32] = {
-	0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
-	0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55,
-};
+static const mc_u8 *sha256_empty_hs_ptr(void) {
+	return (const mc_u8 *)
+		"\xe3\xb0\xc4\x42\x98\xfc\x1c\x14\x9a\xfb\xf4\xc8\x99\x6f\xb9\x24"
+		"\x27\xae\x41\xe4\x64\x9b\x93\x4c\xa4\x95\x99\x1b\x78\x52\xb8\x55";
+}
 
 struct ap_variant {
 	mc_u8 c_key[16];
@@ -1028,10 +1004,12 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 	}
 
 	mc_u8 early[32];
-	mc_hkdf_extract(zeros32_hs, sizeof(zeros32_hs), zeros32_hs, sizeof(zeros32_hs), early);
+	mc_u8 zeros32[32];
+	mc_memset(zeros32, 0, sizeof(zeros32));
+	mc_hkdf_extract(zeros32, sizeof(zeros32), zeros32, sizeof(zeros32), early);
 
 	mc_u8 derived[32];
-	if (mc_tls13_derive_secret(early, "derived", sha256_empty_hs, derived) != 0) {
+	if (mc_tls13_derive_secret(early, "derived", sha256_empty_hs_ptr(), derived) != 0) {
 		(void)mc_sys_close((mc_i32)fd);
 		return 1;
 	}
@@ -1220,7 +1198,7 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 
 	// Derive application traffic keys.
 	mc_u8 derived2[32];
-	if (mc_tls13_derive_secret(handshake_secret, "derived", sha256_empty_hs, derived2) != 0) {
+	if (mc_tls13_derive_secret(handshake_secret, "derived", sha256_empty_hs_ptr(), derived2) != 0) {
 		(void)mc_sys_close((mc_i32)fd);
 		return 1;
 	}
@@ -1230,7 +1208,9 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 	for (int master_mode = 0; master_mode < 2; master_mode++) {
 		mc_u8 master_secret[32];
 		if (master_mode == 0) {
-			mc_hkdf_extract(derived2, sizeof(derived2), zeros32_hs, sizeof(zeros32_hs), master_secret);
+			mc_u8 zeros32b[32];
+			mc_memset(zeros32b, 0, sizeof(zeros32b));
+			mc_hkdf_extract(derived2, sizeof(derived2), zeros32b, sizeof(zeros32b), master_secret);
 		} else {
 			mc_hkdf_extract(derived2, sizeof(derived2), MC_NULL, 0, master_secret);
 		}
@@ -1360,12 +1340,12 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 	char req[4096];
 	mc_usize req_len = 0;
 	{
-		static const char p0[] = "GET ";
-		static const char p1[] = " HTTP/1.1\r\nHost: ";
-		static const char p2[] = "\r\nUser-Agent: monacc-tls13\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-		mc_usize l0 = sizeof(p0) - 1u;
-		mc_usize l1 = sizeof(p1) - 1u;
-		mc_usize l2 = sizeof(p2) - 1u;
+		const char *p0 = "GET ";
+		const char *p1 = " HTTP/1.1\r\nHost: ";
+		const char *p2 = "\r\nUser-Agent: monacc-tls13\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+		mc_usize l0 = 4u;
+		mc_usize l1 = 17u;
+		mc_usize l2 = 62u;
 		mc_usize need = l0 + path_len + l1 + sni_len + l2;
 		if (need > sizeof(req)) {
 			(void)mc_write_str(2, argv0);

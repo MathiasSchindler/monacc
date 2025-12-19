@@ -67,10 +67,13 @@ static void wb_patch_u24_at(struct wbuf *b, mc_usize off, mc_u32 v) {
 }
 
 // RFC 8448 ClientHello uses a fixed signature_algorithms list (15 pairs).
-static const mc_u8 rfc8448_sig_algs[] = {
-	0x04,0x03,0x05,0x03,0x06,0x03,0x02,0x03,0x08,0x04,0x08,0x05,0x08,0x06,0x04,0x01,
-	0x05,0x01,0x06,0x01,0x02,0x01,0x04,0x02,0x05,0x02,0x06,0x02,0x02,0x02,
-};
+static const mc_u8 *rfc8448_sig_algs_ptr(void) {
+	return (const mc_u8 *)
+		"\x04\x03\x05\x03\x06\x03\x02\x03\x08\x04\x08\x05\x08\x06\x04\x01"
+		"\x05\x01\x06\x01\x02\x01\x04\x02\x05\x02\x06\x02\x02\x02";
+}
+
+#define RFC8448_SIG_ALGS_LEN 30u
 
 int mc_tls13_build_client_hello(
 	const char *sni, mc_usize sni_len,
@@ -157,7 +160,7 @@ int mc_tls13_build_client_hello(
 	if (wb_put_u16(&b, MC_TLS13_EXT_SIGNATURE_ALGORITHMS) != 0) return -1;
 	if (wb_put_u16(&b, 0x0020) != 0) return -1;
 	if (wb_put_u16(&b, 0x001e) != 0) return -1;
-	if (wb_put_bytes(&b, rfc8448_sig_algs, sizeof(rfc8448_sig_algs)) != 0) return -1;
+	if (wb_put_bytes(&b, rfc8448_sig_algs_ptr(), RFC8448_SIG_ALGS_LEN) != 0) return -1;
 
 	// psk_key_exchange_modes (0x002d): psk_dhe_ke (1)
 	if (wb_put_u16(&b, MC_TLS13_EXT_PSK_KEY_EXCHANGE_MODES) != 0) return -1;
@@ -276,7 +279,7 @@ int mc_tls13_build_client_hello_rfc8448_1rtt(
 	if (wb_put_u16(&b, MC_TLS13_EXT_SIGNATURE_ALGORITHMS) != 0) return -1;
 	if (wb_put_u16(&b, 0x0020) != 0) return -1;
 	if (wb_put_u16(&b, 0x001e) != 0) return -1;
-	if (wb_put_bytes(&b, rfc8448_sig_algs, sizeof(rfc8448_sig_algs)) != 0) return -1;
+	if (wb_put_bytes(&b, rfc8448_sig_algs_ptr(), RFC8448_SIG_ALGS_LEN) != 0) return -1;
 
 	// psk_key_exchange_modes (0x002d)
 	if (wb_put_u16(&b, MC_TLS13_EXT_PSK_KEY_EXCHANGE_MODES) != 0) return -1;

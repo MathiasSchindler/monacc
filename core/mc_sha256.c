@@ -9,6 +9,10 @@ static mc_u32 load_be32(const mc_u8 *p) {
 	return ((mc_u32)p[0] << 24) | ((mc_u32)p[1] << 16) | ((mc_u32)p[2] << 8) | ((mc_u32)p[3] << 0);
 }
 
+static mc_u32 load_le32(const mc_u8 *p) {
+	return ((mc_u32)p[0] << 0) | ((mc_u32)p[1] << 8) | ((mc_u32)p[2] << 16) | ((mc_u32)p[3] << 24);
+}
+
 static void store_be32(mc_u8 *p, mc_u32 v) {
 	p[0] = (mc_u8)((v >> 24) & 0xFFu);
 	p[1] = (mc_u8)((v >> 16) & 0xFFu);
@@ -51,16 +55,26 @@ static mc_u32 ssig1(mc_u32 x) {
 	return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10);
 }
 
-static const mc_u32 k[64] = {
-	0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
-	0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
-	0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
-	0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
-	0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
-	0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
-	0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
-	0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
-};
+static const mc_u8 *sha256_k_bytes(void) {
+	// Little-endian u32 constants (RFC 6234 / FIPS 180-4).
+	return (const mc_u8 *)
+		"\x98\x2f\x8a\x42\x91\x44\x37\x71\xcf\xfb\xc0\xb5\xa5\xdb\xb5\xe9"
+		"\x5b\xc2\x56\x39\xf1\x11\xf1\x59\xa4\x82\x3f\x92\xd5\x5e\x1c\xab"
+		"\x98\xaa\x07\xd8\x01\x5b\x83\x12\xbe\x85\x31\x24\xc3\x7d\x0c\x55"
+		"\x74\x5d\xbe\x72\xfe\xb1\xde\x80\xa7\x06\xdc\x9b\x74\xf1\x9b\xc1"
+		"\xc1\x69\x9b\xe4\x86\x47\xbe\xef\xc6\x9d\xc1\x0f\xcc\xa1\x0c\x24"
+		"\x6f\x2c\xe9\x2d\xaa\x84\x74\x4a\xdc\xa9\xb0\x5c\xda\x88\xf9\x76"
+		"\x52\x51\x3e\x98\x6d\xc6\x31\xa8\xc8\x27\x03\xb0\xc7\x7f\x59\xbf"
+		"\xf3\x0b\xe0\xc6\x47\x91\xa7\xd5\x51\x63\xca\x06\x67\x29\x29\x14"
+		"\x85\x0a\xb7\x27\x38\x21\x1b\x2e\xfc\x6d\x2c\x4d\x13\x0d\x38\x53"
+		"\x54\x73\x0a\x65\xbb\x0a\x6a\x76\x2e\xc9\xc2\x81\x85\x2c\x72\x92"
+		"\xa1\xe8\xbf\xa2\x4b\x66\x1a\xa8\x70\x8b\x4b\xc2\xa3\x51\x6c\xc7"
+		"\x19\xe8\x92\xd1\x24\x06\x99\xd6\x85\x35\x0e\xf4\x70\xa0\x6a\x10"
+		"\x16\xc1\xa4\x19\x08\x6c\x37\x1e\x4c\x77\x48\x27\xb5\xbc\xb0\x34"
+		"\xb3\x0c\x1c\x39\x4a\xaa\xd8\x4e\x4f\xca\x9c\x5b\xf3\x6f\x2e\x68"
+		"\xee\x82\x8f\x74\x6f\x63\xa5\x78\x14\x78\xc8\x84\x08\x02\xc7\x8c"
+		"\xfa\xff\xbe\x90\xeb\x6c\x50\xa4\xf7\xa3\xf9\xbe\xf2\x78\x71\xc6";
+}
 
 static void sha256_transform(mc_sha256_ctx *ctx, const mc_u8 block[64]) {
 	mc_u32 w[64];
@@ -79,9 +93,10 @@ static void sha256_transform(mc_sha256_ctx *ctx, const mc_u8 block[64]) {
 	mc_u32 f = ctx->state[5];
 	mc_u32 g = ctx->state[6];
 	mc_u32 h = ctx->state[7];
+	const mc_u8 *kb = sha256_k_bytes();
 
 	for (mc_u32 i = 0; i < 64; i++) {
-		mc_u32 t1 = h + bsig1(e) + ch(e, f, g) + k[i] + w[i];
+		mc_u32 t1 = h + bsig1(e) + ch(e, f, g) + load_le32(kb + (mc_usize)(i * 4u)) + w[i];
 		mc_u32 t2 = bsig0(a) + maj(a, b, c);
 		h = g;
 		g = f;

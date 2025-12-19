@@ -35,8 +35,8 @@ int mc_tls13_hkdf_expand_label(
 	//   opaque label<7..255>; // "tls13 " + label
 	//   opaque context<0..255>;
 	// } HKDFLabel;
-	static const char prefix[] = "tls13 ";
-	mc_usize prefix_len = sizeof(prefix) - 1u;
+	const char *prefix = "tls13 ";
+	mc_usize prefix_len = 6u;
 	mc_usize label_len = cstr_len(label);
 	mc_usize full_label_len = prefix_len + label_len;
 	if (full_label_len > 255u) return -1;
@@ -84,8 +84,7 @@ int mc_tls13_finished_key(
 	const mc_u8 base_key[MC_SHA256_DIGEST_SIZE],
 	mc_u8 out[MC_SHA256_DIGEST_SIZE]
 ) {
-	static const mc_u8 empty[1] = {0};
-	return mc_tls13_hkdf_expand_label(base_key, "finished", empty, 0, out, MC_SHA256_DIGEST_SIZE);
+	return mc_tls13_hkdf_expand_label(base_key, "finished", MC_NULL, 0, out, MC_SHA256_DIGEST_SIZE);
 }
 
 void mc_tls13_finished_verify_data(

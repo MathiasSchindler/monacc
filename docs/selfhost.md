@@ -18,14 +18,14 @@ The goal is to make progress in small increments, with regression probes at each
 Two orthogonal “internalization” axes:
 
 - **Assembler axis**
-  - external `as` (default when `--emit-obj` is not used)
-  - internal ELF object emitter (`--emit-obj`)
+  - internal ELF object emitter (default)
+  - external `as` (bring-up/debug: `--as <path>` or `--toolchain <dir>`)
 
 - **Linker axis**
-  - external `ld` (default when `--link-internal` is not used)
-  - internal linker (`--link-internal`)
+  - internal linker (default)
+  - external `ld` (bring-up/debug: `--ld <path>` or `--toolchain <dir>`)
 
-When this document says “fully internal”, it means `--emit-obj --link-internal`.
+When this document says “fully internal”, it means the default mode (equivalent to `--emit-obj --link-internal`).
 
 ---
 

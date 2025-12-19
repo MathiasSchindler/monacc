@@ -178,7 +178,7 @@ $(MONACC): $(COMPILER_SRC) | bin
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) --emit-obj --link-internal -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) -I core $< $(CORE_TOOL_SRC) -o $@
 
 # Convenience aliases (match the main repo behavior).
 bin/realpath: bin/readlink | bin

@@ -142,10 +142,12 @@ static void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n";
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+        "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n");
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+         "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n");
 #endif
     _exit(2);
 }
@@ -300,8 +302,10 @@ int main(int argc, char **argv) {
     char *ld_prog_alloc = NULL;
     int compile_only = 0;
     int use_nmagic = 1;
-    int emit_obj = 0;
-    int link_internal = 0;
+    // Default to the self-contained toolchain.
+    // External as/ld remain available for bring-up/debugging via --as/--ld/--toolchain.
+    int emit_obj = 1;
+    int link_internal = 1;
     int keep_shdr = 0;
     PPConfig cfg;
     mc_memset(&cfg, 0, sizeof(cfg));
@@ -377,6 +381,9 @@ int main(int argc, char **argv) {
                 ld_prog_alloc = join_dir_prog(dir, "ld");
                 as_prog = as_prog_alloc;
                 ld_prog = ld_prog_alloc;
+                // Toolchain selection is meaningful only for external as/ld.
+                emit_obj = 0;
+                link_internal = 0;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--as")) {
@@ -386,6 +393,7 @@ int main(int argc, char **argv) {
                     as_prog_alloc = NULL;
                 }
                 as_prog = argv[++i];
+                emit_obj = 0;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--ld")) {
@@ -395,6 +403,7 @@ int main(int argc, char **argv) {
                     ld_prog_alloc = NULL;
                 }
                 ld_prog = argv[++i];
+                link_internal = 0;
                 continue;
             }
             usage(argv[0]);

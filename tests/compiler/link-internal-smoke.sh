@@ -102,8 +102,8 @@ if command -v ld >/dev/null 2>&1; then
   oracle_out_ld="build/test/oracle-echo-ld"
   oracle_out_int="build/test/oracle-echo-int"
 
-  # External ld path (no --link-internal)
-  ./bin/monacc --emit-obj -I core tools/echo.c \
+  # External ld path (forced)
+  ./bin/monacc --emit-obj --ld ld -I core tools/echo.c \
     core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c \
     core/mc_start_env.c core/mc_io.c core/mc_regex.c \
     -o "$oracle_out_ld" >/dev/null 2>&1

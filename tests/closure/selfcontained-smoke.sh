@@ -3,8 +3,8 @@
 
 OUT=/tmp/monacc-closure-hello
 
-# Compile with fully-internal pipeline.
-./bin/monacc --emit-obj --link-internal examples/hello.c -o "$OUT"
+# Compile (defaults to fully-internal pipeline).
+./bin/monacc examples/hello.c -o "$OUT"
 
 # Verify the expected exit code (examples return 42).
 "$OUT" >/dev/null

@@ -1783,6 +1783,8 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             else if (!mc_strcmp(mnem, "jae")) jcc = 0x83;
             else if (!mc_strcmp(mnem, "jbe")) jcc = 0x86;
             else if (!mc_strcmp(mnem, "ja")) jcc = 0x87;
+            else if (!mc_strcmp(mnem, "jp") || !mc_strcmp(mnem, "jpe")) jcc = 0x8A;
+            else if (!mc_strcmp(mnem, "jnp") || !mc_strcmp(mnem, "jpo")) jcc = 0x8B;
             else if (!mc_strcmp(mnem, "jl")) jcc = 0x8C;
             else if (!mc_strcmp(mnem, "jge")) jcc = 0x8D;
             else if (!mc_strcmp(mnem, "jle")) jcc = 0x8E;

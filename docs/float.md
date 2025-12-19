@@ -1,6 +1,6 @@
 # Floating-Point Support (Current Status)
 
-Date: 2025-12-18
+Date: 2025-12-19
 
 monacc now supports a practical subset of IEEE-754 **binary32** (`float`) that is sufficient for non-libc, syscall-only programs and for the Mandelbrot benchmark tool.
 
@@ -13,7 +13,13 @@ monacc now supports a practical subset of IEEE-754 **binary32** (`float`) that i
   - Comparisons lowered via `ucomiss` and conditional branches.
   - Conversions: `int -> float` via `cvtsi2ss`, `float -> int` via `cvttss2si` (trunc toward zero).
   - Implementation detail: floats are tracked as **raw 32-bit bits** in integer registers and moved into XMM registers only for actual FP operations.
-- **Internal assembler + linker compatibility**: the instructions and patterns emitted by float codegen work with `--emit-obj` and `--link-internal` (no new runtime deps).
+- **SysV ABI support for float calls (binary32)**:
+  - Passing `float` parameters in `%xmm0..%xmm7` (separate from integer args in `%rdi..%r9`).
+  - Returning `float` in `%xmm0`.
+  - Stack passing for `float` args beyond `%xmm7`.
+- **Internal assembler + linker compatibility**:
+  - The internal assembler now supports `jp/jnp` (parity Jcc) which is used for unordered (NaN) handling in float comparisons.
+  - The instruction forms used by float arithmetic/comparisons/call plumbing work with `--emit-obj` and `--link-internal`.
 
 ## Coverage / tests
 
@@ -25,17 +31,30 @@ These are exercised by the example programs:
 - `examples/float_neg.c` (unary minus)
 - `examples/float_lits.c` (literal parsing: dot forms + exponents)
 
+Float calling convention coverage:
+
+- `examples/float_call_ret.c` (pass/return `float` via SysV ABI)
+- `examples/float_call_mixed.c` (mixed int/float argument assignment)
+- `examples/float_call_many.c` (>8 float args -> stack passing)
+
+Cast + call-site coverage:
+
+- `examples/float_cast_callargs.c` (float↔int casts used directly as call arguments, incl. function pointers)
+
 There is also a syscall-only benchmark tool:
 
 - `tools/mandelbrot.c`
 
 ## What is still missing
 
-- **SysV ABI for floats in calls**: passing/returning `float` in `%xmm0..%xmm7` and mixed int/float argument assignment is not yet fully implemented/tested.
 - **`double` support** (binary64) and any `long double`.
 - **Full C/IEEE edge semantics**: NaNs/infinities/signed-zero corner cases are not a goal yet, and behavior may differ from full C.
 - **Varargs and float formatting/parsing**: no `printf` float formatting and no libm-like surface.
 - **Broader typing/usage surface**: more coverage for floats inside structs/arrays, globals, and more complex expressions would be useful.
+
+## Notes / gotchas
+
+- **Float casts as call arguments**: previously, float↔int casts could be miscompiled when used *directly* as call arguments because the call fast-path treated casts as “simple args” (bit moves) instead of emitting real SSE conversion code. This is fixed and guarded by `examples/float_cast_callargs.c`.
 
 ## Implementation plan (towards a syscall-only GPT-2 124M runner)
 
@@ -45,32 +64,32 @@ This plan is written to keep changes incremental and regression-tested. The guid
 - Keep the toolchain self-contained (`--emit-obj` + `--link-internal`).
 - Prefer adding tests/examples before or together with each new capability.
 
-### Phase 1: Float calling convention (SysV x86_64)
+### Phase 1: Float calling convention (SysV x86_64) ✅ Implemented
 
 Goal: allow idiomatic C code for inference kernels without “pass everything via pointers” contortions.
 
-Implementation:
+Implementation (done):
 
 - Extend the type checker / call lowering so `float` parameters are passed in `%xmm0..%xmm7` and returned in `%xmm0`.
 - Support **mixed int/pointer + float** argument assignment per SysV ABI (separate integer and SSE register sequences).
 - Define stack spill behavior when float args exceed `%xmm7`.
 
-Tests to add:
+Tests (done):
 
 - `examples/float_call_ret.c`: function takes/returns `float`, caller checks via `(int)` conversion.
 - `examples/float_call_mixed.c`: signature like `f(int a, float b, int c, float d, ...)` verifying each arg arrives intact.
 - `examples/float_call_many.c`: >8 float args to force stack passing.
 
-### Phase 2: Internal assembler coverage for XMM/SSE patterns used by Phase 1
+### Phase 2: Internal assembler coverage for XMM/SSE patterns used by Phase 1 ✅ Implemented
 
 Goal: ensure `--emit-obj` stays first-class for float code.
 
-Implementation:
+Implementation (done):
 
 - Ensure parsing/encoding covers the exact instruction forms emitted for call/ret paths (moves between GPRs/XMM and stack).
 - Keep scope tight: only forms the codegen emits.
 
-Tests to add:
+Tests (done):
 
 - Add a `SELFTEST_EMITOBJ`-style probe compiling the new float-call examples with `--emit-obj` + `--link-internal`.
 

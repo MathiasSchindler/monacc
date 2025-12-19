@@ -212,6 +212,12 @@ typedef struct {
     int nparams;
     int param_offsets[6];
     int param_sizes[6];
+
+    // SysV ABI (subset): float parameters passed in %xmm0..%xmm7.
+    // If a float parameter is bound to a local, the codegen prologue spills it
+    // from the corresponding XMM register into this stack slot.
+    int xmm_param_offsets[8];
+    int xmm_param_sizes[8];
 } Function;
 
 typedef struct {

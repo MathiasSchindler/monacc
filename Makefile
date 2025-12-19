@@ -146,7 +146,9 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	global_array_store \
 	addr_deref_syscall \
 	asm_syscall \
-	float_arith float_div float_cmp float_neg float_lits
+	float_arith float_div float_cmp float_neg float_lits \
+	float_call_ret float_call_mixed float_call_many \
+	float_cast_callargs
 
 # Default goal: build everything
 .DEFAULT_GOAL := all

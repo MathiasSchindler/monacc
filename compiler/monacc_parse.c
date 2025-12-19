@@ -3096,6 +3096,10 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
         fn.param_offsets[i] = 0;
         fn.param_sizes[i] = 0;
     }
+    for (int i = 0; i < 8; i++) {
+        fn.xmm_param_offsets[i] = 0;
+        fn.xmm_param_sizes[i] = 0;
+    }
 
     Locals ls;
     mc_memset(&ls, 0, sizeof(ls));
@@ -3125,6 +3129,7 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
     // - Large struct-by-value args (>16 bytes) are passed in memory on the stack (do not consume register slots).
     //   This is required for sysbox/tools/expr.c where `struct expr_val` (32 bytes) is passed by value.
     int reg_used = 0;
+    int xmm_used = 0;
     int stack_off_bytes = 0;
     int reg_limit = is_sret ? 5 : 6;
 
@@ -3157,6 +3162,29 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
         }
 
         int lsz = (sz == 1) ? 1 : (sz == 2) ? 2 : (sz == 4) ? 4 : 8;
+
+        // Float scalars are passed in %xmm0..%xmm7 (separate from integer regs).
+        if (params[i].base == BT_FLOAT && params[i].ptr == 0) {
+            if (xmm_used < 8) {
+                int xmm_index = xmm_used++;
+                if (has_name) {
+                    int off = local_add(&ls, params[i].name, params[i].name_len, params[i].base, params[i].ptr, params[i].struct_id, params[i].is_unsigned, 4,
+                                        4, 0);
+                    fn.xmm_param_offsets[xmm_index] = off;
+                    fn.xmm_param_sizes[xmm_index] = 4;
+                }
+            } else {
+                // Spill to stack when exceeding %xmm7.
+                int off = 16 + stack_off_bytes;
+                stack_off_bytes += 8;
+                if (has_name) {
+                    (void)local_add_fixed(&ls, params[i].name, params[i].name_len, params[i].base, params[i].ptr, params[i].struct_id, params[i].is_unsigned, 4,
+                                          4, 0, off);
+                }
+            }
+            continue;
+        }
+
         if (reg_used < reg_limit) {
             int reg_index = is_sret ? (reg_used + 1) : reg_used;
             reg_used++;

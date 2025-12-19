@@ -393,7 +393,18 @@ static int expr_is_simple_addr_arg(const Expr *e) {
 // (array decay / large structs) where the value is an address computed via lea.
 static int expr_is_simple_arg(const Expr *e) {
     if (!e) return 0;
-    if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return expr_is_simple_arg(e->lhs);
+    if (e->kind == EXPR_POS) return expr_is_simple_arg(e->lhs);
+    if (e->kind == EXPR_CAST) {
+        // Only treat casts as "simple" when they don't require real codegen.
+        // In particular, float casts require SSE conversions and must not go
+        // through the "load into any reg" fast path used by call lowering.
+        if (!e->lhs) return 0;
+        if ((e->ptr == 0 && (e->base == BT_FLOAT || e->base == BT_STRUCT)) ||
+            (e->lhs->ptr == 0 && (e->lhs->base == BT_FLOAT || e->lhs->base == BT_STRUCT))) {
+            return 0;
+        }
+        return expr_is_simple_arg(e->lhs);
+    }
     if (e->kind == EXPR_ADDR) return expr_is_simple_addr_arg(e->lhs);
 
     // Pointer +/- immediate (e.g. buf+1, argv+8). Treat as simple when the pointer
@@ -500,7 +511,8 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
         // Keep this path limited to scalar integer/pointer casts that we can
         // implement without clobbering other ABI argument registers.
         if (!e->lhs) return 0;
-        if (e->ptr == 0 && (e->base == BT_FLOAT || e->base == BT_STRUCT)) {
+        if ((e->ptr == 0 && (e->base == BT_FLOAT || e->base == BT_STRUCT)) ||
+            (e->lhs->ptr == 0 && (e->lhs->base == BT_FLOAT || e->lhs->base == BT_STRUCT))) {
             return 0;
         }
 
@@ -1038,6 +1050,9 @@ static int fn_can_be_frameless(const Function *fn) {
     for (int i = 0; i < 6; i++) {
         if (fn->param_offsets[i] != 0) return 0;
     }
+    for (int i = 0; i < 8; i++) {
+        if (fn->xmm_param_offsets[i] != 0) return 0;
+    }
     // Frameless functions start with rsp misaligned by 8 bytes (SysV). That's OK
     // only if we don't emit CALL instructions (we still allow syscall builtins).
     if (stmt_contains_nonsyscall_call(fn->body)) return 0;
@@ -1102,12 +1117,14 @@ typedef struct {
     int reg;
     int stack_bytes;
     int struct_size;
+    int is_float;
 } CallArgInfo;
 
 enum {
-    CALLARG_REG = 1,
-    CALLARG_STACK_SCALAR = 2,
-    CALLARG_STACK_STRUCT = 3,
+    CALLARG_REG_INT = 1,
+    CALLARG_REG_XMM = 2,
+    CALLARG_STACK_SCALAR = 3,
+    CALLARG_STACK_STRUCT = 4,
 };
 
 static void switch_collect(SwitchCtx *sw, const Stmt *s) {
@@ -1407,48 +1424,130 @@ static void cg_call(CG *cg, const Expr *e) {
     if (e->callee[0] == 0) {
         // Indirect call via function pointer (no signature info): keep legacy behavior.
         static const char *areg[6] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-        int nreg = e->nargs;
-        if (nreg > 6) nreg = 6;
-        int nstack = e->nargs - nreg;
 
-        int pad = (nstack & 1) ? 8 : 0;
+        CallArgInfo ai[64];
+        if (e->nargs > (int)(sizeof(ai) / sizeof(ai[0]))) {
+            die("too many call args");
+        }
+
+        int int_used = 0;
+        int xmm_used = 0;
+        int stack_bytes = 0;
+        for (int i = 0; i < e->nargs; i++) {
+            const Expr *a = e->args[i];
+            if (a && a->base == BT_STRUCT && a->ptr == 0 && a->lval_size > 0) {
+                // No signature info: keep conservative legacy (structs by value not supported here).
+                die("indirect call: struct args not supported");
+            }
+            int is_float = (a && a->ptr == 0 && a->base == BT_FLOAT);
+            if (is_float) {
+                if (xmm_used < 8) {
+                    ai[i].kind = CALLARG_REG_XMM;
+                    ai[i].reg = xmm_used++;
+                    ai[i].stack_bytes = 0;
+                    ai[i].struct_size = 0;
+                    ai[i].is_float = 1;
+                } else {
+                    ai[i].kind = CALLARG_STACK_SCALAR;
+                    ai[i].reg = -1;
+                    ai[i].stack_bytes = 8;
+                    ai[i].struct_size = 0;
+                    ai[i].is_float = 1;
+                    stack_bytes += 8;
+                }
+            } else if (int_used < 6) {
+                ai[i].kind = CALLARG_REG_INT;
+                ai[i].reg = int_used++;
+                ai[i].stack_bytes = 0;
+                ai[i].struct_size = 0;
+                ai[i].is_float = 0;
+            } else {
+                ai[i].kind = CALLARG_STACK_SCALAR;
+                ai[i].reg = -1;
+                ai[i].stack_bytes = 8;
+                ai[i].struct_size = 0;
+                ai[i].is_float = 0;
+                stack_bytes += 8;
+            }
+        }
+
+        // Keep stack 16B-aligned at call site.
+        int pad = (stack_bytes & 15) ? 8 : 0;
         if (pad) {
             str_appendf(&cg->out, "  sub $8, %%rsp\n");
         }
-        for (int i = e->nargs - 1; i >= 6; i--) {
+
+        // Push stack args right-to-left.
+        for (int i = e->nargs - 1; i >= 0; i--) {
+            if (ai[i].kind != CALLARG_STACK_SCALAR) continue;
             cg_expr(cg, e->args[i]);
             const Expr *a = e->args[i];
-            if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
-                a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
-                // If this arg is a known non-negative constant, zero-extension is sufficient.
+            if (ai[i].is_float) {
+                // Ensure upper bits are clear for 32-bit payload.
+                str_appendf(&cg->out, "  mov %%eax, %%eax\n");
+            } else if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+                       a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
                 if (!(a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
                     str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
                 }
             }
             str_appendf(&cg->out, "  push %%rax\n");
         }
-        for (int i = 0; i < nreg; i++) {
-            cg_expr(cg, e->args[i]);
-            const Expr *a = e->args[i];
-            if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
-                a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
-                if (!(a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
-                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+
+        // Evaluate complex reg args: push.
+        for (int i = 0; i < e->nargs; i++) {
+            if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
+            if (!expr_is_simple_arg(e->args[i])) {
+                cg_expr(cg, e->args[i]);
+                str_appendf(&cg->out, "  push %%rax\n");
+            }
+        }
+
+        // Pop complex reg args into their ABI regs right-to-left.
+        for (int i = e->nargs - 1; i >= 0; i--) {
+            if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
+            if (!expr_is_simple_arg(e->args[i])) {
+                if (ai[i].kind == CALLARG_REG_INT) {
+                    str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
+                } else {
+                    str_appendf(&cg->out, "  pop %%rax\n");
+                    str_appendf_i64(&cg->out, "  movd %%eax, %%xmm%lld\n", (long long)ai[i].reg);
                 }
             }
-            str_appendf(&cg->out, "  push %%rax\n");
         }
-        for (int i = nreg - 1; i >= 0; i--) {
-            str_appendf(&cg->out, "  pop %%rax\n");
-            str_appendf_s(&cg->out, "  mov %%rax, %s\n", areg[i]);
+
+        // Load simple reg args directly.
+        for (int i = 0; i < e->nargs; i++) {
+            if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
+            if (!expr_is_simple_arg(e->args[i])) continue;
+            if (ai[i].kind == CALLARG_REG_INT) {
+                cg_expr(cg, e->args[i]);
+                str_appendf_s(&cg->out, "  mov %%rax, %s\n", areg[ai[i].reg]);
+            } else {
+                (void)cg_expr_to_reg_simple_arg(cg, e->args[i], "%rax", "%eax");
+                str_appendf_i64(&cg->out, "  movd %%eax, %%xmm%lld\n", (long long)ai[i].reg);
+            }
         }
+
         if (!e->lhs) die("internal: indirect call missing callee");
         cg_expr(cg, e->lhs);
         str_appendf(&cg->out, "  mov %%rax, %%r11\n");
-        str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+
+        // SysV varargs ABI: %al holds the number of used XMM regs.
+        if (xmm_used == 0) {
+            str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+        } else {
+            str_appendf_i64(&cg->out, "  mov $%d, %%eax\n", (long long)xmm_used);
+        }
         str_appendf(&cg->out, "  call *%%r11\n");
-        if (nstack > 0) {
-            str_appendf_i64(&cg->out, "  add $%d, %%rsp\n", (long long)(nstack * 8));
+
+        // If this call is used as a float expression, the return arrives in %xmm0.
+        if (e->ptr == 0 && e->base == BT_FLOAT) {
+            str_appendf(&cg->out, "  movd %%xmm0, %%eax\n");
+        }
+
+        if (stack_bytes > 0) {
+            str_appendf_i64(&cg->out, "  add $%d, %%rsp\n", (long long)stack_bytes);
         }
         if (pad) {
             str_appendf(&cg->out, "  add $8, %%rsp\n");
@@ -1488,7 +1587,8 @@ static void cg_call(CG *cg, const Expr *e) {
         if (want64) need_sext[i] = 1;
     }
 
-    int reg_used = 0;
+    int int_used = 0;
+    int xmm_used = 0;
     int stack_bytes = 0;
     for (int i = 0; i < e->nargs; i++) {
         const Expr *a = e->args[i];
@@ -1501,17 +1601,35 @@ static void cg_call(CG *cg, const Expr *e) {
             ai[i].reg = -1;
             ai[i].stack_bytes = slot;
             ai[i].struct_size = a->lval_size;
+            ai[i].is_float = 0;
             stack_bytes += slot;
-        } else if (reg_used < 6) {
-            ai[i].kind = CALLARG_REG;
-            ai[i].reg = reg_used++;
+        } else if (a && a->ptr == 0 && a->base == BT_FLOAT) {
+            if (xmm_used < 8) {
+                ai[i].kind = CALLARG_REG_XMM;
+                ai[i].reg = xmm_used++;
+                ai[i].stack_bytes = 0;
+                ai[i].struct_size = 0;
+                ai[i].is_float = 1;
+            } else {
+                ai[i].kind = CALLARG_STACK_SCALAR;
+                ai[i].reg = -1;
+                ai[i].stack_bytes = 8;
+                ai[i].struct_size = 0;
+                ai[i].is_float = 1;
+                stack_bytes += 8;
+            }
+        } else if (int_used < 6) {
+            ai[i].kind = CALLARG_REG_INT;
+            ai[i].reg = int_used++;
             ai[i].stack_bytes = 0;
             ai[i].struct_size = 0;
+            ai[i].is_float = 0;
         } else {
             ai[i].kind = CALLARG_STACK_SCALAR;
             ai[i].reg = -1;
             ai[i].stack_bytes = 8;
             ai[i].struct_size = 0;
+            ai[i].is_float = 0;
             stack_bytes += 8;
         }
     }
@@ -1527,7 +1645,9 @@ static void cg_call(CG *cg, const Expr *e) {
         if (ai[i].kind == CALLARG_STACK_SCALAR) {
             cg_expr(cg, e->args[i]);
             const Expr *a = e->args[i];
-            if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+            if (ai[i].is_float) {
+                str_appendf(&cg->out, "  mov %%eax, %%eax\n");
+            } else if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
                 str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
             }
             str_appendf(&cg->out, "  push %%rax\n");
@@ -1544,7 +1664,7 @@ static void cg_call(CG *cg, const Expr *e) {
 
     // Evaluate reg args: push complex ones, load simple ones directly at the end.
     for (int i = 0; i < e->nargs; i++) {
-        if (ai[i].kind != CALLARG_REG) continue;
+        if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
         if (!expr_is_simple_arg(e->args[i])) {
             cg_expr(cg, e->args[i]);
             str_appendf(&cg->out, "  push %%rax\n");
@@ -1552,29 +1672,48 @@ static void cg_call(CG *cg, const Expr *e) {
     }
     // Pop complex args into registers right-to-left.
     for (int i = e->nargs - 1; i >= 0; i--) {
-        if (ai[i].kind != CALLARG_REG) continue;
+        if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
         if (!expr_is_simple_arg(e->args[i])) {
-            str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
-            const Expr *a = e->args[i];
-            if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
-                str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+            if (ai[i].kind == CALLARG_REG_INT) {
+                str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
+                const Expr *a = e->args[i];
+                if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
+                    str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+                }
+            } else {
+                str_appendf(&cg->out, "  pop %%rax\n");
+                str_appendf_i64(&cg->out, "  movd %%eax, %%xmm%lld\n", (long long)ai[i].reg);
             }
         }
     }
     // Load simple const args directly into target registers.
     for (int i = 0; i < e->nargs; i++) {
-        if (ai[i].kind != CALLARG_REG) continue;
-        if (expr_is_simple_arg(e->args[i])) {
+        if (ai[i].kind != CALLARG_REG_INT && ai[i].kind != CALLARG_REG_XMM) continue;
+        if (!expr_is_simple_arg(e->args[i])) continue;
+        if (ai[i].kind == CALLARG_REG_INT) {
             (void)cg_expr_to_reg_simple_arg(cg, e->args[i], areg[ai[i].reg], areg32[ai[i].reg]);
             const Expr *a = e->args[i];
             if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
                 str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
             }
+        } else {
+            (void)cg_expr_to_reg_simple_arg(cg, e->args[i], "%rax", "%eax");
+            str_appendf_i64(&cg->out, "  movd %%eax, %%xmm%lld\n", (long long)ai[i].reg);
         }
     }
 
-    str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+    // SysV varargs ABI: %al holds the number of used XMM regs.
+    if (xmm_used == 0) {
+        str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+    } else {
+        str_appendf_i64(&cg->out, "  mov $%d, %%eax\n", (long long)xmm_used);
+    }
     str_appendf_s(&cg->out, "  call %s\n", e->callee);
+
+    // If this call is used as a float expression, the return arrives in %xmm0.
+    if (e->ptr == 0 && e->base == BT_FLOAT) {
+        str_appendf(&cg->out, "  movd %%xmm0, %%eax\n");
+    }
 
     if (stack_bytes > 0) {
         str_appendf_i64(&cg->out, "  add $%d, %%rsp\n", stack_bytes);
@@ -1608,17 +1747,20 @@ static void cg_sret_call(CG *cg, const Expr *e) {
             ai[i].reg = -1;
             ai[i].stack_bytes = slot;
             ai[i].struct_size = a->lval_size;
+            ai[i].is_float = 0;
             stack_bytes += slot;
         } else if (reg_used < 5) {
-            ai[i].kind = CALLARG_REG;
+            ai[i].kind = CALLARG_REG_INT;
             ai[i].reg = reg_used++;
             ai[i].stack_bytes = 0;
             ai[i].struct_size = 0;
+            ai[i].is_float = 0;
         } else {
             ai[i].kind = CALLARG_STACK_SCALAR;
             ai[i].reg = -1;
             ai[i].stack_bytes = 8;
             ai[i].struct_size = 0;
+            ai[i].is_float = 0;
             stack_bytes += 8;
         }
     }
@@ -1646,7 +1788,7 @@ static void cg_sret_call(CG *cg, const Expr *e) {
 
     // Evaluate reg args: push complex ones, load simple ones directly at the end.
     for (int i = 0; i < e->nargs; i++) {
-        if (ai[i].kind != CALLARG_REG) continue;
+        if (ai[i].kind != CALLARG_REG_INT) continue;
         if (!expr_is_simple_arg(e->args[i])) {
             cg_expr(cg, e->args[i]);
             str_appendf(&cg->out, "  push %%rax\n");
@@ -1658,14 +1800,14 @@ static void cg_sret_call(CG *cg, const Expr *e) {
 
     // Pop complex args into registers right-to-left.
     for (int i = e->nargs - 1; i >= 0; i--) {
-        if (ai[i].kind != CALLARG_REG) continue;
+        if (ai[i].kind != CALLARG_REG_INT) continue;
         if (!expr_is_simple_arg(e->args[i])) {
             str_appendf_s(&cg->out, "  pop %s\n", areg[ai[i].reg]);
         }
     }
     // Load simple args directly into target registers.
     for (int i = 0; i < e->nargs; i++) {
-        if (ai[i].kind != CALLARG_REG) continue;
+        if (ai[i].kind != CALLARG_REG_INT) continue;
         if (expr_is_simple_arg(e->args[i])) {
             (void)cg_expr_to_reg_simple_arg(cg, e->args[i], areg[ai[i].reg], areg32[ai[i].reg]);
         }
@@ -4107,6 +4249,12 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                     }
                 }
 
+                // SysV ABI: float return values live in %xmm0.
+                // Internally, float expressions are represented as raw 32-bit bits in %eax.
+                if (cg->ret_ptr == 0 && cg->ret_base == BT_FLOAT) {
+                    str_appendf(&cg->out, "  movd %%eax, %%xmm0\n");
+                }
+
                 str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
             }
             return;
@@ -4534,6 +4682,17 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
             } else {
                 str_appendf_si(&cg.out, "  mov %s, %d(%%rbp)\n", areg64[pi], (long long)off);
             }
+        }
+
+        // Spill incoming float args (%xmm0..%xmm7) to their stack slots (bound params).
+        static const char *xmmreg[8] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"};
+        for (int xi = 0; xi < 8; xi++) {
+            int off = fn->xmm_param_offsets[xi];
+            if (off == 0) continue;
+            if (stmt_count_var_uses(fn->body, off) == 0) continue;
+            // Move low 32-bit float payload to GPR, then store.
+            str_appendf_s(&cg.out, "  movd %s, %%eax\n", xmmreg[xi]);
+            str_appendf_i64(&cg.out, "  mov %%eax, %d(%%rbp)\n", (long long)off);
         }
 
         int ret_label = new_label(&cg);

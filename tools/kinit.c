@@ -8,10 +8,10 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	(void)argv;
 	(void)envp;
 
-	(void)mc_write_str(1, "[kinit] execve(/bin/cat /hello.txt)\\n");
-	char *a[] = { (char *)"/bin/cat", (char *)"/hello.txt", 0 };
+	(void)mc_write_str(1, "[kinit] execve(/bin/ls -l /)\\n");
+	char *a[] = { (char *)"/bin/ls", (char *)"-l", (char *)"/", 0 };
 	char *e[] = { (char *)"PATH=/bin", 0 };
-	mc_i64 r = mc_sys_execve("/bin/cat", a, e);
+	mc_i64 r = mc_sys_execve("/bin/ls", a, e);
 	(void)mc_write_str(1, "[kinit] execve failed: ");
 	(void)mc_write_i64_dec(1, r);
 	(void)mc_write_str(1, "\\n");

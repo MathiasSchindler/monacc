@@ -3,6 +3,85 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Linux x86_64 ABI constants (subset used by monacc userland).
+
+// openat(2)
+#define AT_FDCWD (-100)
+
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR 2
+#define O_CREAT 0100
+#define O_TRUNC 01000
+#define O_APPEND 02000
+#define O_NOFOLLOW 0400000
+#define O_CLOEXEC 02000000
+#define O_DIRECTORY 0200000
+
+// *at(2)
+#define AT_SYMLINK_NOFOLLOW 0x100
+
+// lseek(2)
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+// stat(2) bits
+#define S_IFMT 0170000
+#define S_IFREG 0100000
+#define S_IFDIR 0040000
+#define S_IFLNK 0120000
+
+// Linux x86_64 struct stat (kernel ABI). Matches core/mc_syscall.h.
+struct mc_stat {
+	uint64_t st_dev;
+	uint64_t st_ino;
+	uint64_t st_nlink;
+	uint32_t st_mode;
+	uint32_t st_uid;
+	uint32_t st_gid;
+	uint32_t __pad0;
+	uint64_t st_rdev;
+	int64_t st_size;
+	int64_t st_blksize;
+	int64_t st_blocks;
+	uint64_t st_atime;
+	uint64_t st_atime_nsec;
+	uint64_t st_mtime;
+	uint64_t st_mtime_nsec;
+	uint64_t st_ctime;
+	uint64_t st_ctime_nsec;
+	int64_t __unused[3];
+};
+
+// uname(2)
+struct mc_utsname {
+	char sysname[65];
+	char nodename[65];
+	char release[65];
+	char version[65];
+	char machine[65];
+	char domainname[65];
+};
+
+// getdents64(2) entry (Linux kernel ABI)
+struct mc_dirent64 {
+	uint64_t d_ino;
+	int64_t d_off;
+	uint16_t d_reclen;
+	uint8_t d_type;
+	char d_name[];
+} __attribute__((packed));
+
+// d_type values (DT_*) used by ls
+#define DT_UNKNOWN 0
+#define DT_FIFO 1
+#define DT_CHR 2
+#define DT_DIR 4
+#define DT_BLK 6
+#define DT_REG 8
+#define DT_LNK 10
+
 /* Page size */
 #define PAGE_SIZE 4096
 #define PAGE_SHIFT 12
@@ -63,3 +142,15 @@ int mb2_find_first_module(uint64_t mb2_info_ptr, uint64_t *mod_start_out, uint64
 
 int cpio_newc_find(const uint8_t *cpio, uint64_t cpio_sz, const char *path,
 			  const uint8_t **data_out, uint64_t *size_out);
+
+int cpio_newc_stat(const uint8_t *cpio, uint64_t cpio_sz, const char *path,
+			  uint32_t *mode_out, uint64_t *size_out);
+
+// Returns 1 if any entry exists under dirpath (dirpath + "/" prefix), else 0.
+int cpio_newc_has_prefix(const uint8_t *cpio, uint64_t cpio_sz, const char *dirpath);
+
+// Iterate immediate children of dirpath (no leading '/', no trailing '/'; root is "").
+// Returns 1 and writes name/type on success, 0 on end, <0 on error.
+int cpio_newc_dir_next(const uint8_t *cpio, uint64_t cpio_sz, const char *dirpath,
+			       uint64_t *scan_off_inout, char *name_out, uint64_t name_cap,
+			       uint8_t *dtype_out);

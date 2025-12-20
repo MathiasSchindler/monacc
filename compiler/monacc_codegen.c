@@ -1346,6 +1346,18 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
 
 // Helper: emit code for function calls (EXPR_CALL).
 static void cg_call(CG *cg, const Expr *e) {
+    // Minimal builtin support.
+    // GCC/Clang treat __builtin_unreachable() as a hint that the control path
+    // is impossible; if executed, it's undefined behavior. We lower it to a
+    // UD2 trap (0x0f 0x0b) without emitting an external call.
+    if (e->callee[0] != 0 && mc_strcmp(e->callee, "__builtin_unreachable") == 0) {
+        if (e->nargs != 0) {
+            die("__builtin_unreachable expects 0 args");
+        }
+        str_appendf(&cg->out, "  .byte 15, 11\n");
+        return;
+    }
+
     // Built-in syscalls (Linux x86_64): mc_syscall0..6 (and legacy sb_syscall0..6)
     // Signature: *_syscallN(n, a1..aN) -> rax
     if (e->callee[0] != 0 &&
@@ -4531,6 +4543,9 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
                 // Each global in its own section for --gc-sections.
                 // Needs to be writable for cases like `static char s[] = "abc"; s[0] = ...;`.
                 str_appendf_s(&cg.out, ".section .data.%s,\"aw\",@progbits\n", gv->name);
+                if (!gv->is_static) {
+                    str_appendf_s(&cg.out, ".globl %s\n", gv->name);
+                }
                 str_appendf_is(&cg.out, ".align %d\n%s:\n", (long long)align, gv->name);
 
                 if (gv->init_str_id >= prg->nstrs) {
@@ -4562,6 +4577,9 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
             // Default: .bss (zero-init only)
             // Each global in its own section for --gc-sections
             str_appendf_s(&cg.out, ".section .bss.%s,\"aw\",@nobits\n", gv->name);
+            if (!gv->is_static) {
+                str_appendf_s(&cg.out, ".globl %s\n", gv->name);
+            }
             str_appendf_is(&cg.out, ".align %d\n%s:\n", (long long)align, gv->name);
             str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size);
         }

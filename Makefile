@@ -58,6 +58,10 @@ SELFTEST_BINSHELL_BUILD ?= 0
 SELFTEST_BINSHELL_TOOLS ?= 0
 SELFTEST_BINSHELL_TOOLS_HARNESS ?= 0
 
+# Compiler regression tests for known bug fixes (see docs/monaccbugs.md).
+# Runs as part of `make test` by default; set SELFTEST_MONACCBUGS=0 to skip.
+SELFTEST_MONACCBUGS ?= 1
+
 # Repo guardrails (fast grep-based checks).
 SELFTEST_REPO_GUARDS ?= 1
 
@@ -414,6 +418,7 @@ test: all
 	mathf_rc=0; \
 	stage2_rc=0; \
 	stage3_rc=0; \
+	monaccbugs_rc=0; \
 	binsh_rc=0; \
 	matrix_rc=0; repo_guard_rc=0; \
 	for ex in $(EXAMPLES); do \
@@ -467,6 +472,11 @@ test: all
 		SELFTEST_STAGE3_STRICT=1 $(HOST_BASH) tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
 		echo ""; \
 	fi; \
+	if [ "$(SELFTEST_MONACCBUGS)" = "1" ]; then \
+		echo "==> Regression: compiler bugfix suite (docs/monaccbugs.md)"; \
+		$(HOST_BASH) tests/compiler/monaccbugs.sh; monaccbugs_rc=$$?; \
+		echo ""; \
+	fi; \
 	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
 		echo "==> Probe: run minimal script under ./bin/sh"; \
 		./bin/sh tests/tools/binsh-minimal.sh; binsh_rc=$$?; \
@@ -516,10 +526,10 @@ test: all
 		echo "Wrote build/matrix/matrixstat.tsv"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$repo_guard_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$monaccbugs_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$repo_guard_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, monaccbugs: exit $$monaccbugs_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

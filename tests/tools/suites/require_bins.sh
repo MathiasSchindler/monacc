@@ -98,4 +98,7 @@ require_bin xxd
 require_bin cpio
 require_bin uncpio
 
+# Experimental text-mode browser (WP0/WP1: offline renderer)
+require_bin browse
+
 exit 0

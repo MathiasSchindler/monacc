@@ -1,0 +1,4 @@
+scheme http
+host example.com
+port 80
+path /

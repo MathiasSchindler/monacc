@@ -5,7 +5,7 @@ set -eu
 # Output: release/monacc-<version>.tar.gz
 # Optional: also produce an initramfs with built binaries.
 
-VERSION=0.1
+VERSION=0.1.1
 WANT_INITRAMFS=1
 INITRAMFS_STRICT=0
 
@@ -34,6 +34,7 @@ ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
 OUT_DIR="$ROOT_DIR/release"
 OUT_TAR="$OUT_DIR/monacc-$VERSION.tar.gz"
+OUT_INITRAMFS_CPIO="$OUT_DIR/monacc-$VERSION-initramfs.cpio"
 OUT_INITRAMFS="$OUT_DIR/monacc-$VERSION-initramfs.cpio.gz"
 
 # Stage into a temporary directory.
@@ -86,6 +87,10 @@ mkdir -p "$STAGE_ROOT/compiler" "$STAGE_ROOT/core" "$STAGE_ROOT/tools"
 
 # compiler/
 cp -a "$ROOT_DIR/compiler"/*.c "$ROOT_DIR/compiler"/*.h "$STAGE_ROOT/compiler/"
+# Optional linker script used by monacc when present.
+if [ -f "$ROOT_DIR/compiler/minimal.ld" ]; then
+	cp -a "$ROOT_DIR/compiler/minimal.ld" "$STAGE_ROOT/compiler/"
+fi
 
 # core/
 cp -a "$ROOT_DIR/core"/*.c "$ROOT_DIR/core"/*.h "$STAGE_ROOT/core/"
@@ -135,7 +140,10 @@ CORE_TLS_SRC := \
 	core/mc_tls13_transcript.c \
 	core/mc_tls13_handshake.c
 
-CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC)
+CORE_MATH_SRC := \
+	core/mc_mathf.c
+
+CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC) $(CORE_MATH_SRC)
 
 # Tools build against the syscall-only core subset.
 CORE_TOOL_SRC := $(CORE_COMMON_SRC)
@@ -244,8 +252,10 @@ maybe_build_and_initramfs() {
 		cd "$INIT_ROOT"
 		find . -print0 | LC_ALL=C sort -z | cpio --null -o --format=newc --owner=0:0 > "$TMP_CPIO"
 	)
+	cp -a "$TMP_CPIO" "$OUT_INITRAMFS_CPIO"
 	gzip -n -9 -c "$TMP_CPIO" > "$OUT_INITRAMFS"
 	rm -f "$TMP_CPIO"
+	echo "Wrote $OUT_INITRAMFS_CPIO" >&2
 	echo "Wrote $OUT_INITRAMFS" >&2
 }
 

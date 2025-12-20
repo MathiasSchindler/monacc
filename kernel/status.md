@@ -9,7 +9,7 @@ This directory contains a minimal x86_64 kernel intended to run monacc-built use
 - Boot: Multiboot2 via GRUB ISO (BIOS + UEFI)
 - Console: COM1 serial (QEMU `-serial stdio`)
 - Privilege: ring 0 kernel + ring 3 user entry
-- Syscall entry: `int 0x80` IDT gate (DPL=3) with TSS `rsp0` stack switching
+- Syscall entry: x86_64 `syscall`/`sysretq` (Linux syscall ABI) with a dedicated kernel syscall stack; an `int 0x80` gate is also installed for debugging/legacy tests
 - Exceptions: minimal handlers for #UD/#DF/#GP/#PF dump state to serial and halt
 - Deterministic termination: `isa-debug-exit` on port `0xF4`
 
@@ -19,6 +19,7 @@ This directory contains a minimal x86_64 kernel intended to run monacc-built use
 - Phase 1: ring 3 entry + `exit(60)`
 - Phase 2: `read(0)` + `write(1/2)` over serial + user test prints then exits
 - Phase 3: `mmap`/`munmap` with physical page allocator (PMM)
+- Phase 4 (partial): minimal ELF64 loader + run embedded monacc-built tool (`bin/echo`)
 
 ### monacc compatibility status
 
@@ -64,7 +65,7 @@ Expected serial output includes:
 - `monacc kernel`
 - `Entering userland...`
 - user message (Phase 2 test)
-- `Process exited with code 42`
+- `Process exited with code 0`
 
 ## Key pitfalls to remember
 
@@ -83,6 +84,6 @@ Expected serial output includes:
 
 ## Suggested next steps
 
-- Phase 4: Virtual memory - set up page tables to map user memory properly
-- Phase 5: `brk`/`sbrk` syscalls for heap management
+- Phase 5: In-memory filesystem (initramfs/CPIO) so we can load arbitrary tools without embedding
+- Add `brk`/`sbrk` (or switch malloc to `mmap`) if/when a tool needs it
 - Start a small “syscall coverage” checklist mapping monacc tools to required syscalls.

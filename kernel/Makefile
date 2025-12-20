@@ -15,6 +15,11 @@ KERNEL_BIN := $(ISO_DIR)/boot/kernel.elf
 GRUB_CFG := $(ISO_DIR)/boot/grub/grub.cfg
 DEBUGCON_LOG := $(BUILD)/debugcon.log
 
+# Optional initramfs (uncompressed newc cpio). Pass as a Multiboot2 module:
+#   make -C kernel INITRAMFS=../release/monacc-0.1.1-test2-initramfs.cpio run
+INITRAMFS ?=
+INITRAMFS_ISO := $(ISO_DIR)/boot/initramfs.cpio
+
 # UEFI firmware (OVMF). Optional: use the `run-uefi-*` targets.
 OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS_TEMPLATE ?= /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -37,11 +42,17 @@ OBJS := \
 	$(BUILD)/arch/except.o \
 	$(BUILD)/arch/idt.o \
 	$(BUILD)/arch/gdt.o \
+	$(BUILD)/arch/syscall.o \
+	$(BUILD)/arch/syscall_entry.o \
 	$(BUILD)/arch/gdt_reload.o \
 	$(BUILD)/arch/isr.o \
 	$(BUILD)/arch/lowlevel.o \
+	$(BUILD)/boot/mb2.o \
+	$(BUILD)/elf/elf.o \
+	$(BUILD)/fs/cpio_newc.o \
 	$(BUILD)/mm/pmm.o \
-	$(BUILD)/user/test_mmap.o
+	$(BUILD)/user/test_mmap.o \
+	$(BUILD)/user/echo_blob.o
 
 .PHONY: all clean iso run elf
 
@@ -53,11 +64,17 @@ $(BUILD):
 $(BUILD)/boot:
 	mkdir -p $(BUILD)/boot
 
+$(BUILD)/fs:
+	mkdir -p $(BUILD)/fs
+
 $(BUILD)/arch:
 	mkdir -p $(BUILD)/arch
 
 $(BUILD)/boot/multiboot2.o: boot/multiboot2.S | $(BUILD)/boot
 	$(AS) $(ASFLAGS) -o $@ $<
+
+$(BUILD)/boot/mb2.o: boot/mb2.c include/kernel.h | $(BUILD)/boot
+	$(CC) $(CFLAGS) boot/mb2.c -o $@
 
 $(BUILD)/main.o: main.c include/kernel.h | $(BUILD)
 	$(CC) $(CFLAGS) main.c -o $@
@@ -74,8 +91,14 @@ $(BUILD)/arch/idt.o: arch/idt.c include/kernel.h | $(BUILD)/arch
 $(BUILD)/arch/gdt.o: arch/gdt.c include/kernel.h | $(BUILD)/arch
 	$(CC) $(CFLAGS) arch/gdt.c -o $@
 
+$(BUILD)/arch/syscall.o: arch/syscall.c include/kernel.h | $(BUILD)/arch
+	$(CC) $(CFLAGS) arch/syscall.c -o $@
+
 $(BUILD)/arch/isr.o: arch/isr.S | $(BUILD)/arch
 	$(AS) $(ASFLAGS) -o $@ arch/isr.S
+
+$(BUILD)/arch/syscall_entry.o: arch/syscall_entry.S | $(BUILD)/arch
+	$(AS) $(ASFLAGS) -o $@ arch/syscall_entry.S
 
 $(BUILD)/arch/lowlevel.o: arch/lowlevel.S | $(BUILD)/arch
 	$(AS) $(ASFLAGS) -o $@ arch/lowlevel.S
@@ -86,6 +109,15 @@ $(BUILD)/arch/gdt_reload.o: arch/gdt_reload.S | $(BUILD)/arch
 $(BUILD)/mm:
 	mkdir -p $(BUILD)/mm
 
+$(BUILD)/elf:
+	mkdir -p $(BUILD)/elf
+
+$(BUILD)/elf/elf.o: elf/elf.c include/kernel.h | $(BUILD)/elf
+	$(CC) $(CFLAGS) elf/elf.c -o $@
+
+$(BUILD)/fs/cpio_newc.o: fs/cpio_newc.c include/kernel.h | $(BUILD)/fs
+	$(CC) $(CFLAGS) fs/cpio_newc.c -o $@
+
 $(BUILD)/mm/pmm.o: mm/pmm.c include/kernel.h | $(BUILD)/mm
 	$(CC) $(CFLAGS) mm/pmm.c -o $@
 
@@ -95,13 +127,17 @@ $(BUILD)/user:
 $(BUILD)/user/test_mmap.o: user/test_mmap.S | $(BUILD)/user
 	$(AS) $(ASFLAGS) -o $@ user/test_mmap.S
 
+$(BUILD)/user/echo_blob.o: user/echo_blob.S ../bin/echo | $(BUILD)/user
+	$(AS) $(ASFLAGS) -o $@ user/echo_blob.S
+
 elf: $(KERNEL_ELF)
 
 $(KERNEL_ELF): $(OBJS) link.ld | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 $(GRUB_CFG): | $(ISO_DIR)/boot/grub
-	printf '%s\n' \
+	{ \
+		printf '%s\n' \
 		'insmod serial' \
 		'insmod terminal_serial' \
 		'insmod multiboot2' \
@@ -111,8 +147,12 @@ $(GRUB_CFG): | $(ISO_DIR)/boot/grub
 		'' \
 		'echo "[grub] loaded grub.cfg"' \
 		'echo "[grub] booting kernel..."' \
-		'multiboot2 /boot/kernel.elf' \
-		'boot' > $@
+		'multiboot2 /boot/kernel.elf'; \
+		if [ -n "$(INITRAMFS)" ]; then \
+			printf '%s\n' 'module2 /boot/initramfs.cpio initramfs'; \
+		fi; \
+		printf '%s\n' 'boot'; \
+	} > $@
 
 $(ISO_DIR)/boot/grub:
 	mkdir -p $@
@@ -120,12 +160,22 @@ $(ISO_DIR)/boot/grub:
 $(KERNEL_BIN): $(KERNEL_ELF) | $(ISO_DIR)/boot
 	cp $(KERNEL_ELF) $@
 
+ifneq ($(strip $(INITRAMFS)),)
+$(INITRAMFS_ISO): $(INITRAMFS) | $(ISO_DIR)/boot
+	cp $(INITRAMFS) $@
+endif
+
 $(ISO_DIR)/boot:
 	mkdir -p $@
 
 iso: $(BUILD)/kernel.iso
 
-$(BUILD)/kernel.iso: $(KERNEL_BIN) $(GRUB_CFG)
+ISO_DEPS := $(KERNEL_BIN) $(GRUB_CFG)
+ifneq ($(strip $(INITRAMFS)),)
+ISO_DEPS += $(INITRAMFS_ISO)
+endif
+
+$(BUILD)/kernel.iso: $(ISO_DEPS)
 	grub-mkrescue -o $@ $(ISO_DIR) >/dev/null
 
 $(OVMF_VARS):

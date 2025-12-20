@@ -42,18 +42,40 @@ static uint64_t make_seg(uint8_t access, uint8_t flags) {
 }
 
 static void set_tss_desc(int idx, uint64_t base, uint32_t limit) {
-	uint64_t lo = 0;
-	lo |= (limit & 0xFFFFULL);
-	lo |= (base & 0xFFFFFFULL) << 16;
-	lo |= 0x89ULL << 40; /* present | type=available TSS (0x9) */
-	lo |= ((uint64_t)(limit >> 16) & 0xFULL) << 48;
-	lo |= ((base >> 24) & 0xFFULL) << 56;
+	/* Build the 16-byte 64-bit TSS descriptor byte-by-byte.
+	 * Avoid wide left shifts here: monacc has historically had issues that can
+	 * silently produce an invalid descriptor, and then `ltr` will #GP. */
+	uint8_t *p = (uint8_t *)&gdt[idx];
 
-	uint64_t hi = 0;
-	hi |= (base >> 32) & 0xFFFFFFFFULL;
+	/* bytes 0-1: limit[0:15] */
+	p[0] = (uint8_t)(limit);
+	p[1] = (uint8_t)(limit >> 8);
 
-	gdt[idx] = lo;
-	gdt[idx + 1] = hi;
+	/* bytes 2-4: base[0:23] */
+	p[2] = (uint8_t)(base);
+	p[3] = (uint8_t)(base >> 8);
+	p[4] = (uint8_t)(base >> 16);
+
+	/* byte 5: access (P=1, DPL=0, S=0, type=0x9 available TSS) */
+	p[5] = 0x89;
+
+	/* byte 6: limit[16:19] in low nibble; flags in high nibble (0 for TSS) */
+	p[6] = (uint8_t)((limit >> 16) & 0x0F);
+
+	/* byte 7: base[24:31] */
+	p[7] = (uint8_t)(base >> 24);
+
+	/* bytes 8-11: base[32:63] */
+	p[8] = (uint8_t)(base >> 32);
+	p[9] = (uint8_t)(base >> 40);
+	p[10] = (uint8_t)(base >> 48);
+	p[11] = (uint8_t)(base >> 56);
+
+	/* bytes 12-15: reserved */
+	p[12] = 0;
+	p[13] = 0;
+	p[14] = 0;
+	p[15] = 0;
 }
 
 extern void gdt_reload(uint16_t code_sel, uint16_t data_sel);

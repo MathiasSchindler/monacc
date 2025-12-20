@@ -5,11 +5,16 @@ void serial_write(const char *s);
 void gdt_tss_init(void);
 void tss_load(void);
 void idt_init(void);
+void syscall_init(void);
 
 /* Get user program address from linker symbol via function pointer trick.
  * This avoids monacc issues with extern array declarations. */
 void userprog_start_func(void);
 void userprog_end_func(void);
+
+/* Embedded monacc-built ELF tools (from user/*.S incbin). */
+void user_elf_echo_start(void);
+void user_elf_echo_end(void);
 
 struct regs {
 	uint64_t r15;
@@ -33,6 +38,20 @@ static void kmemcpy(void *dst, const void *src, size_t n) {
 	uint8_t *d = (uint8_t *)dst;
 	const uint8_t *s = (const uint8_t *)src;
 	for (size_t i = 0; i < n; i++) d[i] = s[i];
+}
+
+static uint64_t align_down_u64(uint64_t v, uint64_t a) {
+	return v & ~(a - 1);
+}
+
+static uint64_t user_stack_push_bytes(uint64_t sp, const void *data, uint64_t n) {
+	sp -= n;
+	kmemcpy((void *)sp, data, (size_t)n);
+	return sp;
+}
+
+static uint64_t user_stack_push_u64(uint64_t sp, uint64_t v) {
+	return user_stack_push_bytes(sp, &v, 8);
 }
 
 static void serial_write_u64_dec(uint64_t v) {
@@ -175,6 +194,12 @@ void syscall_handler(struct regs *r) {
 		serial_write("\n");
 		outb(0xF4, 0x10);
 		halt_forever();
+	case 231: /* exit_group(code) */
+		serial_write("Process exited with code ");
+		serial_write_u64_dec(r->rdi);
+		serial_write("\n");
+		outb(0xF4, 0x10);
+		halt_forever();
 	default:
 		/* -ENOSYS */
 		r->rax = (uint64_t)(-(int64_t)38);
@@ -195,20 +220,96 @@ __attribute__((noreturn)) void kmain(void) {
 	serial_write("[k] gdt_tss_init...\n");
 	gdt_tss_init();
 	serial_write("[k] gdt_tss_init ok\n");
-	serial_write("[k] tss_load...\n");
-	tss_load();
-	serial_write("[k] tss_load ok\n");
 	serial_write("[k] idt_init...\n");
 	idt_init();
 	serial_write("[k] idt_init ok\n");
 
-	/* Run the user program from its embedded location in the kernel.
-	 * We don't copy it because it uses RIP-relative addressing for strings.
-	 * User stack is at a separate location (0x300000). */
-	uint64_t user_stack_top = 0x300000;
-	uint64_t user_entry = (uint64_t)userprog_start_func;
-	serial_write("Entering userland...\n");
-	enter_user(user_entry, user_stack_top);
+	serial_write("[k] tss_load...\n");
+	tss_load();
+	serial_write("[k] tss_load ok\n");
+
+	serial_write("[k] syscall_init...\n");
+	syscall_init();
+	serial_write("[k] syscall_init ok\n");
+
+	/* Load and run a real monacc-built ELF tool (embedded as bytes). */
+	{
+		const uint8_t *imgp = (const uint8_t *)user_elf_echo_start;
+		uint64_t img_sz = (uint64_t)user_elf_echo_end - (uint64_t)user_elf_echo_start;
+
+		/* If GRUB provided an initramfs module, prefer loading /bin/echo from it. */
+		uint64_t mod_start = 0, mod_end = 0;
+		if (mb2_find_first_module(mb2_info_ptr, &mod_start, &mod_end) == 0) {
+			serial_write("[k] found multiboot2 module\n");
+			if (mod_end > mod_start) {
+				uint64_t m_start = mod_start & ~(uint64_t)(PAGE_SIZE - 1);
+				uint64_t m_end = (mod_end + (PAGE_SIZE - 1)) & ~(uint64_t)(PAGE_SIZE - 1);
+				if (m_end > m_start && m_start >= 0x400000) {
+					(void)pmm_reserve_pages(m_start, (uint32_t)((m_end - m_start) / PAGE_SIZE));
+				}
+			}
+			const uint8_t *f = 0;
+			uint64_t fsz = 0;
+			if (cpio_newc_find((const uint8_t *)mod_start, mod_end - mod_start, "bin/echo", &f, &fsz) == 0) {
+				serial_write("[k] initramfs: using bin/echo\n");
+				imgp = f;
+				img_sz = fsz;
+			} else {
+				serial_write("[k] initramfs: bin/echo not found; using embedded\n");
+			}
+		}
+		uint64_t user_entry = 0;
+		uint64_t brk_init = 0;
+
+		serial_write("[k] elf_load_exec(echo)...\n");
+		if (elf_load_exec(imgp, img_sz, &user_entry, &brk_init) != 0) {
+			serial_write("[k] elf_load_exec failed\n");
+			halt_forever();
+		}
+		serial_write("[k] elf_load_exec ok\n");
+
+		/* Allocate a user stack in free RAM and set up argc/argv.
+		 * Stack format: argc, argv[], NULL, envp(NULL), auxv(AT_NULL).
+		 */
+		uint64_t stack_pages = 8;
+		uint64_t stack_base = pmm_alloc_pages((uint32_t)stack_pages);
+		if (stack_base == 0) {
+			serial_write("[k] no memory for user stack\n");
+			halt_forever();
+		}
+		uint64_t sp = stack_base + stack_pages * PAGE_SIZE;
+		sp = align_down_u64(sp, 16);
+
+		/* Copy argument strings into user stack memory. */
+		const char *arg0 = "echo";
+		const char *arg1 = "hello";
+		uint64_t arg0_len = 5;
+		uint64_t arg1_len = 6;
+
+		sp = user_stack_push_bytes(sp, arg1, arg1_len);
+		uint64_t u_arg1 = sp;
+		sp = user_stack_push_bytes(sp, arg0, arg0_len);
+		uint64_t u_arg0 = sp;
+
+		/* Align before pushing pointers. */
+		sp = align_down_u64(sp, 16);
+
+		/* auxv terminator: AT_NULL (0), 0 */
+		sp = user_stack_push_u64(sp, 0);
+		sp = user_stack_push_u64(sp, 0);
+		/* envp terminator */
+		sp = user_stack_push_u64(sp, 0);
+		/* argv terminator */
+		sp = user_stack_push_u64(sp, 0);
+		/* argv[1], argv[0] */
+		sp = user_stack_push_u64(sp, u_arg1);
+		sp = user_stack_push_u64(sp, u_arg0);
+		/* argc */
+		sp = user_stack_push_u64(sp, 2);
+
+		serial_write("Entering userland...\n");
+		enter_user(user_entry, sp);
+	}
 
 	halt_forever();
 }

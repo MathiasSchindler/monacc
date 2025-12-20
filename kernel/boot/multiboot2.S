@@ -25,6 +25,9 @@ mb2_header_end:
 _start:
 	cli
 
+	/* Multiboot2: EBX points to the boot info structure. Save it before we clobber regs. */
+	movl %ebx, mb2_info_ptr
+
 	/* Temporary 32-bit stack. */
 	mov $stack_top, %esp
 
@@ -116,6 +119,12 @@ gdt64_ptr:
 gdt64_end:
 
 .section .bss
+/* Multiboot2 info pointer (physical address, identity-mapped). */
+.align 8
+.global mb2_info_ptr
+mb2_info_ptr:
+	.quad 0
+
 /* Identity map the first 1GiB using 2MiB pages. */
 .align 4096
 pml4:

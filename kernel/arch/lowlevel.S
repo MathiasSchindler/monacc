@@ -47,6 +47,25 @@ read_cr2:
     mov %cr2, %rax
     ret
 
+/* rdmsr(msr: edi) -> rax */
+.global rdmsr
+rdmsr:
+    mov %edi, %ecx
+    rdmsr
+    shl $32, %rdx
+    or %rdx, %rax
+    ret
+
+/* wrmsr(msr: edi, val: rsi) */
+.global wrmsr
+wrmsr:
+    mov %edi, %ecx
+    mov %rsi, %rax
+    mov %rsi, %rdx
+    shr $32, %rdx
+    wrmsr
+    ret
+
 .global halt_forever
 halt_forever:
     cli

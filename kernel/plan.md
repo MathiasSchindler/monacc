@@ -135,7 +135,7 @@ On x86_64:
 - **`SYSCALL/SYSRET`**: faster, but **does not automatically switch stacks via the TSS**.
    - You must arrange a safe kernel stack yourself (commonly `swapgs` + per-thread stack pointer in GS).
 
-This plan uses **`int 0x80` first** (Phases 1–2), then optionally upgrades to **`SYSCALL/SYSRET`** once processes/scheduling exist.
+This kernel now uses **`SYSCALL/SYSRET`** for userland (to match monacc-built binaries) and switches to a dedicated kernel syscall stack in the entry stub. A future scheduler can replace this with a per-thread stack.
 
 ---
 
@@ -203,6 +203,7 @@ kernel/
 **New components**:
 - GDT with user segments (ring 3 code/data)
 - IDT with syscall handler (**interrupt 0x80** initially)
+- IDT with exception handlers (for early fault debugging)
 - TSS for kernel stack on ring transitions (used by interrupt gates)
 - Syscall dispatch table (stub for now)
 - `exit(code)` syscall → print exit code, halt
@@ -211,11 +212,10 @@ kernel/
 ```c
 void _start(void) {
    // Raw syscall: exit(42)
-   // Phase 1 uses int 0x80 for syscalls.
    asm volatile(
       "mov $60, %rax\n"
       "mov $42, %rdi\n"
-      "int $0x80\n"
+   "syscall\n"
       ::: "rax", "rdi");
 }
 ```
@@ -328,6 +328,12 @@ int main() {
 - `execve()` - replace current process image
 - Argument/environment passing (set up user stack)
 - `/init` as PID 1
+
+**Bring-up shortcut (current implementation)**:
+- Embed a real monacc-built tool (e.g. `bin/echo`) as a blob via `.incbin`
+- Load as **ET_EXEC** at its linked `p_vaddr` (typically `0x400000`) using identity mapping
+- Reserve those pages in the PMM so `mmap()` doesn’t hand them out
+- Build a minimal initial stack with `argc/argv` and enter ring3 at `e_entry`
 
 **Syscalls**: `execve` (59)
 
@@ -480,7 +486,7 @@ kernel/
 │
 ├── arch/
 │   ├── idt.c            # IDT, interrupt handlers
-│   ├── syscall.c        # Syscall dispatch (int 0x80 first; SYSCALL later)
+│   ├── syscall.c        # Syscall init (MSRs) + dispatch (SYSCALL/SYSRET)
 │   ├── paging.c         # Page table management
 │   └── serial.c         # COM1 driver
 │

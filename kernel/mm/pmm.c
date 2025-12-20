@@ -121,3 +121,25 @@ void pmm_free_pages(uint64_t paddr, uint32_t n) {
 		pmm_free_page(paddr + (uint64_t)i * PAGE_SIZE);
 	}
 }
+
+/* Reserve n contiguous pages starting at paddr.
+ * This is used for loading ET_EXEC user programs at fixed addresses.
+ * Returns 0 on success, non-zero on invalid range.
+ */
+int pmm_reserve_pages(uint64_t paddr, uint32_t n) {
+	uint32_t i;
+	if (n == 0) return 0;
+	if (paddr < PMM_START_ADDR || paddr >= PMM_END_ADDR) return -1;
+	if (paddr & (PAGE_SIZE - 1)) return -2;
+	if (paddr + (uint64_t)n * PAGE_SIZE > PMM_END_ADDR) return -3;
+
+	for (i = 0; i < n; i++) {
+		uint64_t a = paddr + (uint64_t)i * PAGE_SIZE;
+		uint32_t page = (uint32_t)((a - PMM_START_ADDR) / PAGE_SIZE);
+		uint32_t byte_idx = page / 8;
+		uint32_t bit_idx = page % 8;
+		uint8_t mask = (uint8_t)(1 << bit_idx);
+		pmm_bitmap[byte_idx] = pmm_bitmap[byte_idx] | mask;
+	}
+	return 0;
+}

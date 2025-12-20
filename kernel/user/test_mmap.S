@@ -17,7 +17,7 @@ userprog_start_func:
 	mov $1, %rdi           /* stdout */
 	lea msg_start(%rip), %rsi
 	mov $2, %rdx           /* count */
-	int $0x80
+	syscall
 
 	/* mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) */
 	/* syscall 9: rdi=addr, rsi=len, rdx=prot, r10=flags, r8=fd, r9=offset */
@@ -28,7 +28,7 @@ userprog_start_func:
 	mov $0x22, %r10        /* flags = MAP_PRIVATE | MAP_ANONYMOUS */
 	mov $-1, %r8           /* fd = -1 */
 	xor %r9, %r9           /* offset = 0 */
-	int $0x80
+	syscall
 
 	/* Check if mmap failed (negative return = error) */
 	test %rax, %rax
@@ -52,18 +52,18 @@ userprog_start_func:
 	mov $1, %rdi           /* stdout */
 	lea msg_ok(%rip), %rsi /* buf */
 	mov $8, %rdx           /* count */
-	int $0x80
+	syscall
 
 	/* munmap the page */
 	mov $11, %rax          /* munmap */
 	mov %r12, %rdi         /* addr */
 	mov $4096, %rsi        /* len */
-	int $0x80
+	syscall
 
 	/* exit(0) - success */
 	mov $60, %rax
 	xor %rdi, %rdi
-	int $0x80
+	syscall
 
 mmap_failed:
 	/* Write failure message: "mmap fail\n" */
@@ -71,12 +71,12 @@ mmap_failed:
 	mov $1, %rdi
 	lea msg_fail(%rip), %rsi
 	mov $10, %rdx
-	int $0x80
+	syscall
 
 	/* exit(1) */
 	mov $60, %rax
 	mov $1, %rdi
-	int $0x80
+	syscall
 
 verify_failed:
 	/* Write verify failure: "verify fail\n" */
@@ -84,12 +84,12 @@ verify_failed:
 	mov $1, %rdi
 	lea msg_vfail(%rip), %rsi
 	mov $12, %rdx
-	int $0x80
+	syscall
 
 	/* exit(2) */
 	mov $60, %rax
 	mov $2, %rdi
-	int $0x80
+	syscall
 
 msg_start:
 	.ascii "A\n"

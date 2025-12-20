@@ -146,6 +146,31 @@ OUT=$(run_box_argv "$CMD" zero one two)
 EXP=$(printf 'argc=2\nat=one two\nstar=one two')
 assert_eq "sh -c argv: argc + at/star" "$EXP" "$OUT"
 
+# 14) readelf: introspect an ELF binary and parse stable fields
+OUT=$(run_box "readelf -h '$BIN/monacc' | grep '^  Class:' | sed -e 's/.*: //' | head -n 1")
+assert_eq "readelf header class" "ELF64" "$OUT"
+
+OUT=$(run_box "readelf -S '$BIN/monacc' | grep -F .text | wc -l")
+assert_eq "readelf sections includes .text" "1" "$OUT"
+
+# 15) objdump: basic output sanity (no crash + expected headers)
+OUT=$(run_box "objdump -h '$BIN/monacc' | grep -q 'file format elf64-x86-64' && objdump -h '$BIN/monacc' | grep -q '^Sections:' && objdump -h '$BIN/monacc' | grep -q '^Idx Name' && echo ok")
+assert_eq "objdump -h basic" "ok" "$OUT"
+
+# 16) cpio + xxd: create/list/extract round-trip (pipes + cwd interactions)
+OUT=$(run_box "rm -r -f '$RROOT/cpio'; mkdir -p '$RROOT/cpio/src/sub'; echo -n HELLO > '$RROOT/cpio/src/a'; echo -n WORLD > '$RROOT/cpio/src/sub/b'; cd '$RROOT/cpio/src'; echo a > '$RROOT/cpio/list'; echo sub/b >> '$RROOT/cpio/list'; cpio -o < '$RROOT/cpio/list' > '$RROOT/cpio/archive.cpio'; xxd -l 6 '$RROOT/cpio/archive.cpio' | grep -q '070701' && echo ok")
+assert_eq "cpio create + xxd magic" "ok" "$OUT"
+
+OUT=$(run_box "cpio -t < '$RROOT/cpio/archive.cpio' | sort")
+EXP=$(printf 'a\nsub/b')
+assert_eq "cpio list" "$EXP" "$OUT"
+
+OUT=$(run_box "rm -r -f '$RROOT/cpio/out1'; mkdir -p '$RROOT/cpio/out1'; cd '$RROOT/cpio/out1'; cpio -i < '$RROOT/cpio/archive.cpio'; cmp '$RROOT/cpio/src/a' '$RROOT/cpio/out1/a' >/dev/null; cmp '$RROOT/cpio/src/sub/b' '$RROOT/cpio/out1/sub/b' >/dev/null; echo ok")
+assert_eq "cpio extract + cmp" "ok" "$OUT"
+
+OUT=$(run_box "rm -r -f '$RROOT/cpio/out2'; mkdir -p '$RROOT/cpio/out2'; cd '$RROOT/cpio/out2'; uncpio < '$RROOT/cpio/archive.cpio'; cmp '$RROOT/cpio/src/a' '$RROOT/cpio/out2/a' >/dev/null; cmp '$RROOT/cpio/src/sub/b' '$RROOT/cpio/out2/sub/b' >/dev/null; echo ok")
+assert_eq "uncpio wrapper" "ok" "$OUT"
+
 if [ "$COUNT_ONLY" = "1" ]; then
   echo "$CHECKS"
 fi

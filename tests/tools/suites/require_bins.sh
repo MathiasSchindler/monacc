@@ -90,4 +90,11 @@ require_bin x25519
 require_bin tls13
 require_bin wtf
 
+# Developer tools
+require_bin readelf
+require_bin objdump
+require_bin xxd
+require_bin cpio
+require_bin uncpio
+
 exit 0

@@ -1,7 +1,7 @@
 # monacc unified build
 #
 # Usage:
-#   make        # Build compiler + all 90 tools
+#   make        # Build compiler + all tools
 #   make test   # Build everything + run all tests
 #   make clean  # Remove build artifacts
 

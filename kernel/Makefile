@@ -37,7 +37,9 @@ OBJS := \
 	$(BUILD)/arch/except.o \
 	$(BUILD)/arch/idt.o \
 	$(BUILD)/arch/gdt.o \
+	$(BUILD)/arch/gdt_reload.o \
 	$(BUILD)/arch/isr.o \
+	$(BUILD)/arch/lowlevel.o \
 	$(BUILD)/mm/pmm.o \
 	$(BUILD)/user/test_mmap.o
 
@@ -74,6 +76,12 @@ $(BUILD)/arch/gdt.o: arch/gdt.c include/kernel.h | $(BUILD)/arch
 
 $(BUILD)/arch/isr.o: arch/isr.S | $(BUILD)/arch
 	$(AS) $(ASFLAGS) -o $@ arch/isr.S
+
+$(BUILD)/arch/lowlevel.o: arch/lowlevel.S | $(BUILD)/arch
+	$(AS) $(ASFLAGS) -o $@ arch/lowlevel.S
+
+$(BUILD)/arch/gdt_reload.o: arch/gdt_reload.S | $(BUILD)/arch
+	$(AS) $(ASFLAGS) -o $@ arch/gdt_reload.S
 
 $(BUILD)/mm:
 	mkdir -p $(BUILD)/mm

@@ -24,23 +24,25 @@ This directory contains a minimal x86_64 kernel intended to run monacc-built use
 
 The kernel now builds with monacc instead of gcc/clang. Several workarounds were required:
 
-1. **No `%w` / `%b` operand modifiers in inline asm**: monacc doesn't support sized register operand modifiers like `%w0` (for 16-bit) or `%b0` (for 8-bit). Workaround: use separate `__asm__ volatile` statements with full registers, or cast to appropriately-sized types.
+1. **Keep privileged/rare instructions out of monacc-compiled C**: monacc's internal assembler is intentionally small and may reject instructions like `cli`, `hlt`, and `mov %cr2, ...`. Workaround: implement low-level CPU helpers in GNU-as `.S` stubs (see `arch/lowlevel.S`) and call them from C.
 
-2. **`sizeof(array)` returns element size, not array size**: This is a monacc bug. `sizeof(gdt)` for `uint64_t gdt[7]` returns 8 instead of 56. Workaround: hardcode sizes where needed (e.g., `7 * 8 - 1` for GDT limit).
+2. **No `%w` / `%b` operand modifiers in inline asm**: monacc doesn't support sized register operand modifiers like `%w0` (for 16-bit) or `%b0` (for 8-bit). Workaround: avoid inline asm in C where possible; otherwise use separate `__asm__ volatile` statements with full registers, or cast to appropriately-sized types.
 
-3. **Memory operand `"m"` constraint issues with lgdt/lidt**: Packed structs used as memory operands don't work reliably. Workaround: construct the GDTR/IDTR as a byte array and use register-indirect addressing (`lgdt (%r8)`).
+3. **`sizeof(array)` returns element size, not array size**: This is a monacc bug. `sizeof(gdt)` for `uint64_t gdt[7]` returns 8 instead of 56. Workaround: hardcode sizes where needed (e.g., `7 * 8 - 1` for GDT limit).
 
-4. **No `__builtin_unreachable()`**: monacc doesn't have this builtin. Workaround: use an infinite halt loop instead.
+4. **Memory operand `"m"` constraint issues with `lgdt`/`lidt`**: Packed structs used as memory operands don't work reliably. Workaround: use `.S` stubs for `lgdt`/`lidt` so C just passes a pointer.
 
-5. **`extern` array declarations create local BSS symbols**: When declaring `extern unsigned char userprog_start[]`, monacc generates a local BSS symbol instead of a proper external reference. Workaround: declare as function pointer `void userprog_start_func(void)` and cast: `(uint64_t)userprog_start_func`.
+5. **No `__builtin_unreachable()`**: monacc doesn't have this builtin. Workaround: use an infinite halt loop (e.g. `halt_forever()`) instead.
 
-6. **`static` local arrays placed on stack, not BSS**: Static local arrays like `static uint8_t kstack0[16384]` are allocated on the function stack instead of BSS. Workaround: move to file scope.
+6. **`extern` array declarations create local BSS symbols**: When declaring `extern unsigned char userprog_start[]`, monacc generates a local BSS symbol instead of a proper external reference. Workaround: declare as function pointer `void userprog_start_func(void)` and cast: `(uint64_t)userprog_start_func`.
 
-7. **`sizeof(packed struct)` returns wrong value**: For packed structs, sizeof returns an incorrect (larger) value. TSS64 should be 104 bytes but monacc returns 112. Workaround: hardcode struct sizes.
+7. **`static` local arrays placed on stack, not BSS**: Static local arrays like `static uint8_t kstack0[16384]` are allocated on the function stack instead of BSS. Workaround: move to file scope.
 
-8. **`__attribute__((packed))` not honored for struct layout**: Struct member offsets are aligned to natural boundaries regardless of packed attribute. TSS `rsp0` goes to offset 8 instead of 4. Workaround: use raw byte-level access with explicit offsets.
+8. **`sizeof(packed struct)` returns wrong value**: For packed structs, sizeof returns an incorrect (larger) value. TSS64 should be 104 bytes but monacc returns 112. Workaround: hardcode struct sizes.
 
-9. **Compound literal struct assignment only copies 8 bytes**: `tss = (struct tss64){0}` only zeros 8 bytes, not the full struct. Workaround: use explicit byte-by-byte zeroing loop.
+9. **`__attribute__((packed))` not honored for struct layout**: Struct member offsets are aligned to natural boundaries regardless of packed attribute. TSS `rsp0` goes to offset 8 instead of 4. Workaround: use raw byte-level access with explicit offsets.
+
+10. **Compound literal struct assignment only copies 8 bytes**: `tss = (struct tss64){0}` only zeros 8 bytes, not the full struct. Workaround: use explicit byte-by-byte zeroing loop.
 
 ## How to build
 

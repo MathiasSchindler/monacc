@@ -15,19 +15,23 @@
 #define MAP_ANONYMOUS 0x20
 #define MAP_FAILED   ((void *)-1)
 
-static inline void outb(uint16_t port, uint8_t val) {
-	__asm__ volatile ("outb %0, %1" :: "a"(val), "Nd"(port));
-}
+/* Low-level I/O and descriptor-table helpers are implemented in .S files.
+ * This keeps monacc-compiled C free of privileged/rare instructions that the
+ * internal assembler may not support yet.
+ */
+void outb(uint16_t port, uint8_t val);
+uint8_t inb(uint16_t port);
+void outl(uint16_t port, uint32_t val);
 
-static inline uint8_t inb(uint16_t port) {
-	uint8_t ret;
-	__asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-	return ret;
-}
+void lgdt(void *gdtr);
+void lidt(void *idtr);
+void ltr(uint16_t sel);
 
-static inline void outl(uint16_t port, uint32_t val) {
-	__asm__ volatile ("outl %0, %1" :: "a"(val), "Nd"(port));
-}
+void disable_interrupts(void);
+uint64_t read_cr2(void);
+__attribute__((noreturn)) void halt_forever(void);
+
+__attribute__((noreturn)) void enter_user(uint64_t user_rip, uint64_t user_rsp);
 
 __attribute__((noreturn)) void kmain(void);
 

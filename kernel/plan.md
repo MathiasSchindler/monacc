@@ -14,43 +14,49 @@ A minimal kernel for Linux x86_64 syscall-compatible userland, designed to run m
 
 **The kernel now compiles with monacc!** As of Phase 2, all C files are compiled with `../bin/monacc`, with only assembly files (`.S`) using GNU as.
 
+Note: monacc does not currently ship its own `as`/`ld`. The kernel build intentionally uses the host binutils (`as`, `ld`) for `.S` and final link, and keeps monacc-compiled C free of privileged/rare instructions.
+
 ### monacc limitations discovered
 
 The following issues were encountered and worked around:
 
-1. **`sizeof(array)` returns pointer size (8) instead of array size**
+1. **Privileged/rare instructions in inline asm may be rejected**
+   - Impact: instructions like `cli`, `hlt`, and `mov %cr2, ...` triggered internal-assembler errors when used from C
+   - Workaround: implement low-level helpers in GNU-as `.S` stubs (e.g. `arch/lowlevel.S`) and call them from C
+
+2. **`sizeof(array)` returns pointer size (8) instead of array size**
    - Impact: GDT limit was 7 instead of 55, causing #GP faults
    - Workaround: Hardcode array sizes as `N * element_size`
 
-2. **No `%w` or `%b` operand modifiers in inline asm**
+3. **No `%w` or `%b` operand modifiers in inline asm**
    - Impact: Can't use `movw %w0, %%ds` for sized register operands
    - Workaround: Use separate `__asm__ volatile` statements, push/pop through %r8
 
-3. **Memory operand `"m"` issues with packed structs for lgdt/lidt**
-   - Impact: Corrupted GDT register base address
-   - Workaround: Build GDTR as byte array, use register-indirect `lgdt (%r8)`
+4. **Memory operand `"m"` issues with packed structs for `lgdt`/`lidt`**
+   - Impact: Unreliable loads of GDTR/IDTR bases when attempted via inline asm memory operands
+   - Workaround: use `.S` stubs for `lgdt`/`lidt` so C just passes a pointer
 
-4. **No `__builtin_unreachable()`**
+5. **No `__builtin_unreachable()`**
    - Impact: Compiler doesn't know function won't return
-   - Workaround: Use infinite halt loop `for(;;) __asm__("hlt");`
+   - Workaround: Use a non-returning helper (e.g. `halt_forever()`) implemented in `.S`
 
-5. **`extern` array declarations create local BSS symbols**
+6. **`extern` array declarations create local BSS symbols**
    - Impact: `extern unsigned char userprog_start[]` generates local symbol at 0, not external reference
    - Workaround: Declare as function pointer `void userprog_start_func(void)` and cast to uint64_t
 
-6. **`static` local arrays placed on stack, not BSS**
+7. **`static` local arrays placed on stack, not BSS**
    - Impact: `static uint8_t kstack0[16384]` inside function uses stack space
    - Workaround: Move static arrays to file scope
 
-7. **`sizeof(packed struct)` returns wrong value**
+8. **`sizeof(packed struct)` returns wrong value**
    - Impact: TSS64 should be 104 bytes but monacc returns 112
    - Workaround: Hardcode struct sizes
 
-8. **`__attribute__((packed))` not honored for struct member offsets**
+9. **`__attribute__((packed))` not honored for struct member offsets**
    - Impact: TSS rsp0 placed at offset 8 instead of 4 (natural alignment)
    - Workaround: Use raw byte-level access with explicit offsets
 
-9. **Compound literal struct assignment only copies 8 bytes**
+10. **Compound literal struct assignment only copies 8 bytes**
    - Impact: `tss = (struct tss64){0}` only zeros 8 bytes, not full struct
    - Workaround: Use explicit byte-by-byte zeroing loop
 

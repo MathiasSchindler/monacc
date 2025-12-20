@@ -174,41 +174,11 @@ void syscall_handler(struct regs *r) {
 		serial_write_u64_dec(r->rdi);
 		serial_write("\n");
 		outb(0xF4, 0x10);
-		for (;;) __asm__ volatile("hlt");
+		halt_forever();
 	default:
 		/* -ENOSYS */
 		r->rax = (uint64_t)(-(int64_t)38);
 		return;
-	}
-}
-
-static __attribute__((noreturn)) void enter_user(uint64_t user_rip, uint64_t user_rsp) {
-	const uint64_t USER_CS = 0x18 | 3;
-	const uint64_t USER_DS = 0x20 | 3;
-
-	__asm__ volatile(
-		"cli\n"
-		"movw %w0, %%ax\n"
-		"mov %%ax, %%ds\n"
-		"mov %%ax, %%es\n"
-		"mov %%ax, %%fs\n"
-		"mov %%ax, %%gs\n"
-		"pushq %0\n"      /* SS */
-		"pushq %1\n"      /* RSP */
-		"pushfq\n"
-		"orq $0x200, (%%rsp)\n" /* IF */
-		"pushq %2\n"      /* CS */
-		"pushq %3\n"      /* RIP */
-		"iretq\n"
-		:
-		: "r"(USER_DS), "r"(user_rsp), "r"(USER_CS), "r"(user_rip)
-		: "rax", "memory");
-	for (;;) { __asm__ volatile("hlt"); }
-}
-
-static __attribute__((noreturn)) void halt_forever(void) {
-	for (;;) {
-		__asm__ volatile ("hlt");
 	}
 }
 

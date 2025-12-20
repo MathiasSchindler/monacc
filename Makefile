@@ -58,6 +58,9 @@ SELFTEST_BINSHELL_BUILD ?= 0
 SELFTEST_BINSHELL_TOOLS ?= 0
 SELFTEST_BINSHELL_TOOLS_HARNESS ?= 0
 
+# Repo guardrails (fast grep-based checks).
+SELFTEST_REPO_GUARDS ?= 1
+
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
 ifeq ($(DEBUG),1)
 CFLAGS := -O0 -g $(CFLAGS_BASE)
@@ -407,7 +410,7 @@ test: all
 	stage2_rc=0; \
 	stage3_rc=0; \
 	binsh_rc=0; \
-	matrix_rc=0; \
+	matrix_rc=0; repo_guard_rc=0; \
 	for ex in $(EXAMPLES); do \
 		$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) examples/$$ex.c -o build/test/$$ex 2>/dev/null && \
 		./build/test/$$ex >/dev/null 2>&1; \
@@ -484,6 +487,11 @@ test: all
 		./bin/sh tests/closure/selfcontained-build.sh || binsh_rc=1; \
 		echo ""; \
 	fi; \
+	if [ "$(SELFTEST_REPO_GUARDS)" = "1" ]; then \
+		echo "==> Probe: repo guardrails"; \
+		$(HOST_SH) tests/repo/no-kernel-binutils-creep.sh .; repo_guard_rc=$$?; \
+		echo ""; \
+	fi; \
 	if [ "$(MULTI)" = "1" ]; then \
 		echo "==> Matrix: build (override with MATRIX_TCS=\"monacc gcc-15 clang-21\")"; \
 		$(HOST_SH) tests/matrix/build-matrix.sh; matrix_rc=$$?; \
@@ -503,10 +511,10 @@ test: all
 		echo "Wrote build/matrix/matrixstat.tsv"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$repo_guard_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

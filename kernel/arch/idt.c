@@ -64,5 +64,5 @@ void idt_init(void) {
 	idtr[7] = (uint8_t)(base >> 40);
 	idtr[8] = (uint8_t)(base >> 48);
 	idtr[9] = (uint8_t)(base >> 56);
-	__asm__ volatile("lidt (%0)" :: "r"(idtr) : "memory");
+	lidt(idtr);
 }

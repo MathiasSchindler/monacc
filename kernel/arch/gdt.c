@@ -56,22 +56,7 @@ static void set_tss_desc(int idx, uint64_t base, uint32_t limit) {
 	gdt[idx + 1] = hi;
 }
 
-static void gdt_reload(uint16_t code_sel, uint16_t data_sel) {
-	/* Use explicit segment register loads - monacc doesn't support %w modifier */
-	__asm__ volatile("mov %0, %%ds" :: "r"(data_sel));
-	__asm__ volatile("mov %0, %%es" :: "r"(data_sel));
-	__asm__ volatile("mov %0, %%ss" :: "r"(data_sel));
-	/* Far return to reload CS: push CS, push return address, lretq */
-	__asm__ volatile(
-		"pushq %0\n"
-		"leaq 1f(%%rip), %%rax\n"
-		"pushq %%rax\n"
-		"lretq\n"
-		"1:\n"
-		:
-		: "r"((uint64_t)code_sel)
-		: "rax", "memory");
-}
+extern void gdt_reload(uint16_t code_sel, uint16_t data_sel);
 
 void gdt_tss_init(void) {
 	/* selectors:
@@ -140,7 +125,7 @@ void gdt_tss_init(void) {
 	gdtr[7] = (uint8_t)(base >> 40);
 	gdtr[8] = (uint8_t)(base >> 48);
 	gdtr[9] = (uint8_t)(base >> 56);
-	__asm__ volatile("lgdt (%0)" :: "r"(gdtr) : "memory");
+	lgdt(gdtr);
 
 	/* Reload segments + CS via far return. */
 	gdt_reload(0x08, 0x10);
@@ -148,5 +133,5 @@ void gdt_tss_init(void) {
 
 void tss_load(void) {
 	/* TSS selector at index 5 => 0x28 */
-	__asm__ volatile("ltr %0" :: "r"((uint16_t)0x28));
+	ltr((uint16_t)0x28);
 }

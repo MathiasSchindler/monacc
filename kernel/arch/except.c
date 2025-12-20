@@ -49,7 +49,7 @@ static void serial_write_u64_dec(uint64_t v) {
 }
 
 __attribute__((noreturn)) void exception_handler(struct exc_frame *f) {
-	__asm__ volatile("cli");
+	disable_interrupts();
 
 	serial_write("\n[k] EXCEPTION vector=");
 	serial_write_u64_dec(f->vector);
@@ -74,8 +74,7 @@ __attribute__((noreturn)) void exception_handler(struct exc_frame *f) {
 	}
 
 	if (f->vector == 14) {
-		uint64_t cr2;
-		__asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+		uint64_t cr2 = read_cr2();
 		serial_write("    CR2=");
 		serial_write_hex_u64(cr2);
 		serial_write("\n");
@@ -100,7 +99,5 @@ __attribute__((noreturn)) void exception_handler(struct exc_frame *f) {
 	serial_write("\n");
 
 	serial_write("[k] Halting.\n");
-	for (;;) {
-		__asm__ volatile("hlt");
-	}
+	halt_forever();
 }

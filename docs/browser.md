@@ -2,14 +2,14 @@
 
 Date: 2025-12-20
 
-This document specifies a minimalist, syscall-only, text-mode web browser for monacc.
+This document specifies (and tracks) a minimalist, syscall-only, text-mode web browser for monacc.
 
 The goal is *not* to re-create a full `lynx`/`links`, but to get a useful “debugging browser” for the monacc VM:
 
 - Fetch `http(s)://…` pages
 - Render a readable text approximation
 - Extract and list links
-- Follow links interactively
+- Follow links interactively (planned; WP5)
 
 Constraints: same as the rest of monacc tools:
 
@@ -20,38 +20,47 @@ Constraints: same as the rest of monacc tools:
 
 ---
 
+## Status (today)
+
+Implemented (WP0–WP4 complete):
+
+- `browse URL` fetches and renders `http://` and `https://` URLs (IPv6-only).
+- Redirects: follows `301/302/303/307/308` up to depth 5, resolves relative `Location:`.
+- HTML → text renderer (streaming, no DOM) with link markers `Text[N]` and a trailing `Links:` table.
+- Deterministic helper modes for tests: `--render-html`, `--render-html-base`, `--parse-url`, `--resolve-url`, `--parse-http-headers`, `--decode-chunked`.
+- HTTPS uses in-process TLS 1.3; **no certificate validation**.
+
+Not implemented yet (WP5): interactive/pager mode.
+
+---
+
 ## 1) Scope and CLI
 
 ### 1.1 Tool name
 
-Proposed tool: `browse`.
+Tool: `browse`.
 
 ### 1.2 Modes
 
-Two modes keep it testable and usable:
+- Dump mode (default): fetch + render to stdout.
+- Link-table mode: fetch + print only the trailing `Links:` table.
+- Offline/deterministic helpers: HTML rendering and parsers used by tests.
+- Interactive mode is planned (WP5) but not implemented.
 
-1) **Dump mode** (default, non-interactive): fetch + render to stdout.
-2) **Interactive mode** (`-i`): fetch + render, then accept commands from `/dev/tty`.
-
-### 1.3 CLI (v0)
+### 1.3 CLI (current)
 
 - `browse URL`
-  - Fetch URL
-  - Render to stdout
-  - Append a link table (numbered)
-
 - `browse -dump-links URL`
-  - Fetch URL
-  - Print only the numbered link table
-
-- `browse -i URL`
-  - Interactive session:
-    - shows rendered page in a pager-style flow
-    - lets the user follow numbered links
+- `browse --render-html FILE|-`
+- `browse --render-html-base BASE_URL FILE|-`
+- `browse --parse-url URL`
+- `browse --resolve-url BASE_URL HREF`
+- `browse --parse-http-headers < headers.txt`
+- `browse --decode-chunked < chunked.txt`
 
 Notes:
 - URL grammar is intentionally small and strict.
-- Output should be deterministic for local fixtures (tests).
+- Automated tests avoid the live internet; networking is validated manually.
 
 ### 1.4 Output format (stable-ish)
 
@@ -72,11 +81,11 @@ Links:
 2 /about
 ```
 
-(For relative URLs, `browse` prints the resolved absolute URL in the Links section once resolution is implemented.)
+(For relative URLs, `browse` prints resolved absolute URLs in the Links section.)
 
 ---
 
-## 2) Networking plan (fetch layer)
+## 2) Networking implementation (fetch layer)
 
 The browser should be built around a small “fetch layer” that returns:
 
@@ -117,7 +126,7 @@ Use the existing approach from the net tools:
 
 This matches current IPv6-only networking tooling.
 
-### 2.3 HTTP/1.1 over TCP (http://)
+### 2.3 HTTP/1.1 over TCP (`http://`)
 
 Implementation approach:
 
@@ -131,13 +140,13 @@ Implementation approach:
 
 Behavior:
 
-- Non-2xx is an operational failure (`exit 1`) unless `-i` is used and we decide to render an error banner.
+- Non-2xx (except redirects) is an operational failure (`exit 1`).
 
 ### 2.4 Redirects
 
 Needed for real browsing.
 
-Minimal redirect handling:
+Redirect handling:
 
 - Follow `301/302/303/307/308` when `Location:` is present.
 - Resolve `Location`:
@@ -148,26 +157,15 @@ Cap:
 
 - max depth 5, then fail.
 
-### 2.5 HTTPS strategy
+### 2.5 HTTPS (`https://`)
 
 We already have a TLS 1.3 implementation (see docs/tls.md). For browsing, we want an internal API to “GET over TLS”.
 
-Two staged options:
+Implemented: in-process TLS 1.3 fetch.
 
-**A) In-process TLS fetch (preferred)**
-- Factor the essentials of `tls13 hs` into a helper used by `browse`.
-- Must support:
-  - DNS+connect timeout
-  - SNI
-  - sending HTTP request as application data
-  - reading/decrypting application data until close
-- Must be *quiet* (no debug spew to stderr in normal mode).
-
-**B) Shell out to `tls13 hs` (bootstrap-only)**
-- `browse` could exec `tls13 hs -n … -p … HOST 443` and read stdout.
-- Not ideal:
-  - hard to implement redirects/content-type parsing cleanly
-  - tight coupling to tool output
+- Uses SNI.
+- Sends the HTTP request as application data and decrypts the response stream.
+- Quiet by default (no handshake debug spew).
 
 Security note (must be documented in tool `--help` and in this doc):
 
@@ -175,7 +173,7 @@ Security note (must be documented in tool `--help` and in this doc):
 
 ---
 
-## 3) HTML → text rendering plan
+## 3) HTML → text rendering
 
 The renderer should work without building a DOM. It should be a streaming-ish tokenizer + small state machine.
 
@@ -236,17 +234,17 @@ Rules (v0):
 - Otherwise: join with the “directory” of the current path.
   - Example: base `/a/b/index.html` + `c.html` → `/a/b/c.html`
 
-Do not implement `..` normalization initially unless it is needed for real sites; if implemented, cap the work and reject escaping above `/`.
+Implemented: relative join + dot-segment normalization with a fixed-cap implementation.
 
 ---
 
-## 4) User interaction plan
+## 4) User interaction (planned)
 
 No curses in v0. Keep it robust and scriptable.
 
 ### 4.1 Interactive command loop
 
-In `-i` mode:
+In `-i` mode (WP5):
 
 - Fetch+render page.
 - Display via a pager-like flow.
@@ -288,87 +286,27 @@ For testability, dump mode should remain the primary output contract.
 
 This project should be delivered as small, testable packages.
 
-### WP0 — Document + CLI skeleton
+### WP0 — Document + CLI skeleton (done)
 
-Deliverables:
+- Implemented in `tools/browse.c`; covered by `browse --help`, invalid-args smoke tests.
 
-- `docs/browser.md` (this doc)
-- `tools/browse.c` skeleton with:
-  - usage/help
-  - argument parsing
-  - exit code discipline
+### WP1 — HTML renderer (offline) (done)
 
-Tests:
+- `browse --render-html FILE|-` renders fixtures deterministically; golden outputs live under `tests/tools/data/html/`.
 
-- Tools smoke suite:
-  - `browse --help` exits `0` or `2` depending on convention (prefer `2` for “usage shown” if that’s what `mc_die_usage` does).
-  - invalid args → exit `2`.
+### WP2 — HTTP fetch (`http://`) + deterministic helpers (done)
 
-### WP1 — HTML renderer (offline)
+- Fetcher: IPv6-only DNS AAAA + TCP connect with timeout; HTTP/1.1 GET; header parsing; `Content-Length` and `chunked` body streaming.
+- Deterministic helper modes are covered by fixtures under `tests/tools/data/http/`.
 
-Deliverables:
+### WP3 — Redirects + relative URL resolution (done)
 
-- HTML tokenizer + renderer producing:
-  - rendered text
-  - link table
-- No networking yet: read HTML from stdin or a file.
+- Redirect loop (max depth 5) and URL resolution are implemented and exercised via `--resolve-url` and `--render-html-base` fixtures.
 
-CLI for this stage (temporary or kept):
+### WP4 — HTTPS fetch (done)
 
-- `browse --render-html FILE` (or `browse --render-html < file`)
-
-Tests:
-
-- Add fixtures under `tests/data/html/`:
-  - `basic.html` with `<p>`, `<br>`, `<a href>`
-  - `lists.html` with nested `<ul><li>`
-  - `pre.html` with `<pre>` spacing
-  - `entities.html` with entity decoding
-- Golden outputs:
-  - `basic.txt`, etc.
-- Assertions should be conservative (exact text match is ok for fixtures).
-
-### WP2 — HTTP fetch (http://) + content-type
-
-Deliverables:
-
-- HTTP fetch implementation (derived from `wget6` patterns)
-- Feed response body into the renderer
-- Detect HTML vs plain text:
-  - If `Content-Type` begins with `text/html`: render as HTML
-  - Else: treat as plain text and still allow link extraction to be empty
-
-Tests:
-
-- Avoid live internet.
-- Option A: add a tiny in-test HTTP server only if the harness already supports it.
-- Option B (preferred initially): keep networking untested and focus on renderer tests, but add unit-style tests for:
-  - URL parsing
-  - header parsing
-  - chunked decoder
-
-### WP3 — Redirects + relative URL resolution
-
-Deliverables:
-
-- Follow redirects (max depth)
-- Relative href resolution integrated into link table
-
-Tests:
-
-- Unit tests for redirect resolution and URL join logic.
-- HTML fixtures with relative hrefs; validate resolved URLs.
-
-### WP4 — HTTPS fetch (optional for v0, but high value)
-
-Deliverables:
-
-- In-process HTTPS fetch using TLS core (based on `tls13 hs`, without debug output)
-
-Tests:
-
-- Offline: unit tests for URL parsing and request building.
-- Optional: a controlled HTTPS endpoint is hard without adding infra; keep any live test as “manual smoke” only.
+- In-process TLS 1.3 fetch is integrated into `browse URL` for `https://…` (no certificate validation).
+- Offline coverage: URL parsing fixtures include `https://` defaults; live fetch remains manual-only.
 
 ### WP5 — Interactive mode
 

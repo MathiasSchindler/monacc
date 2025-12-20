@@ -17,9 +17,15 @@ A minimal kernel for Linux x86_64 syscall-compatible userland, designed to run m
 - Initramfs is loaded as a Multiboot2 module (uncompressed CPIO `newc`) and exposed through a minimal read-only file + directory layer.
 - The syscall surface is now sufficient to run real tools from initramfs, including recursive directory traversal.
 - `ls /`, `ls -l /`, and `ls -R /` have been validated end-to-end.
-- User stack size matters: tools like `ls` use large on-stack buffers; the kernel allocates a much larger user stack for ring3.
+- User stack size matters: tools like `ls` and `sh` use large on-stack buffers.
 - PIC is remapped to 0x20-0x2F and all IRQ lines are masked; IRQ stubs exist to ACK (EOI) safely if needed.
 - Ring 3 starts with IF=1 again (safe while IRQs are masked; later work can selectively unmask timer/serial IRQs).
+
+Newly validated (since the original Phase 5 bring-up):
+
+- `fork()`/`wait4()` implemented sufficiently for real shell usage
+- `pipe2()`/`dup2()` implemented sufficiently for pipelines
+- `/bin/sh -c "cd /bin; /bin/pwd; /bin/echo hello | /bin/cat"` now completes and prints expected output
 
 **The kernel now compiles with monacc!** As of Phase 2, all C files are compiled with `../bin/monacc`, with only assembly files (`.S`) using GNU as.
 
@@ -368,23 +374,33 @@ Bring-up note:
 
 **Estimated size**: ~35KB
 
+Bring-up note (important for Phase 6/7 correctness under identity mapping):
+
+- The kernel currently uses a **single identity-mapped address space**.
+- To run multiple processes without per-process page tables, it snapshots/restores:
+   - the fixed user image range `[img_base, img_end)` per process
+   - the fixed user stack range per process
+- The active user stack virtual range is **fixed** (shared VA for all processes);
+   each process has a stack backup buffer that is copied in/out by the scheduler.
+
 ---
 
 ## Phase 6: fork() and wait()
 
 **Goal**: Multi-process support.
 
+**Status**: Implemented (cooperative scheduling; syscall-boundary switching).
+
 **New components**:
-- Process table (fixed size, e.g., 64 processes)
-- `fork()` - clone process (copy page tables, fd table)
-- `wait4()` - wait for child termination
-- Simple round-robin scheduler
-- Timer interrupt for preemption
-- `getpid()`, `getppid()` (trivial)
+- Process table (fixed size)
+- `fork()` - clone process state via snapshot/restore (no per-process page tables yet)
+- `wait4()` - waits on zombie children
+- Simple round-robin scheduler (switches at syscall boundaries)
+- PID tracking in exception output
 
 **Syscalls**: `fork` (57), `vfork` (58), `wait4` (61), `getpid` (39), `getppid` (110)
 
-**Test**: Shell can run commands: `sh -c "echo hello"`
+**Test**: Shell can fork/exec children: `sh -c "/bin/pwd"`
 
 **Estimated size**: ~45KB
 
@@ -394,15 +410,17 @@ Bring-up note:
 
 **Goal**: Pipeline support for shell.
 
+**Status**: Implemented enough for `sh` pipelines.
+
 **New components**:
-- Pipe buffer (circular, ~4KB)
+- Pipe buffer
 - `pipe2()` - create pipe fds
 - `dup2()` - duplicate fd
-- Reader/writer blocking
+- Basic reader/writer blocking semantics
 
 **Syscalls**: `pipe2` (293), `dup2` (33)
 
-**Test**: `echo hello | cat`
+**Test**: `sh -c "/bin/echo hello | /bin/cat"`
 
 **Estimated size**: ~50KB
 
@@ -606,3 +624,9 @@ kernel/
 5. Test with QEMU using `-cdrom build/kernel.iso`
 
 Ready to start Phase 0?
+
+Appendix: notable debugging lesson (Dec 2025)
+
+- Symptom: `/bin/sh` would start, then fault in a forked child inside redirection parsing (`movzbl (%rax),%eax`) with garbage `RAX`.
+- Root cause: under identity mapping, an earlier fork implementation cloned the user stack into a different physical/virtual address, but user pointers into the stack remained the original addresses.
+- Fix: keep a **fixed virtual stack region** for all processes and snapshot/restore its contents per process on switch/fork/exec.

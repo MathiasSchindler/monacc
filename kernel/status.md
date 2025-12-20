@@ -13,6 +13,16 @@ This directory contains a minimal x86_64 kernel intended to run monacc-built use
 - Exceptions: minimal handlers for #UD/#DF/#GP/#PF dump state to serial and halt
 - Deterministic termination: `isa-debug-exit` on port `0xF4`
 
+Process model (current bring-up design):
+
+- **Single shared address space (identity mapping)**: virtual == physical
+- **ET_EXEC userland** loads at fixed addresses (typically `0x400000`)
+- **Multi-process without per-process page tables** is implemented by snapshot/restore:
+	- user image region `[img_base, img_end)` copied to/from a per-process backup on each context switch
+	- user stack region copied to/from a per-process backup on each context switch
+
+This is a deliberate temporary design to get real userland running before introducing per-process page tables or CoW.
+
 Filesystem / userland loading:
 
 - Initramfs: Multiboot2 module containing an uncompressed CPIO `newc` archive
@@ -32,11 +42,21 @@ Known policy (temporary):
 - Phase 3: `mmap`/`munmap` with physical page allocator (PMM)
 - Phase 4: initramfs (CPIO `newc`) file + directory syscalls sufficient for `cat`, `tail`, `ls`
 - Phase 5: exec from initramfs via `execve()` (e.g. `kinit` -> `/bin/ls -R /`)
+- Phase 6: `fork()` + `wait4()` (enough for real shell usage)
+- Phase 7: `pipe2()` + `dup2()` (pipelines work)
 
 Validated tools / behaviors:
 
 - `cat`/`tail` from initramfs
 - `ls /`, `ls -l /`, and `ls -R /` complete without faults (with user IF forced off)
+- `/bin/sh -c "cd /bin; /bin/pwd; /bin/echo hello | /bin/cat"` completes and prints expected output
+
+Key implementation detail for correctness under identity mapping:
+
+- **Fixed virtual user stack region**: all processes use the same active stack virtual range
+	- `USER_STACK_BASE..USER_STACK_TOP` is reserved in the PMM so it will never be handed out
+	- each process has a stack backup buffer; the scheduler copies the active stack in/out on switches
+	- `fork()` clones the parent stack backup (not the live stack at a different address)
 
 ### monacc compatibility status
 
@@ -103,6 +123,12 @@ Expected serial output includes:
 - Multiboot2 section flags: the Multiboot2 header section must be allocatable (`"a"`) or the ELF LOAD segment may start at `VirtAddr=0`, causing subtle catastrophic crashes.
 - Accidental SSE/x87 in early kernel: the compiler may emit `xmm` instructions before you’ve enabled FPU/SSE, leading to #UD and triple faults. Either initialize FPU/SSE early or keep early CFLAGS disabling them.
 - Embedded user blobs: ensure `userprog_end` is placed after all bytes (including strings) so the kernel copies code+data.
+
+### Identity-mapped multi-process hazards
+
+- **Do not relocate the user stack VA per process**: under identity mapping, pointers into stack memory are plain virtual addresses.
+	If a child gets a different stack base address, any pointers-into-stack become invalid and real programs (notably `/bin/sh`)
+	will quickly crash. Use a fixed stack VA and snapshot/restore semantics.
 
 ### Interrupts (current bring-up constraint)
 

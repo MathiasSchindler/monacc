@@ -1,0 +1,4 @@
+scheme https
+host example.com
+port 443
+path /

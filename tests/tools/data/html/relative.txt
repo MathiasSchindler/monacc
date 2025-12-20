@@ -1,0 +1,7 @@
+Abs[1] Rel[2] Up[3] Other[4]
+
+Links:
+1 http://example.com/abs
+2 http://example.com/a/b/rel.html
+3 http://example.com/a/up.html
+4 http://other/x

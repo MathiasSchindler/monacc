@@ -37,6 +37,11 @@ check_fixture pre
 check_fixture entities
 check_fixture skip
 
+# WP3: relative URL resolution (base-aware offline render)
+OUT=$("$BIN/browse" --render-html-base http://example.com/a/b/index.html "$DATA_DIR/relative.html")
+EXP=$(cat "$DATA_DIR/relative.txt")
+[ "$OUT" = "$EXP" ] || fail "browse --render-html-base relative mismatch"
+
 # stdin mode
 OUT=$(printf '<p>hi</p>' | "$BIN/browse" --render-html -)
 EXP=$(printf 'hi\n\nLinks:\n')
@@ -54,6 +59,31 @@ EXP=$(cat "$HTTP_DIR/url_http_port_path.out")
 OUT=$("$BIN/browse" --parse-url http://[::1]/x)
 EXP=$(cat "$HTTP_DIR/url_ipv6.out")
 [ "$OUT" = "$EXP" ] || fail "browse --parse-url ipv6 mismatch"
+
+OUT=$("$BIN/browse" --parse-url https://example.com/)
+EXP=$(cat "$HTTP_DIR/url_https_default.out")
+[ "$OUT" = "$EXP" ] || fail "browse --parse-url https default mismatch"
+
+# WP3: resolve-url helper
+OUT=$("$BIN/browse" --resolve-url http://example.com/a/b/index.html /abs)
+EXP=$(cat "$HTTP_DIR/resolve_abs.out")
+[ "$OUT" = "$EXP" ] || fail "browse --resolve-url abs mismatch"
+
+OUT=$("$BIN/browse" --resolve-url http://example.com/a/b/index.html rel.html)
+EXP=$(cat "$HTTP_DIR/resolve_rel.out")
+[ "$OUT" = "$EXP" ] || fail "browse --resolve-url rel mismatch"
+
+OUT=$("$BIN/browse" --resolve-url http://example.com/a/b/index.html ../up.html)
+EXP=$(cat "$HTTP_DIR/resolve_up.out")
+[ "$OUT" = "$EXP" ] || fail "browse --resolve-url up mismatch"
+
+OUT=$("$BIN/browse" --resolve-url http://example.com/a/b/index.html http://other/x)
+EXP=$(cat "$HTTP_DIR/resolve_scheme.out")
+[ "$OUT" = "$EXP" ] || fail "browse --resolve-url scheme mismatch"
+
+OUT=$("$BIN/browse" --resolve-url http://example.com/a/b/index.html mailto:test@example.com)
+EXP=$(cat "$HTTP_DIR/resolve_keepraw.out")
+[ "$OUT" = "$EXP" ] || fail "browse --resolve-url keepraw mismatch"
 
 OUT=$(cat "$HTTP_DIR/headers1.in" | "$BIN/browse" --parse-http-headers)
 EXP=$(cat "$HTTP_DIR/headers1.out")

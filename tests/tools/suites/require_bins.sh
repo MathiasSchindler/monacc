@@ -29,6 +29,7 @@ require_bin tee
 require_bin tr
 require_bin tar
 require_bin gzip
+require_bin pstree
 require_bin gunzip
 require_bin cut
 require_bin paste

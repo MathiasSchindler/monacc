@@ -53,5 +53,5 @@ Suggested minimum milestone (if we want network access soon):
 - [x] Add minimal developer inspection tools (`readelf`, `objdump`, `xxd`) and cover them with regression tests
 - [x] Add initramfs/workspace packaging tools (`cpio`, `uncpio`) and cover round-trip + safety behavior with tests
 - [ ] Make kernel logging observable in userland (so `dmesg` works under the monacc kernel)
-- [ ] Improve process visibility for debugging (extend `ps`, or add a tiny `pstree`-style view)
+- [x] Improve process visibility for debugging (`ps` includes PPID/state; add `pstree`)
 - [ ] Decide and document the networking approach for the monacc kernel (socket-compat vs host-proxy), then implement one minimal connectivity demo in QEMU

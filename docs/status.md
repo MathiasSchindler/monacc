@@ -10,7 +10,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Build
 
-- `make` produces a size-optimized stripped binary (~125 KB) + all tools (currently 99)
+- `make` produces a size-optimized stripped binary (~125 KB) + all tools (currently 100)
 - `make test` runs the full test suite (48 examples + tool tests)
 - `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
@@ -106,7 +106,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ## Part 2: Tool Status
 
-All tools compile and link successfully with monacc (currently 99).
+All tools compile and link successfully with monacc (currently 100).
 
 ### Tool Feature Matrix
 
@@ -153,7 +153,8 @@ All tools compile and link successfully with monacc (currently 99).
 | `od` | Octal dump (bytewise) | — |
 | `paste` | Merge files; `-d`, `-s` | — |
 | `printf` | `%s/%d/%u/%x/%c/%%`; width/precision | — |
-| `ps` | PID + comm from `/proc` | — |
+| `ps` | PID/PPID/state/comm from `/proc` | Uses `/proc/PID/stat` |
+| `pstree` | Process tree from `/proc` | Shows PID/PPID/state/comm with indentation |
 | `pwd` | Print cwd | — |
 | `readlink` | Print symlink target; `-f` canonicalize | — |
 | `realpath` | Same as `readlink -f` | Alias |
@@ -280,7 +281,7 @@ All tools compile and link successfully with monacc (currently 99).
 | Milestone | Status |
 |-----------|--------|
 | Compiler builds | ✅ |
-| All tools compile (currently 99) | ✅ |
+| All tools compile (currently 100) | ✅ |
 | Tools pass tests | ✅ |
 | Self-hosting works | ✅ (simple examples) |
 | Selfhost inline asm | ✅ Works on current `main` |

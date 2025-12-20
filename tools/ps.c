@@ -21,6 +21,33 @@ static void ps_write_pid_cmd(mc_u32 pid, const char *cmd, mc_usize cmdlen) {
 	(void)mc_write_all(1, "\n", 1);
 }
 
+static void ps_write_pid_ppid_state_cmd(mc_u32 pid, mc_u32 ppid, mc_u8 state, const char *cmd, mc_usize cmdlen) {
+	(void)mc_write_u64_dec(1, (mc_u64)pid);
+	(void)mc_write_all(1, " ", 1);
+	(void)mc_write_u64_dec(1, (mc_u64)ppid);
+	(void)mc_write_all(1, " ", 1);
+	(void)mc_write_all(1, &state, 1);
+	(void)mc_write_all(1, " ", 1);
+	(void)mc_write_all(1, cmd, cmdlen);
+	(void)mc_write_all(1, "\n", 1);
+}
+
+static int ps_parse_u32_dec_span(const mc_u8 *p, mc_u32 n, mc_u32 *out) {
+	if (!p || n == 0) return -1;
+	mc_u32 i = 0;
+	while (i < n && (p[i] == ' ' || p[i] == '\t' || p[i] == '\n')) i++;
+	if (i >= n) return -1;
+	if (p[i] < '0' || p[i] > '9') return -1;
+	mc_u64 v = 0;
+	while (i < n && p[i] >= '0' && p[i] <= '9') {
+		v = v * 10u + (mc_u64)(p[i] - '0');
+		if (v > 0xFFFFFFFFu) return -1;
+		i++;
+	}
+	*out = (mc_u32)v;
+	return 0;
+}
+
 static void ps_parse_and_print_stat(const char *argv0, mc_i32 procfd, const char *pidname) {
 	char rel[64];
 	mc_usize pn = ps_strnlen0(pidname, 32);
@@ -74,9 +101,22 @@ static void ps_parse_and_print_stat(const char *argv0, mc_i32 procfd, const char
 		return;
 	}
 
+	// state + ppid: after ") ", then "<state> <ppid>"
+	if (rp + 3u >= l) {
+		return;
+	}
+	if (buf[rp + 1] != ' ') {
+		return;
+	}
+	mc_u8 state = buf[rp + 2];
+	mc_u32 ppid = 0;
+	if (ps_parse_u32_dec_span(buf + rp + 3u, l - (rp + 3u), &ppid) != 0) {
+		return;
+	}
+
 	const char *cmd = (const char *)&buf[lp + 1];
 	mc_usize cmdlen = (mc_usize)(rp - (lp + 1));
-	ps_write_pid_cmd(pid, cmd, cmdlen);
+	ps_write_pid_ppid_state_cmd(pid, ppid, state, cmd, cmdlen);
 	(void)argv0;
 }
 
@@ -103,7 +143,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 		mc_die_errno(argv0, "/proc", procfd);
 	}
 
-	(void)mc_write_all(1, "PID CMD\n", 8);
+	(void)mc_write_all(1, "PID PPID S CMD\n", 15);
 
 	mc_u8 d_buf[32768];
 	for (;;) {

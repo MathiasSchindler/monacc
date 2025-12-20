@@ -60,9 +60,15 @@ printf '%s' "$OUT" | "$BIN/grep" -q "real " || fail "time should print 'real ' (
 
 # --- ps: prints header and at least one process ---
 OUT=$("$BIN/ps" | "$BIN/head" -n 1)
-[ "$OUT" = "PID CMD" ] || fail "ps header unexpected (got '$OUT')"
+[ "$OUT" = "PID PPID S CMD" ] || fail "ps header unexpected (got '$OUT')"
 NLINES=$("$BIN/ps" | "$BIN/wc" -l)
 [ "$NLINES" -ge 2 ] || fail "ps should list at least one process (got $NLINES lines)"
+
+# --- pstree: prints header and at least one process ---
+OUT=$("$BIN/pstree" | "$BIN/head" -n 1)
+[ "$OUT" = "PID PPID S CMD" ] || fail "pstree header unexpected (got '$OUT')"
+NLINES=$("$BIN/pstree" | "$BIN/wc" -l)
+[ "$NLINES" -ge 2 ] || fail "pstree should list at least one process (got $NLINES lines)"
 
 # --- who: should not fail even if utmp is missing ---
 "$BIN/who" >"$TMP/out" 2>"$TMP/err" || fail "who should not fail"

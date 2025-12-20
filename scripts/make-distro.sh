@@ -8,7 +8,9 @@ set -eu
 VERSION=0.1.1
 WANT_INITRAMFS=1
 INITRAMFS_STRICT=0
-INITRAMFS_INIT_NAME=init
+# Default init for the initramfs: boot straight into the monacc shell.
+# Override with --init=<name> (uses bin/<name>).
+INITRAMFS_INIT_NAME=sh
 
 for arg in "$@"; do
 	case "$arg" in
@@ -24,7 +26,7 @@ for arg in "$@"; do
 			;;
 		-*)
 			echo "usage: $0 [version] [--initramfs|--no-initramfs] [--init=<name>]" >&2
-			echo "       --init=<name> chooses /init from bin/<name> (default: init)" >&2
+			echo "       --init=<name> chooses /init from bin/<name> (default: sh)" >&2
 			exit 2
 			;;
 		*)

@@ -15,9 +15,18 @@ KERNEL_BIN := $(ISO_DIR)/boot/kernel.elf
 GRUB_CFG := $(ISO_DIR)/boot/grub/grub.cfg
 DEBUGCON_LOG := $(BUILD)/debugcon.log
 
-# Optional initramfs (uncompressed newc cpio). Pass as a Multiboot2 module:
-#   make -C kernel INITRAMFS=../release/monacc-0.1.1-test2-initramfs.cpio run
+# Optional initramfs (uncompressed newc cpio). Passed as a Multiboot2 module.
+#
+# Default: use the current dev initramfs from the repo root `release/` folder
+# (created by `scripts/make-distro.sh`). Override or disable as needed:
+#   make -C kernel INITRAMFS=../release/monacc-dev-initramfs.cpio run
+#   make -C kernel INITRAMFS= run
+INITRAMFS_DEFAULT := ../release/monacc-dev-initramfs.cpio
+ifneq ($(wildcard $(INITRAMFS_DEFAULT)),)
+INITRAMFS ?= $(INITRAMFS_DEFAULT)
+else
 INITRAMFS ?=
+endif
 INITRAMFS_ISO := $(ISO_DIR)/boot/initramfs.cpio
 INITRAMFS_STAMP := $(BUILD)/.initramfs_path
 

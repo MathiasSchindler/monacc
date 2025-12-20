@@ -781,13 +781,38 @@ void syscall_handler(struct regs *r) {
 		}
 		if (fd == 0 && !kfd_get(0)) {
 			uint64_t i = 0;
-			for (; i < count; i++) {
+			while (i < count) {
 				char c = serial_getc();
-				buf[i] = (uint8_t)c;
-				if (c == '\n') {
-					i++;
+				/* Basic cooked-mode behavior for serial console:
+				 * - echo input
+				 * - CR -> LF
+				 * - backspace/delete editing
+				 * - Ctrl-D at start => EOF
+				 */
+				if (c == '\r') c = '\n';
+				if ((uint8_t)c == 0x04) { /* ^D */
+					if (i == 0) {
+						r->rax = 0;
+						return;
+					}
 					break;
 				}
+				if (c == '\b' || (uint8_t)c == 0x7f) {
+					if (i > 0) {
+						i--;
+						serial_putc('\b');
+						serial_putc(' ');
+						serial_putc('\b');
+					}
+					continue;
+				}
+				buf[i++] = (uint8_t)c;
+				if (c == '\n') {
+					serial_putc('\r');
+					serial_putc('\n');
+					break;
+				}
+				serial_putc(c);
 			}
 			r->rax = i;
 			return;
@@ -1837,6 +1862,27 @@ void syscall_handler(struct regs *r) {
 		g_cur->wait_obj = (pid == -1) ? 0u : (uint32_t)pid;
 		struct kproc *next = kproc_pick_next();
 		kproc_switch(r, next);
+		return;
+	}
+	case 16: { /* ioctl(fd, request, argp) */
+		int fd = (int)r->rdi;
+		uint64_t req = r->rsi;
+		void *argp = (void *)r->rdx;
+
+		/* Minimal tty detection for monacc /bin/sh interactive prompt.
+		 * Linux TCGETS is 0x5401.
+		 */
+		if (req == 0x5401u) {
+			if (fd == 0 || fd == 1 || fd == 2) {
+				if (argp) kmemset(argp, 0, 64);
+				r->rax = 0;
+				return;
+			}
+			r->rax = (uint64_t)(-(int64_t)25); /* -ENOTTY */
+			return;
+		}
+
+		r->rax = (uint64_t)(-(int64_t)38); /* -ENOSYS */
 		return;
 	}
 	case 60: /* exit(code) */

@@ -8,6 +8,7 @@ set -eu
 VERSION=0.1.1
 WANT_INITRAMFS=1
 INITRAMFS_STRICT=0
+INITRAMFS_INIT_NAME=init
 
 for arg in "$@"; do
 	case "$arg" in
@@ -18,8 +19,12 @@ for arg in "$@"; do
 			WANT_INITRAMFS=1
 			INITRAMFS_STRICT=1
 			;;
+		--init=*)
+			INITRAMFS_INIT_NAME=${arg#--init=}
+			;;
 		-*)
-			echo "usage: $0 [version] [--initramfs|--no-initramfs]" >&2
+			echo "usage: $0 [version] [--initramfs|--no-initramfs] [--init=<name>]" >&2
+			echo "       --init=<name> chooses /init from bin/<name> (default: init)" >&2
 			exit 2
 			;;
 		*)
@@ -233,18 +238,22 @@ maybe_build_and_initramfs() {
 	make -C "$STAGE_ROOT" -j"$JOBS" all
 
 	# Stage initramfs rootfs:
-	# - /init is PID 1 (copied from bin/init)
+	# - /init is PID 1 (copied from bin/<name>)
 	# - /bin contains all tools + monacc
 	# - empty /dev,/proc,/sys mountpoints
 	INIT_ROOT="$STAGE_BASE/initramfs-root"
 	rm -rf "$INIT_ROOT"
 	mkdir -p "$INIT_ROOT/bin" "$INIT_ROOT/dev" "$INIT_ROOT/proc" "$INIT_ROOT/sys"
 	cp -a "$STAGE_ROOT/bin"/* "$INIT_ROOT/bin/"
-	if [ ! -x "$INIT_ROOT/bin/init" ]; then
-		echo "error: initramfs: missing bin/init" >&2
+	if [ -z "$INITRAMFS_INIT_NAME" ]; then
+		echo "error: initramfs: --init=<name> must not be empty" >&2
 		exit 1
 	fi
-	cp -a "$INIT_ROOT/bin/init" "$INIT_ROOT/init"
+	if [ ! -x "$INIT_ROOT/bin/$INITRAMFS_INIT_NAME" ]; then
+		echo "error: initramfs: missing bin/$INITRAMFS_INIT_NAME" >&2
+		exit 1
+	fi
+	cp -a "$INIT_ROOT/bin/$INITRAMFS_INIT_NAME" "$INIT_ROOT/init"
 
 	# Pack initramfs (newc cpio) and gzip it.
 	TMP_CPIO="$STAGE_BASE/monacc-$VERSION-initramfs.cpio"

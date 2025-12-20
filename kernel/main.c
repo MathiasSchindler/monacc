@@ -1,11 +1,17 @@
 #include "kernel.h"
 
+#define KEXEC_MAX_ARGS 16
+#define KEXEC_MAX_STR  256
+
 void serial_init(void);
 void serial_write(const char *s);
 void gdt_tss_init(void);
 void tss_load(void);
 void idt_init(void);
 void syscall_init(void);
+
+/* From arch/syscall_entry.S: used to override the user RSP for execve(). */
+extern uint64_t syscall_user_rsp;
 
 /* Get user program address from linker symbol via function pointer trick.
  * This avoids monacc issues with extern array declarations. */
@@ -39,6 +45,44 @@ static void kmemcpy(void *dst, const void *src, size_t n) {
 	const uint8_t *s = (const uint8_t *)src;
 	for (size_t i = 0; i < n; i++) d[i] = s[i];
 }
+
+static uint64_t kstrnlen(const char *s, uint64_t maxn) {
+	uint64_t n = 0;
+	while (n < maxn) {
+		if (s[n] == 0) return n;
+		n++;
+	}
+	return maxn;
+}
+
+static int kcopy_cstr(char *dst, uint64_t cap, const char *src) {
+	if (!dst || cap == 0) return -1;
+	if (!src) {
+		dst[0] = 0;
+		return -1;
+	}
+	uint64_t n = kstrnlen(src, cap - 1);
+	if (n >= cap - 1) {
+		dst[0] = 0;
+		return -1;
+	}
+	for (uint64_t i = 0; i < n; i++) dst[i] = src[i];
+	dst[n] = 0;
+	return 0;
+}
+
+static const char *skip_leading_slash(const char *s) {
+	while (*s == '/') s++;
+	return s;
+}
+
+/* initramfs module cached for syscalls like execve(). */
+static const uint8_t *g_initramfs = 0;
+static uint64_t g_initramfs_sz = 0;
+
+/* Track current user stack so execve() can replace it. */
+static uint64_t g_user_stack_base = 0;
+static uint64_t g_user_stack_pages = 0;
 
 static uint64_t align_down_u64(uint64_t v, uint64_t a) {
 	return v & ~(a - 1);
@@ -200,6 +244,133 @@ void syscall_handler(struct regs *r) {
 		serial_write("\n");
 		outb(0xF4, 0x10);
 		halt_forever();
+	case 59: { /* execve(filename, argv, envp) */
+		const char *filename = (const char *)r->rdi;
+		const uint64_t *argvp = (const uint64_t *)r->rsi;
+		(void)r->rdx; /* envp ignored for now */
+
+		if (!filename) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		if (!g_initramfs || g_initramfs_sz == 0) {
+			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
+			return;
+		}
+
+		/* Copy filename early: the new ELF may overwrite old rodata. */
+		char filename_buf[KEXEC_MAX_STR];
+		if (kcopy_cstr(filename_buf, KEXEC_MAX_STR, filename) != 0) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+
+		/* Normalize path for CPIO lookup (strip leading '/'). */
+		const char *path = skip_leading_slash(filename_buf);
+		if (!path[0]) {
+			r->rax = (uint64_t)(-(int64_t)2);
+			return;
+		}
+
+		/* Snapshot argv strings before we free/replace the old user stack. */
+		char argv_buf[KEXEC_MAX_ARGS][KEXEC_MAX_STR];
+		uint64_t argc = 0;
+		if (argvp) {
+			for (; argc < KEXEC_MAX_ARGS; argc++) {
+				uint64_t p = argvp[argc];
+				if (p == 0) break;
+				if (kcopy_cstr(argv_buf[argc], KEXEC_MAX_STR, (const char *)p) != 0) {
+					r->rax = (uint64_t)(-(int64_t)7); /* -E2BIG */
+					return;
+				}
+			}
+		}
+		if (argc == 0) {
+			if (kcopy_cstr(argv_buf[0], KEXEC_MAX_STR, filename_buf) != 0) {
+				r->rax = (uint64_t)(-(int64_t)14);
+				return;
+			}
+			argc = 1;
+		}
+
+		/* Locate ELF bytes in initramfs. */
+		const uint8_t *img = 0;
+		uint64_t img_sz = 0;
+		if (cpio_newc_find(g_initramfs, g_initramfs_sz, path, &img, &img_sz) != 0) {
+			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
+			return;
+		}
+
+		uint64_t user_entry = 0;
+		uint64_t brk_init = 0;
+		if (elf_load_exec(img, img_sz, &user_entry, &brk_init) != 0) {
+			r->rax = (uint64_t)(-(int64_t)8); /* -ENOEXEC */
+			return;
+		}
+
+		/* Replace user stack (safe now: argv strings are copied). */
+		if (g_user_stack_base && g_user_stack_pages) {
+			pmm_free_pages(g_user_stack_base, (uint32_t)g_user_stack_pages);
+			g_user_stack_base = 0;
+			g_user_stack_pages = 0;
+		}
+		uint64_t stack_pages = 8;
+		uint64_t stack_base = pmm_alloc_pages((uint32_t)stack_pages);
+		if (stack_base == 0) {
+			r->rax = (uint64_t)(-(int64_t)12); /* -ENOMEM */
+			return;
+		}
+		g_user_stack_base = stack_base;
+		g_user_stack_pages = stack_pages;
+		uint64_t sp = stack_base + stack_pages * PAGE_SIZE;
+		sp = align_down_u64(sp, 16);
+
+		uint64_t u_argv_ptrs[KEXEC_MAX_ARGS];
+		for (uint64_t i = 0; i < argc; i++) {
+			uint64_t len = kstrnlen(argv_buf[argc - 1 - i], KEXEC_MAX_STR);
+			sp = user_stack_push_bytes(sp, argv_buf[argc - 1 - i], len + 1);
+			u_argv_ptrs[argc - 1 - i] = sp;
+		}
+
+		/* Minimal envp: PATH=/bin */
+		const char *env0 = "PATH=/bin";
+		sp = user_stack_push_bytes(sp, env0, 10);
+		uint64_t u_env0 = sp;
+
+		sp = align_down_u64(sp, 16);
+
+		/* auxv terminator: AT_NULL (0), 0 */
+		sp = user_stack_push_u64(sp, 0);
+		sp = user_stack_push_u64(sp, 0);
+		/* envp: env0, NULL */
+		sp = user_stack_push_u64(sp, 0);
+		sp = user_stack_push_u64(sp, u_env0);
+		/* argv: pointers + NULL */
+		sp = user_stack_push_u64(sp, 0);
+		for (uint64_t i = 0; i < argc; i++) {
+			sp = user_stack_push_u64(sp, u_argv_ptrs[argc - 1 - i]);
+		}
+		/* argc */
+		sp = user_stack_push_u64(sp, argc);
+
+		/* Redirect the return from sysretq into the new image. */
+		syscall_user_rsp = sp;
+		r->rcx = user_entry;
+		r->rax = 0;
+		r->rdi = 0;
+		r->rsi = 0;
+		r->rdx = 0;
+		r->rbx = 0;
+		r->rbp = 0;
+		r->r8 = 0;
+		r->r9 = 0;
+		r->r10 = 0;
+		r->r12 = 0;
+		r->r13 = 0;
+		r->r14 = 0;
+		r->r15 = 0;
+		return;
+	}
 	default:
 		/* -ENOSYS */
 		r->rax = (uint64_t)(-(int64_t)38);
@@ -241,6 +412,8 @@ __attribute__((noreturn)) void kmain(void) {
 		uint64_t mod_start = 0, mod_end = 0;
 		if (mb2_find_first_module(mb2_info_ptr, &mod_start, &mod_end) == 0) {
 			serial_write("[k] found multiboot2 module\n");
+			g_initramfs = (const uint8_t *)mod_start;
+			g_initramfs_sz = mod_end - mod_start;
 			if (mod_end > mod_start) {
 				uint64_t m_start = mod_start & ~(uint64_t)(PAGE_SIZE - 1);
 				uint64_t m_end = (mod_end + (PAGE_SIZE - 1)) & ~(uint64_t)(PAGE_SIZE - 1);
@@ -250,12 +423,16 @@ __attribute__((noreturn)) void kmain(void) {
 			}
 			const uint8_t *f = 0;
 			uint64_t fsz = 0;
-			if (cpio_newc_find((const uint8_t *)mod_start, mod_end - mod_start, "bin/echo", &f, &fsz) == 0) {
-				serial_write("[k] initramfs: using bin/echo\n");
+			if (cpio_newc_find((const uint8_t *)mod_start, mod_end - mod_start, "init", &f, &fsz) == 0) {
+				serial_write("[k] initramfs: using /init\n");
+				imgp = f;
+				img_sz = fsz;
+			} else if (cpio_newc_find((const uint8_t *)mod_start, mod_end - mod_start, "bin/echo", &f, &fsz) == 0) {
+				serial_write("[k] initramfs: /init not found; using bin/echo\n");
 				imgp = f;
 				img_sz = fsz;
 			} else {
-				serial_write("[k] initramfs: bin/echo not found; using embedded\n");
+				serial_write("[k] initramfs: init and bin/echo not found; using embedded\n");
 			}
 		}
 		uint64_t user_entry = 0;
@@ -277,6 +454,8 @@ __attribute__((noreturn)) void kmain(void) {
 			serial_write("[k] no memory for user stack\n");
 			halt_forever();
 		}
+		g_user_stack_base = stack_base;
+		g_user_stack_pages = stack_pages;
 		uint64_t sp = stack_base + stack_pages * PAGE_SIZE;
 		sp = align_down_u64(sp, 16);
 

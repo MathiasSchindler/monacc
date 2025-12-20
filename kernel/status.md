@@ -13,13 +13,30 @@ This directory contains a minimal x86_64 kernel intended to run monacc-built use
 - Exceptions: minimal handlers for #UD/#DF/#GP/#PF dump state to serial and halt
 - Deterministic termination: `isa-debug-exit` on port `0xF4`
 
+Filesystem / userland loading:
+
+- Initramfs: Multiboot2 module containing an uncompressed CPIO `newc` archive
+- VFS model: initramfs-backed, read-only file + directory layer
+- Directory iteration: `getdents64` synthesizes Linux `dirent64` records from CPIO path prefixes
+
+Known policy (temporary):
+
+- Legacy PIC is remapped to 0x20-0x2F and all IRQ lines are masked by default.
+	Ring 3 can run with IF=1 safely in this configuration; later work can unmask specific IRQs.
+
 ### Phases completed
 
 - Phase 0: boot to long mode + serial banner
 - Phase 1: ring 3 entry + `exit(60)`
 - Phase 2: `read(0)` + `write(1/2)` over serial + user test prints then exits
 - Phase 3: `mmap`/`munmap` with physical page allocator (PMM)
-- Phase 4 (partial): minimal ELF64 loader + run embedded monacc-built tool (`bin/echo`)
+- Phase 4: initramfs (CPIO `newc`) file + directory syscalls sufficient for `cat`, `tail`, `ls`
+- Phase 5: exec from initramfs via `execve()` (e.g. `kinit` -> `/bin/ls -R /`)
+
+Validated tools / behaviors:
+
+- `cat`/`tail` from initramfs
+- `ls /`, `ls -l /`, and `ls -R /` complete without faults (with user IF forced off)
 
 ### monacc compatibility status
 
@@ -52,6 +69,11 @@ The kernel now builds with monacc instead of gcc/clang. Several workarounds were
 cd kernel
 make clean && make iso
 make run-bios-serial
+
+# If you have a CPIO initramfs image already built (repo top-level Makefile can generate one),
+# pass it explicitly:
+make clean && make iso
+make INITRAMFS=../build/initramfs/sysbox.cpio run-bios-serial
 ```
 
 The Makefile uses monacc (../bin/monacc) for C files and GNU as for assembly files.
@@ -82,8 +104,13 @@ Expected serial output includes:
 - Accidental SSE/x87 in early kernel: the compiler may emit `xmm` instructions before you’ve enabled FPU/SSE, leading to #UD and triple faults. Either initialize FPU/SSE early or keep early CFLAGS disabling them.
 - Embedded user blobs: ensure `userprog_end` is placed after all bytes (including strings) so the kernel copies code+data.
 
+### Interrupts (current bring-up constraint)
+
+- If interrupts are enabled in ring3 before remapping/masking the legacy PIC (or switching to APIC),
+  hardware IRQs can arrive on vectors overlapping CPU exceptions (0x08-0x0f), causing cascaded faults.
+
 ## Suggested next steps
 
-- Phase 5: In-memory filesystem (initramfs/CPIO) so we can load arbitrary tools without embedding
-- Add `brk`/`sbrk` (or switch malloc to `mmap`) if/when a tool needs it
-- Start a small “syscall coverage” checklist mapping monacc tools to required syscalls.
+- Proper IRQ infrastructure: PIC remap+mask (or APIC) + IRQ handlers, then optionally re-enable ring3 interrupts
+- Reduce syscall debug noise (gate or rate-limit syscall logging)
+- Phase 6+: fork/wait + scheduler + pipes to support `sh` pipelines

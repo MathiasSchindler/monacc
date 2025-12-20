@@ -6,6 +6,10 @@
 /* Userland tools (e.g. ls) use large on-stack buffers; 8 pages is too small. */
 #define USER_STACK_PAGES 256
 
+#ifndef KDEBUG_SYSCALLS
+#define KDEBUG_SYSCALLS 0
+#endif
+
 void serial_init(void);
 void serial_write(const char *s);
 void gdt_tss_init(void);
@@ -327,9 +331,11 @@ static void serial_write_hex(uint64_t v) {
 }
 
 void syscall_handler(struct regs *r) {
-	serial_write("[k] syscall ");
-	serial_write_hex(r->rax);
-	serial_write("\n");
+	if (KDEBUG_SYSCALLS) {
+		serial_write("[k] syscall ");
+		serial_write_hex(r->rax);
+		serial_write("\n");
+	}
 
 	switch (r->rax) {
 	case 0: { /* read(fd, buf, count) */
@@ -977,6 +983,13 @@ __attribute__((noreturn)) void kmain(void) {
 	serial_write("[k] idt_init...\n");
 	idt_init();
 	serial_write("[k] idt_init ok\n");
+
+	/* Remap PIC away from exception vectors and mask all IRQs.
+	 * This makes it safe to run ring3 with IF=1 even before a full IRQ subsystem exists.
+	 */
+	serial_write("[k] pic_init...\n");
+	pic_init();
+	serial_write("[k] pic_init ok\n");
 
 	serial_write("[k] tss_load...\n");
 	tss_load();

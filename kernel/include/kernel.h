@@ -122,6 +122,12 @@ void serial_putc(char c);
 char serial_getc(void);
 void serial_write(const char *s);
 
+/* Legacy PIC (8259A) support.
+ * For bring-up we remap PIC away from exception vectors and mask all IRQs.
+ */
+void pic_init(void);
+void irq_handler(uint64_t vec);
+
 /* Physical memory manager */
 void pmm_init(void);
 uint64_t pmm_alloc_page(void);

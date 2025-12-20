@@ -88,11 +88,6 @@ syscall_entry:
     POP_GPRS
     addq $8, %rsp
 
-    /* Return to userland with IF=0 for now.
-     * We don't remap/mask the legacy PIC yet, so allowing interrupts in ring3
-     * would deliver IRQs on vectors 0x08-0x0f and collide with exceptions. */
-    andq $~(1<<9), %r11
-
     /* Restore user stack and return to userspace.
      * RCX and R11 were restored from the saved frame.
      */

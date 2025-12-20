@@ -41,6 +41,8 @@ OBJS := \
 	$(BUILD)/main.o \
 	$(BUILD)/arch/serial.o \
 	$(BUILD)/arch/except.o \
+	$(BUILD)/arch/pic.o \
+	$(BUILD)/arch/irq.o \
 	$(BUILD)/arch/idt.o \
 	$(BUILD)/arch/gdt.o \
 	$(BUILD)/arch/syscall.o \
@@ -85,6 +87,12 @@ $(BUILD)/arch/serial.o: arch/serial.c include/kernel.h | $(BUILD)/arch
 
 $(BUILD)/arch/except.o: arch/except.c include/kernel.h | $(BUILD)/arch
 	$(CC) $(CFLAGS) arch/except.c -o $@
+
+$(BUILD)/arch/pic.o: arch/pic.c include/kernel.h | $(BUILD)/arch
+	$(CC) $(CFLAGS) arch/pic.c -o $@
+
+$(BUILD)/arch/irq.o: arch/irq.c include/kernel.h | $(BUILD)/arch
+	$(CC) $(CFLAGS) arch/irq.c -o $@
 
 $(BUILD)/arch/idt.o: arch/idt.c include/kernel.h | $(BUILD)/arch
 	$(CC) $(CFLAGS) arch/idt.c -o $@

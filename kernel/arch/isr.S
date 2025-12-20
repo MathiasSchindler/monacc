@@ -90,3 +90,34 @@ EXC_NOERR 6
 EXC_ERR 8
 EXC_ERR 13
 EXC_ERR 14
+
+/* PIC IRQs after remap to 0x20-0x2F.
+ * These stubs just ACK (EOI) via irq_handler() and return.
+ */
+.macro IRQ vec
+    .global isr\vec
+isr\vec:
+    PUSH_GPRS
+    movl $\vec, %edi
+    .extern irq_handler
+    call irq_handler
+    POP_GPRS
+    iretq
+.endm
+
+IRQ 32
+IRQ 33
+IRQ 34
+IRQ 35
+IRQ 36
+IRQ 37
+IRQ 38
+IRQ 39
+IRQ 40
+IRQ 41
+IRQ 42
+IRQ 43
+IRQ 44
+IRQ 45
+IRQ 46
+IRQ 47

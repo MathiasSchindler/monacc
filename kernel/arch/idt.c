@@ -21,6 +21,24 @@ extern void isr8(void);
 extern void isr13(void);
 extern void isr14(void);
 
+/* PIC IRQ stubs (after remap to 0x20-0x2F). */
+extern void isr32(void);
+extern void isr33(void);
+extern void isr34(void);
+extern void isr35(void);
+extern void isr36(void);
+extern void isr37(void);
+extern void isr38(void);
+extern void isr39(void);
+extern void isr40(void);
+extern void isr41(void);
+extern void isr42(void);
+extern void isr43(void);
+extern void isr44(void);
+extern void isr45(void);
+extern void isr46(void);
+extern void isr47(void);
+
 static struct idt_entry idt[256];
 
 static void idt_set_gate(int vec, void (*handler)(void), uint8_t type_attr) {
@@ -47,6 +65,24 @@ void idt_init(void) {
 	idt_set_gate(8, isr8, 0x8E);   /* #DF */
 	idt_set_gate(13, isr13, 0x8E); /* #GP */
 	idt_set_gate(14, isr14, 0x8E); /* #PF */
+
+	/* PIC IRQs: present | DPL=0 | interrupt gate */
+	idt_set_gate(0x20, isr32, 0x8E);
+	idt_set_gate(0x21, isr33, 0x8E);
+	idt_set_gate(0x22, isr34, 0x8E);
+	idt_set_gate(0x23, isr35, 0x8E);
+	idt_set_gate(0x24, isr36, 0x8E);
+	idt_set_gate(0x25, isr37, 0x8E);
+	idt_set_gate(0x26, isr38, 0x8E);
+	idt_set_gate(0x27, isr39, 0x8E);
+	idt_set_gate(0x28, isr40, 0x8E);
+	idt_set_gate(0x29, isr41, 0x8E);
+	idt_set_gate(0x2A, isr42, 0x8E);
+	idt_set_gate(0x2B, isr43, 0x8E);
+	idt_set_gate(0x2C, isr44, 0x8E);
+	idt_set_gate(0x2D, isr45, 0x8E);
+	idt_set_gate(0x2E, isr46, 0x8E);
+	idt_set_gate(0x2F, isr47, 0x8E);
 
 	/* Note: monacc's sizeof(array) returns element size, not array size.
 	 * Compute manually: 256 entries * 16 bytes = 4096 bytes.

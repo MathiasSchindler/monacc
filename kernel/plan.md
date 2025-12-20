@@ -12,6 +12,15 @@ A minimal kernel for Linux x86_64 syscall-compatible userland, designed to run m
 
 ## Current Status
 
+### Bring-up snapshot (Dec 2025)
+
+- Initramfs is loaded as a Multiboot2 module (uncompressed CPIO `newc`) and exposed through a minimal read-only file + directory layer.
+- The syscall surface is now sufficient to run real tools from initramfs, including recursive directory traversal.
+- `ls /`, `ls -l /`, and `ls -R /` have been validated end-to-end.
+- User stack size matters: tools like `ls` use large on-stack buffers; the kernel allocates a much larger user stack for ring3.
+- PIC is remapped to 0x20-0x2F and all IRQ lines are masked; IRQ stubs exist to ACK (EOI) safely if needed.
+- Ring 3 starts with IF=1 again (safe while IRQs are masked; later work can selectively unmask timer/serial IRQs).
+
 **The kernel now compiles with monacc!** As of Phase 2, all C files are compiled with `../bin/monacc`, with only assembly files (`.S`) using GNU as.
 
 Note: monacc does not currently ship its own `as`/`ld`. The kernel build intentionally uses the host binutils (`as`, `ld`) for `.S` and final link, and keeps monacc-compiled C free of privileged/rare instructions.
@@ -163,6 +172,11 @@ These are easy-to-hit pitfalls that cause “no output”, reboots, or triple fa
 - Prefer deterministic exits: use `isa-debug-exit` (`-device isa-debug-exit,iobase=0xf4,iosize=0x04`) so `exit()` can terminate QEMU without manual interrupts.
 - When diagnosing faults, run with `-no-reboot` and QEMU exception logging (`-d int,cpu_reset -D build/qemu.log`) so you don’t lose the last exception context.
 
+### IRQ/interrupt bring-up note
+
+- Enabling interrupts in ring3 before remapping/masking the legacy PIC (or switching to APIC) can deliver IRQs on vectors overlapping CPU exceptions (0x08-0x0f).
+   Ensure PIC is remapped to 0x20+ and either mask all IRQs or install handlers before running ring3 with IF=1.
+
 ## Phase 0: Bare Metal Hello World
 
 **Goal**: Boot into long mode, print to serial console, halt.
@@ -297,6 +311,13 @@ int main() {
 
 **Goal**: Mount initramfs, support file operations.
 
+**Status**: Implemented as an initramfs-backed read-only filesystem.
+
+Notes:
+
+- The initramfs is a Multiboot2 module containing a CPIO `newc` archive.
+- Directories are synthesized from CPIO path prefixes and iterated via `getdents64` (Linux `dirent64`).
+
 **New components**:
 - Parse CPIO newc format (same as Linux initramfs)
 - In-memory directory tree (inode-like structures)
@@ -322,6 +343,8 @@ int main() {
 
 **Goal**: Load and execute ELF binaries.
 
+**Status**: Implemented; can exec tools from initramfs (e.g. `kinit` -> `execve("/bin/ls", ["ls","-R","/"], env)`).
+
 **New components**:
 - ELF64 loader (parse headers, map PT_LOAD segments)
 - Process structure (pid, page tables, fd table, cwd)
@@ -334,6 +357,10 @@ int main() {
 - Load as **ET_EXEC** at its linked `p_vaddr` (typically `0x400000`) using identity mapping
 - Reserve those pages in the PMM so `mmap()` doesn’t hand them out
 - Build a minimal initial stack with `argc/argv` and enter ring3 at `e_entry`
+
+Bring-up note:
+
+- Allocate a sufficiently large user stack for real tools (some tools use large on-stack buffers).
 
 **Syscalls**: `execve` (59)
 

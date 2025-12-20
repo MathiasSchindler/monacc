@@ -72,23 +72,23 @@ The kernel now builds with monacc instead of gcc/clang. Several workarounds were
 
 1. **Keep privileged/rare instructions out of monacc-compiled C**: monacc's internal assembler is intentionally small and may reject instructions like `cli`, `hlt`, and `mov %cr2, ...`. Workaround: implement low-level CPU helpers in GNU-as `.S` stubs (see `arch/lowlevel.S`) and call them from C.
 
-2. **No `%w` / `%b` operand modifiers in inline asm**: monacc doesn't support sized register operand modifiers like `%w0` (for 16-bit) or `%b0` (for 8-bit). Workaround: avoid inline asm in C where possible; otherwise use separate `__asm__ volatile` statements with full registers, or cast to appropriately-sized types.
+2. **Inline-asm operand modifiers**: `%b/%w/%k/%q` are now supported in monacc; no kernel workarounds currently needed.
 
-3. **`sizeof(array)` returns element size, not array size**: This is a monacc bug. `sizeof(gdt)` for `uint64_t gdt[7]` returns 8 instead of 56. Workaround: hardcode sizes where needed (e.g., `7 * 8 - 1` for GDT limit).
+3. **`sizeof(array)` correctness**: fixed in monacc; the kernel can rely on `sizeof(array)`.
 
 4. **Memory operand `"m"` constraint issues with `lgdt`/`lidt`**: Packed structs used as memory operands don't work reliably. Workaround: use `.S` stubs for `lgdt`/`lidt` so C just passes a pointer.
 
-5. **No `__builtin_unreachable()`**: monacc doesn't have this builtin. Workaround: use an infinite halt loop (e.g. `halt_forever()`) instead.
+5. **`__builtin_unreachable()`**: fixed in monacc; use where appropriate.
 
-6. **`extern` array declarations create local BSS symbols**: When declaring `extern unsigned char userprog_start[]`, monacc generates a local BSS symbol instead of a proper external reference. Workaround: declare as function pointer `void userprog_start_func(void)` and cast: `(uint64_t)userprog_start_func`.
+6. **`extern unsigned char sym[]` linkage**: fixed in monacc; the kernel can use normal linker-symbol array patterns.
 
-7. **`static` local arrays placed on stack, not BSS**: Static local arrays like `static uint8_t kstack0[16384]` are allocated on the function stack instead of BSS. Workaround: move to file scope.
+7. **Function-scope `static` storage**: fixed in monacc.
 
-8. **`sizeof(packed struct)` returns wrong value**: For packed structs, sizeof returns an incorrect (larger) value. TSS64 should be 104 bytes but monacc returns 112. Workaround: hardcode struct sizes.
+8. **Packed struct `sizeof`**: fixed in monacc.
 
-9. **`__attribute__((packed))` not honored for struct layout**: Struct member offsets are aligned to natural boundaries regardless of packed attribute. TSS `rsp0` goes to offset 8 instead of 4. Workaround: use raw byte-level access with explicit offsets.
+9. **Packed struct member offsets**: fixed in monacc.
 
-10. **Compound literal struct assignment only copies 8 bytes**: `tss = (struct tss64){0}` only zeros 8 bytes, not the full struct. Workaround: use explicit byte-by-byte zeroing loop.
+10. **Aggregate assignment/copy**: fixed in monacc; kernel can use idiomatic `{0}` initialization.
 
 ## How to build
 
@@ -138,8 +138,6 @@ Expected serial output includes:
 
 ### monacc-specific issues
 
-- **sizeof(array) bug**: monacc returns element size (8) instead of array size (56 for `uint64_t[7]`). Always compute array sizes manually: `N * sizeof(element)`.
-- **No sized register modifiers**: Use separate asm statements for each segment register load instead of combining with `%w0`.
 - **lgdt/lidt memory operands**: Build the descriptor table pointer as a byte array and use register-indirect addressing.
 
 ### General kernel issues

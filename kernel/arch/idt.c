@@ -84,11 +84,10 @@ void idt_init(void) {
 	idt_set_gate(0x2E, isr46, 0x8E);
 	idt_set_gate(0x2F, isr47, 0x8E);
 
-	/* Note: monacc's sizeof(array) returns element size, not array size.
-	 * Compute manually: 256 entries * 16 bytes = 4096 bytes.
-	 * Use byte array for IDTR to avoid monacc struct memory operand issues. */
+	/* Use a byte array for IDTR to avoid any packed-struct/memory-operand issues;
+	 * lidt itself is performed in an assembly stub (register-indirect). */
 	uint8_t idtr[10];
-	uint16_t lim = (uint16_t)(256 * 16 - 1);
+	uint16_t lim = (uint16_t)(sizeof(idt) - 1);
 	uint64_t base = (uint64_t)idt;
 	idtr[0] = (uint8_t)(lim & 0xFF);
 	idtr[1] = (uint8_t)(lim >> 8);

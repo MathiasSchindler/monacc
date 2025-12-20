@@ -71,6 +71,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
   - `sizeof(*(int(*)[7])0)` patterns
 - Add a compile-time-ish check pattern via `switch`/`case` or `typedef char check[(cond)?1:-1];` if supported.
 
+**Status**: fixed (regression test: `sizeof-array`).
+
 ---
 
 #### 2) `__attribute__((packed))` not honored for member offsets
@@ -90,6 +92,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
   - `sizeof(struct)` equals expected.
   - `alignof(struct)` behavior if supported; otherwise validate that arrays of the struct are contiguous.
 
+  **Status**: fixed (regression test: `packed-offsetof`).
+
 ---
 
 #### 3) `sizeof(packed struct)` returns wrong value
@@ -103,6 +107,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 
 **Regression tests**
 - Include a canonical packed struct example where `sizeof` is known and sensitive.
+
+**Status**: fixed (regression test: `packed-size`).
 
 ---
 
@@ -122,6 +128,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 - Program that assigns `{0}` into a struct with fields beyond the first 8 bytes and checks they are zero.
 - Another program that assigns a non-zero compound literal and checks all fields.
 
+**Status**: fixed (regression test: `compound-literal-assign`).
+
 ---
 
 #### 5) `extern` array declarations / definitions fail to link (symbol binding)
@@ -140,6 +148,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 
 **Status**: fixed (regression test: `extern-array-link`).
 
+Additional coverage: `extern-array-values` checks that the bytes are correct at runtime.
+
 ---
 
 ### P1: quality-of-life / compatibility
@@ -156,6 +166,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 **Regression tests**
 - Program that returns address of a function-local static array, calls function twice, verifies same pointer.
 - Optionally add a size-of-binary/section placement check if you have an ELF reader test harness.
+
+**Status**: fixed (regression tests: `static-local-storage`, `static-local-recursion`).
 
 ---
 
@@ -187,6 +199,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 
 **Regression tests**
 - Compile-only asm-format tests: verify emitted assembly contains expected register names.
+
+**Status**: fixed for `%b/%w/%k/%q` (regression test: `asm-modifiers`).
 
 ---
 
@@ -225,6 +239,8 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 - Kernel no longer needs raw byte-offset hacks for packed structs.
 - `{0}` assignment correctly initializes entire structs.
 
+**Status**: complete (covered by `sizeof-array`, `packed-offsetof`, `packed-size`, `compound-literal-assign`).
+
 ### Phase B: Linkage/storage-class correctness
 
 1. Fix `extern` array declarations / undefined symbol references.
@@ -234,10 +250,16 @@ This list is seeded from `kernel/plan.md` (“monacc limitations discovered”) 
 - Kernel can use idiomatic `extern unsigned char foo[];` patterns.
 - Function-local statics behave like GCC/Clang.
 
+**Status**: complete (covered by `extern-array-link`, `extern-array-values`, `static-local-storage`, `static-local-recursion`).
+
 ### Phase C: Compatibility polish
 
 1. Implement `__builtin_unreachable()`.
 2. Add `%w/%b` modifiers support (if you want to reduce asm friction).
+
+**Status**: mostly complete.
+- `__builtin_unreachable()` is implemented (`builtin-unreachable`).
+- Operand modifiers `%b/%w/%k/%q` are implemented (`asm-modifiers`).
 
 ---
 
@@ -286,7 +308,10 @@ As each bug is fixed, its corresponding test should start passing and will then 
 - `packed-offsetof.c`
 - `packed-size.c`
 - `compound-literal-assign.c`
-- `extern-array-linking/` (multi-TU or C+asm)
+- `extern-array-def.c` + `extern-array-use.c` + `extern-array-values.c`
 - `static-local-storage.c`
+- `static-local-recursion.c`
+- `builtin-unreachable.c`
+- `asm-modifiers.c`
 
 If you want, I can also wire these into the existing test runner once you tell me where you prefer compiler-regression tests to live (under `tests/` vs `examples/`).

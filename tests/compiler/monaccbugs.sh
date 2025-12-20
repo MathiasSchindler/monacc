@@ -52,8 +52,10 @@ run_one sizeof-array tests/compiler/bugs/sizeof-array.c
 run_one packed-offsetof tests/compiler/bugs/packed-offsetof.c
 run_one packed-size tests/compiler/bugs/packed-size.c
 run_one builtin-unreachable tests/compiler/bugs/builtin-unreachable.c
+run_one asm-modifiers tests/compiler/bugs/asm-modifiers.c
 run_one compound-literal-assign tests/compiler/bugs/compound-literal-assign.c
 run_one static-local-storage tests/compiler/bugs/static-local-storage.c
+run_one static-local-recursion tests/compiler/bugs/static-local-recursion.c
 run_one extern-array-link tests/compiler/bugs/extern-array-use.c tests/compiler/bugs/extern-array-def.c
 run_one extern-array-values tests/compiler/bugs/extern-array-values.c tests/compiler/bugs/extern-array-def.c
 

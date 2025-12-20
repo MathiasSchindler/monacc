@@ -252,11 +252,6 @@ static void kproc_die_if_no_runnable(void) {
 	halt_forever();
 }
 
-/* Get user program address from linker symbol via function pointer trick.
- * This avoids monacc issues with extern array declarations. */
-void userprog_start_func(void);
-void userprog_end_func(void);
-
 /* Embedded monacc-built ELF tools (from user/*.S incbin). */
 void user_elf_echo_start(void);
 void user_elf_echo_end(void);

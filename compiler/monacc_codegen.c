@@ -4084,8 +4084,23 @@ static void cg_asm_stmt(CG *cg, const Stmt *s) {
                 // Literal %
                 str_append_bytes(&cg->out, "%", 1);
                 tmpl++;
-            } else if (*tmpl >= '0' && *tmpl <= '9') {
-                // Operand reference
+            } else if (*tmpl == 'b' || *tmpl == 'w' || *tmpl == 'k' || *tmpl == 'q' || (*tmpl >= '0' && *tmpl <= '9')) {
+                // Operand reference, optionally with a size modifier:
+                //   %0   -> natural operand size
+                //   %b0  -> 8-bit reg name
+                //   %w0  -> 16-bit reg name
+                //   %k0  -> 32-bit reg name
+                //   %q0  -> 64-bit reg name
+                int forced_size = 0;
+                if (*tmpl == 'b') { forced_size = 1; tmpl++; }
+                else if (*tmpl == 'w') { forced_size = 2; tmpl++; }
+                else if (*tmpl == 'k') { forced_size = 4; tmpl++; }
+                else if (*tmpl == 'q') { forced_size = 8; tmpl++; }
+
+                if (!(*tmpl >= '0' && *tmpl <= '9')) {
+                    die("asm: missing operand number after %%%c", forced_size == 1 ? 'b' : forced_size == 2 ? 'w' : forced_size == 4 ? 'k' : forced_size == 8 ? 'q' : '?');
+                }
+
                 int opnum = 0;
                 while (*tmpl >= '0' && *tmpl <= '9') {
                     opnum = opnum * 10 + (*tmpl - '0');
@@ -4096,44 +4111,33 @@ static void cg_asm_stmt(CG *cg, const Stmt *s) {
                 }
                 AsmBinding *b = &bindings[opnum];
                 if (b->kind == 0) {
-                    const char *regname = asm_reg_for_size(b->reg_idx, b->size);
+                    int sz = forced_size ? forced_size : b->size;
+                    const char *regname = asm_reg_for_size(b->reg_idx, sz);
                     str_append_bytes(&cg->out, regname, mc_strlen(regname));
-                } else if (b->kind == 1) {
-                    char buf[32];
-                    int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "", (mc_i64)b->mem_offset, "(%%rbp)");
-                    if (n <= 0 || (mc_usize)n >= sizeof(buf)) die("asm: bad mem ref");
-                    str_append_bytes(&cg->out, buf, (mc_usize)n);
-                } else if (b->kind == 2) {
-                    char buf[32];
-                    int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "$", (mc_i64)b->imm_val, "");
-                    if (n <= 0 || (mc_usize)n >= sizeof(buf)) die("asm: bad imm");
-                    str_append_bytes(&cg->out, buf, (mc_usize)n);
-                }
-            } else if (*tmpl == 'w') {
-                // %w0 = 16-bit version
-                tmpl++;
-                if (*tmpl >= '0' && *tmpl <= '9') {
-                    int opnum = *tmpl - '0';
-                    tmpl++;
-                    if (opnum < total_ops && bindings[opnum].kind == 0) {
-                        const char *regname = asm_reg_for_size(bindings[opnum].reg_idx, 2);
-                        str_append_bytes(&cg->out, regname, mc_strlen(regname));
+                } else {
+                    if (forced_size) {
+                        die("asm: %%-modifier only supported for register operands");
                     }
-                }
-            } else if (*tmpl == 'b') {
-                // %b0 = 8-bit version
-                tmpl++;
-                if (*tmpl >= '0' && *tmpl <= '9') {
-                    int opnum = *tmpl - '0';
-                    tmpl++;
-                    if (opnum < total_ops && bindings[opnum].kind == 0) {
-                        const char *regname = asm_reg_for_size(bindings[opnum].reg_idx, 1);
-                        str_append_bytes(&cg->out, regname, mc_strlen(regname));
+                    if (b->kind == 1) {
+                        char buf[32];
+                        int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "", (mc_i64)b->mem_offset, "(%%rbp)");
+                        if (n <= 0 || (mc_usize)n >= sizeof(buf)) die("asm: bad mem ref");
+                        str_append_bytes(&cg->out, buf, (mc_usize)n);
+                    } else if (b->kind == 2) {
+                        char buf[32];
+                        int n = mc_snprint_cstr_i64_cstr(buf, sizeof(buf), "$", (mc_i64)b->imm_val, "");
+                        if (n <= 0 || (mc_usize)n >= sizeof(buf)) die("asm: bad imm");
+                        str_append_bytes(&cg->out, buf, (mc_usize)n);
                     }
                 }
             } else {
-                // Unknown modifier or register name, pass through
+                // Unknown % sequence: pass through literally.
+                // This keeps behavior predictable and avoids infinite loops.
                 str_append_bytes(&cg->out, "%", 1);
+                if (*tmpl) {
+                    str_append_bytes(&cg->out, tmpl, 1);
+                    tmpl++;
+                }
             }
         } else if (*tmpl == '\\' && tmpl[1] == 'n') {
             // \n in template -> newline with indentation

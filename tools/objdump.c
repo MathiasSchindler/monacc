@@ -119,28 +119,23 @@ static const struct elf64_shdr *shdr_at(const mc_u8 *base, mc_usize sz, const st
 	return (const struct elf64_shdr *)(base + (mc_usize)off);
 }
 
-static const char *strtab_at_len(const mc_u8 *base, mc_usize sz, const struct elf64_shdr *str_sh, mc_u32 off, mc_usize *out_len) {
-	if (out_len) *out_len = 0;
-	if (!str_sh) return MC_NULL;
-	if (str_sh->sh_type != SHT_STRTAB) return MC_NULL;
-	if (!bounds_ok(sz, str_sh->sh_offset, str_sh->sh_size)) return MC_NULL;
-	if (off >= str_sh->sh_size) return MC_NULL;
-	const char *p = (const char *)(base + (mc_usize)str_sh->sh_offset + (mc_usize)off);
-	mc_u64 max = str_sh->sh_size - off;
-	for (mc_u64 i = 0; i < max; i++) {
-		if (p[i] == 0) {
-			if (out_len) *out_len = (mc_usize)i;
-			return p;
-		}
-	}
-	return MC_NULL;
-}
 
-static const char *section_name_len(const mc_u8 *base, mc_usize sz, const struct elf64_ehdr *eh, const struct elf64_shdr *sh, mc_usize *out_len) {
-	if (out_len) *out_len = 0;
-	const struct elf64_shdr *shstr = shdr_at(base, sz, eh, (mc_u32)eh->e_shstrndx);
-	mc_u32 name_off = sh->sh_name;
-	return shstr ? strtab_at_len(base, sz, shstr, name_off, out_len) : MC_NULL;
+static mc_usize write_strtab_name(mc_i32 fd, const mc_u8 *base, mc_usize sz, const struct elf64_shdr *str_sh, mc_u32 off, mc_usize cap) {
+	if (!str_sh) return 0;
+	if (str_sh->sh_type != SHT_STRTAB) return 0;
+	if (!bounds_ok(sz, str_sh->sh_offset, str_sh->sh_size)) return 0;
+	if ((mc_u64)off >= str_sh->sh_size) return 0;
+	const char *p = (const char *)(base + (mc_usize)str_sh->sh_offset + (mc_usize)off);
+	mc_u64 max = str_sh->sh_size - (mc_u64)off;
+	mc_usize n = 0;
+	while ((mc_u64)n < max && n < cap) {
+		if (p[n] == 0) break;
+		n++;
+	}
+	// If we consumed the entire remaining strtab without finding a NUL, treat as invalid.
+	if ((mc_u64)n == max) return 0;
+	if (n) (void)mc_write_all(fd, p, n);
+	return n;
 }
 
 static const char *sym_type_str(mc_u8 t) {
@@ -156,23 +151,17 @@ static void dump_sections(const char *argv0, const mc_u8 *base, mc_usize sz, con
 	(void)argv0;
 	(void)mc_write_str(1, "Sections:\n");
 	(void)mc_write_str(1, "Idx Name              Size      VMA               FileOff   Flags\n");
+	const struct elf64_shdr *shstr = shdr_at(base, sz, eh, (mc_u32)eh->e_shstrndx);
 	for (mc_u32 i = 0; i < (mc_u32)eh->e_shnum; i++) {
 		const struct elf64_shdr *sh = shdr_at(base, sz, eh, i);
 		if (!sh) mc_die_errno(argv0, "invalid shdr table", (mc_i64)-MC_EINVAL);
-		mc_usize nm_len = 0;
-		const char *nm = (i == 0) ? "" : section_name_len(base, sz, eh, sh, &nm_len);
-		if (i == 0) nm_len = 0;
 		(void)mc_write_str(1, "");
 		mc_write_u64_dec(1, (mc_u64)i);
 		(void)mc_write_str(1, "  ");
-		if (nm) {
-			mc_usize n = nm_len;
-			if (n > 17) n = 17;
-			(void)mc_write_all(1, nm, n);
-			for (mc_usize k = n; k < 18; k++) (void)mc_write_all(1, " ", 1);
-		} else {
-			(void)mc_write_str(1, "<noname>          ");
-		}
+		mc_usize n = 0;
+		if (i != 0 && shstr) n = write_strtab_name(1, base, sz, shstr, sh->sh_name, 17);
+		// Pad to 18.
+		for (mc_usize k = n; k < 18; k++) (void)mc_write_all(1, " ", 1);
 		write_hex_u64_fixed(1, sh->sh_size, 8);
 		(void)mc_write_str(1, " 0x");
 		write_hex_u64_fixed(1, sh->sh_addr, 16);
@@ -219,10 +208,7 @@ static void dump_symbols(const char *argv0, const mc_u8 *base, mc_usize sz, cons
 			if (s->st_shndx == SHN_UNDEF) (void)mc_write_str(1, "UND  ");
 			else { mc_write_u64_dec(1, (mc_u64)s->st_shndx); (void)mc_write_str(1, "   "); }
 			{
-				mc_usize nm_len = 0;
-				mc_u32 name_off = s->st_name;
-				const char *nm = strtab_at_len(base, sz, strsh, name_off, &nm_len);
-				if (nm && nm_len) (void)mc_write_all(1, nm, nm_len);
+				(void)write_strtab_name(1, base, sz, strsh, s->st_name, 256);
 			}
 			(void)mc_write_str(1, "\n");
 		}

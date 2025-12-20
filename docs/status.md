@@ -10,8 +10,8 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ### Build
 
-- `make` produces a size-optimized stripped binary (~125 KB) + all tools (currently 85)
-- `make test` runs the full test suite (39 examples + tool tests)
+- `make` produces a size-optimized stripped binary (~125 KB) + all tools (currently 99)
+- `make test` runs the full test suite (48 examples + tool tests)
 - `make selfhost` builds the compiler with itself
 - `make clean` removes build artifacts
 
@@ -106,7 +106,7 @@ This document tracks the current state of the monacc compiler and userland tools
 
 ## Part 2: Tool Status
 
-All tools compile and link successfully with monacc (currently 85).
+All tools compile and link successfully with monacc (currently 99).
 
 ### Tool Feature Matrix
 
@@ -207,6 +207,16 @@ All tools compile and link successfully with monacc (currently 85).
 | `tls13` | TLS 1.3 client; record/KDF/handshake | See [tls.md](tls.md) |
 | `x25519` | X25519 key exchange RFC 7748 test | `--rfc7748` |
 
+### Developer/packaging tools
+
+| Tool | Current Features | Notes |
+|------|------------------|-------|
+| `readelf` | ELF header/program headers/sections/symbols (`-h/-l/-S/-s`) | Minimal output, regression-tested |
+| `objdump` | Sections (`-h`) and symbols (`-t`) | Minimal ELF64 inspector |
+| `xxd` | Hexdump; `-l`, `-s`, `-g1`; works on pipes and files | Useful for format sanity checks |
+| `cpio` | newc list/extract/create (`-t/-i/-o`) | Rejects unsafe paths (`..`, absolute) |
+| `uncpio` | Wrapper for `cpio -i` | Convenience |
+
 ---
 
 ## Part 3: Dependency Reduction
@@ -246,7 +256,7 @@ All tools compile and link successfully with monacc (currently 85).
 ### Test Suite
 
 `make test` runs:
-1. **Example programs** (39 tests) — compiler correctness
+1. **Example programs** (48 tests) — compiler correctness
 2. **Tool smoke tests** — basic functionality
 3. **Tool integration tests** — realistic usage
 4. **Tool realworld tests** — recipe-style scenarios
@@ -255,7 +265,7 @@ All tools compile and link successfully with monacc (currently 85).
 
 | Suite | Status |
 |-------|--------|
-| Compiler examples | ✅ 39/39 pass |
+| Compiler examples | ✅ 48/48 pass |
 | Tool tests | ✅ All pass |
 | Self-hosting | ✅ monacc-self builds and runs simple examples |
 
@@ -270,7 +280,7 @@ All tools compile and link successfully with monacc (currently 85).
 | Milestone | Status |
 |-----------|--------|
 | Compiler builds | ✅ |
-| All tools compile (currently 85) | ✅ |
+| All tools compile (currently 99) | ✅ |
 | Tools pass tests | ✅ |
 | Self-hosting works | ✅ (simple examples) |
 | Selfhost inline asm | ✅ Works on current `main` |

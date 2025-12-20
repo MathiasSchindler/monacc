@@ -150,16 +150,35 @@ assert_eq "sh -c argv: argc + at/star" "$EXP" "$OUT"
 OUT=$(run_box "readelf -h '$BIN/monacc' | grep '^  Class:' | sed -e 's/.*: //' | head -n 1")
 assert_eq "readelf header class" "ELF64" "$OUT"
 
+OUT=$(run_box "readelf -l '$BIN/monacc' | grep -q '^Program Headers:' && readelf -l '$BIN/monacc' | grep -q 'LOAD' && echo ok")
+assert_eq "readelf -l has LOAD" "ok" "$OUT"
+
 OUT=$(run_box "readelf -S '$BIN/monacc' | grep -F .text | wc -l")
 assert_eq "readelf sections includes .text" "1" "$OUT"
 
 # 15) objdump: basic output sanity (no crash + expected headers)
-OUT=$(run_box "objdump -h '$BIN/monacc' | grep -q 'file format elf64-x86-64' && objdump -h '$BIN/monacc' | grep -q '^Sections:' && objdump -h '$BIN/monacc' | grep -q '^Idx Name' && echo ok")
+OUT=$(run_box "objdump -h '$BIN/monacc' | grep -q 'file format elf64-x86-64' && objdump -h '$BIN/monacc' | grep -q '^Sections:' && objdump -h '$BIN/monacc' | grep -q '^Idx Name' && objdump -h '$BIN/monacc' | grep -F -q .text && echo ok")
 assert_eq "objdump -h basic" "ok" "$OUT"
+
+OUT=$(run_box "objdump -t '$BIN/monacc' | grep -q '^Symbols:' && objdump -t '$BIN/monacc' | grep -q '^Value' && echo ok")
+assert_eq "objdump -t basic" "ok" "$OUT"
+
+# 15b) xxd: offsets and -s on pipes/files (non-seekable + seekable)
+OUT=$(run_box "echo -n abcd | xxd -s 1 -l 2 | head -n 1 | sed -e 's/:.*//'")
+assert_eq "xxd pipe -s offset" "00000001" "$OUT"
+
+OUT=$(run_box "echo -n abcd | xxd -s 1 -l 2 | head -n 1 | grep -F -q '62 63' && echo ok")
+assert_eq "xxd pipe -s content" "ok" "$OUT"
+
+OUT=$(run_box "rm -f '$RROOT/xxdfile'; echo -n abcd > '$RROOT/xxdfile'; xxd -s 2 -l 2 '$RROOT/xxdfile' | head -n 1 | grep -F -q '63 64' && echo ok")
+assert_eq "xxd file -s content" "ok" "$OUT"
 
 # 16) cpio + xxd: create/list/extract round-trip (pipes + cwd interactions)
 OUT=$(run_box "rm -r -f '$RROOT/cpio'; mkdir -p '$RROOT/cpio/src/sub'; echo -n HELLO > '$RROOT/cpio/src/a'; echo -n WORLD > '$RROOT/cpio/src/sub/b'; cd '$RROOT/cpio/src'; echo a > '$RROOT/cpio/list'; echo sub/b >> '$RROOT/cpio/list'; cpio -o < '$RROOT/cpio/list' > '$RROOT/cpio/archive.cpio'; xxd -l 6 '$RROOT/cpio/archive.cpio' | grep -q '070701' && echo ok")
 assert_eq "cpio create + xxd magic" "ok" "$OUT"
+
+run_box_rc "echo '../x' | cpio -o > '$RROOT/cpio/bad.cpio'"
+assert_rc "cpio rejects unsafe .. path" 1 "$RC"
 
 OUT=$(run_box "cpio -t < '$RROOT/cpio/archive.cpio' | sort")
 EXP=$(printf 'a\nsub/b')

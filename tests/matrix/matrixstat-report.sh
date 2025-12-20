@@ -34,6 +34,37 @@ OUT_DIR="build/matrix"
 OUT_TSV="$OUT_DIR/matrixstat.tsv"
 mkdir -p "$OUT_DIR"
 
+# Pick an awk that supports the features we use below (associative arrays, etc).
+# The repo ships a minimal `./bin/awk` tool which is intentionally not full awk;
+# ensure we don't accidentally run it via PATH shadowing.
+pick_awk() {
+	# Allow override.
+	if [ -n "${MATRIX_AWK:-}" ]; then
+		c="$MATRIX_AWK"
+		if command -v "${c#./}" >/dev/null 2>/dev/null; then
+			if "$c" 'BEGIN{a["x"]=1; exit !(a["x"]==1)}' </dev/null >/dev/null 2>/dev/null; then
+				say "$c"
+				return 0
+			fi
+		fi
+	fi
+
+	for c in awk gawk mawk nawk; do
+		if command -v "${c#./}" >/dev/null 2>/dev/null; then
+			if "$c" 'BEGIN{a["x"]=1; exit !(a["x"]==1)}' </dev/null >/dev/null 2>/dev/null; then
+				say "$c"
+				return 0
+			fi
+		fi
+	done
+	return 1
+}
+
+AWK_CMD="$(pick_awk 2>/dev/null || true)"
+if [ -z "$AWK_CMD" ]; then
+	die "matrixstat-report: need a real awk (awk/gawk/mawk/nawk) for TSV validation"
+fi
+
 # Default to per-tool output (includes __TOTAL__ rows too).
 ARGS="--per-tool"
 if [ -n "${MATRIXSTAT_ARGS:-}" ]; then
@@ -64,7 +95,7 @@ fi
 
 # Validate TSV format and basic invariants so regressions are visible in MULTI=1 make test.
 # (Keep this POSIX-sh + awk, no dependencies.)
-awk -F '\t' '
+"$AWK_CMD" -F '\t' '
 	NR==1 {
 		ncol = NF;
 		for (i=1; i<=NF; i++) idx[$i]=i;

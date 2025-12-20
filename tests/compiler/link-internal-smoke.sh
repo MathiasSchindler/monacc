@@ -23,6 +23,32 @@ for ex in "${subset[@]}"; do
   fi
 done
 
+# Regression: ensure internal assembler supports cdqe/cltq-style sign-extension.
+# This used to fail after codegen started emitting `cdqe` as a shorter alternative
+# to `movslq %eax, %rax`.
+cat > build/test/linkint_cdqe.c <<'EOF'
+long f(int x) {
+  return x;
+}
+
+int main(void) {
+  return (f(-1) == -1) ? 42 : 0;
+}
+EOF
+
+out="build/test/linkint-cdqe"
+./bin/monacc --emit-obj --link-internal build/test/linkint_cdqe.c -o "$out" >/dev/null 2>&1
+
+set +e
+"$out" >/dev/null 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 42 ]; then
+  echo "link-internal-smoke: FAIL (cdqe: exit $rc, expected 42)"
+  exit 1
+fi
+
 cat > build/test/linkint_a.c <<'EOF'
 int b(void);
 int main(void) {
@@ -49,7 +75,7 @@ if [ "$rc" -ne 42 ]; then
   exit 1
 fi
 
-echo "link-internal-smoke: OK (${#subset[@]} examples + multi)"
+echo "link-internal-smoke: OK (${#subset[@]} examples + cdqe + multi)"
 
 # Step 6 smoke: default output is stripped; --keep-shdr keeps section headers.
 dbg_out="build/test/linkint-keep-shdr"

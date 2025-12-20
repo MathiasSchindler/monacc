@@ -43,41 +43,9 @@ The following issues were encountered and worked around:
    - Impact: instructions like `cli`, `hlt`, and `mov %cr2, ...` triggered internal-assembler errors when used from C
    - Workaround: implement low-level helpers in GNU-as `.S` stubs (e.g. `arch/lowlevel.S`) and call them from C
 
-2. **`sizeof(array)` returns pointer size (8) instead of array size**
-   - Impact: GDT limit was 7 instead of 55, causing #GP faults
-   - Status: fixed in monacc; kernel no longer needs this workaround
-
-3. **No `%w` or `%b` operand modifiers in inline asm**
-   - Impact: Can't use `movw %w0, %%ds` for sized register operands
-   - Status: fixed in monacc; revisit any C inline-asm workarounds if desired
-
-4. **Memory operand `"m"` issues with packed structs for `lgdt`/`lidt`**
+2. **Memory operand `"m"` issues with packed structs for `lgdt`/`lidt`**
    - Impact: Unreliable loads of GDTR/IDTR bases when attempted via inline asm memory operands
    - Workaround: use `.S` stubs for `lgdt`/`lidt` so C just passes a pointer
-
-5. **No `__builtin_unreachable()`**
-   - Impact: Compiler doesn't know function won't return
-   - Status: fixed in monacc; kernel can use `__builtin_unreachable()` where appropriate
-
-6. **`extern` array declarations create local BSS symbols**
-   - Impact: `extern unsigned char userprog_start[]` generates local symbol at 0, not external reference
-   - Status: fixed in monacc; kernel can use normal `extern unsigned char sym[]` patterns
-
-7. **`static` local arrays placed on stack, not BSS**
-   - Impact: `static uint8_t kstack0[16384]` inside function uses stack space
-   - Status: fixed in monacc; file-scope is still fine but no longer required
-
-8. **`sizeof(packed struct)` returns wrong value**
-   - Impact: TSS64 should be 104 bytes but monacc returns 112
-   - Status: fixed in monacc; kernel can rely on `sizeof(struct ...)`
-
-9. **`__attribute__((packed))` not honored for struct member offsets**
-   - Impact: TSS rsp0 placed at offset 8 instead of 4 (natural alignment)
-   - Status: fixed in monacc; kernel can rely on packed layout + field access/`offsetof`
-
-10. **Compound literal struct assignment only copies 8 bytes**
-   - Impact: `tss = (struct tss64){0}` only zeros 8 bytes, not full struct
-   - Status: fixed in monacc; kernel can use normal aggregate assignment/initialization
 
 ## Guiding constraints
 
@@ -299,11 +267,7 @@ int main() {
 **Note**: Currently using identity mapping (no virtual memory/page tables yet). Physical pages are returned directly. Full page table support will come in Phase 4.
 
 **Additional monacc workarounds discovered during this phase**:
-- `extern` array declarations create local BSS symbols instead of external references
-- `static` local arrays placed on stack instead of BSS
-- `sizeof(packed struct)` returns incorrect value
-- `__attribute__((packed))` not honored for struct member offsets
-- Compound literal struct assignment only copies 8 bytes
+None currently tracked here; see “monacc limitations discovered” above for remaining constraints.
 
 **Syscalls**: `mmap` (9), `munmap` (11)
 

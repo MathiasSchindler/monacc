@@ -163,3 +163,12 @@ Expected serial output includes:
 - Proper IRQ infrastructure: PIC remap+mask (or APIC) + IRQ handlers, then optionally re-enable ring3 interrupts
 - Reduce syscall debug noise (gate or rate-limit syscall logging)
 - Phase 6+: fork/wait + scheduler + pipes to support `sh` pipelines
+
+## Kernel size notes (future work)
+
+The kernel is currently under the <100KB goal. If we want to shrink it further later, without making debugging painful:
+
+- **Strip the ISO payload**: keep an unstripped `build/kernel.elf` for GDB, but copy a stripped ELF into the ISO (dropping `.symtab/.strtab`).
+- **Make bring-up blobs optional**: exclude embedded user test blobs (e.g. echo/mmap) in “release” builds once initramfs execution is reliable.
+- **Compile out verbose logs**: gate chatty `serial_write("[k] ...")` strings behind a `KDEBUG`/`KLOG` macro.
+- **Enable better dead-code GC**: split large translation units (notably `main.c`) into smaller `.c` files so unused subsystems can be linked out.

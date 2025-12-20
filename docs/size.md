@@ -22,12 +22,12 @@ This is *remarkably good* for a self-hosting compiler. The analysis below identi
 
 ### 1.1 Frame Pointer Prologues — **HIGH IMPACT**
 
-**Observation from TSV:**
+**Observation from matrixstat (aggregate over all tools):**
 ```
-prologue_fp:  monacc=2171, gcc=0, clang=0
+prologue_fp:  monacc=4320, gcc=0, clang=0
 ```
 
-monacc generates frame pointer prologues (`push rbp; mov rbp,rsp`) for *every* function. GCC/Clang with `-fomit-frame-pointer` (the default at `-O2`) emit zero.
+monacc still emits frame-pointer style prologues frequently (`push rbp; mov rbp,rsp`). GCC/Clang with `-fomit-frame-pointer` (the default at `-O2`) emit zero.
 
 **Impact estimate:** Each prologue adds:
 - 1 byte: `push rbp` (0x55)
@@ -35,7 +35,7 @@ monacc generates frame pointer prologues (`push rbp; mov rbp,rsp`) for *every* f
 - 1 byte: `pop rbp` (5D) in epilogue
 - Plus the frame pointer `leave` (0xC9) or `mov rsp,rbp` patterns
 
-At 2171 prologues × ~5-7 bytes = **~11-15 KB** of avoidable overhead.
+At 4320 prologue patterns × ~5-7 bytes = **~22-30 KB** of avoidable overhead.
 
 **Recommendation:**
 - Add an `-fomit-frame-pointer` mode to monacc
@@ -44,10 +44,10 @@ At 2171 prologues × ~5-7 bytes = **~11-15 KB** of avoidable overhead.
 
 ### 1.2 Excessive Register Spilling — **HIGH IMPACT**
 
-**Observation from TSV:**
+**Observation from matrixstat (aggregate over all tools):**
 ```
-push: monacc=11212, gcc=4385, clang=4379  (2.6× more)
-pop:  monacc=10882, gcc=3220, clang=3137  (3.4× more)
+push: monacc=19894, gcc=8622, clang=8666
+pop:  monacc=21848, gcc=6310, clang=6216
 ```
 
 monacc is spilling far more registers. Each push/pop pair is 2 bytes minimum.
@@ -61,24 +61,16 @@ monacc is spilling far more registers. Each push/pop pair is 2 bytes minimum.
 - Audit register allocation strategy
 - Consider linear-scan or graph-coloring allocator improvements
 - Track which callee-saved registers are actually modified
+- Prefer caller-saved temporaries for short-lived values (and only save callee-saved regs when they are actually written)
 
 ### 1.3 Less Aggressive Inlining — **MEDIUM IMPACT**
 
-**Observation from TSV:**
+**Observation from matrixstat (aggregate over all tools):**
 ```
-call: monacc=12121, gcc=5830, clang=5201  (2.1× more)
+call: monacc=17076, gcc=11618, clang=10378
 ```
 
 monacc has twice as many CALL instructions, suggesting less inlining.
-
-**But interestingly:**
-```
-call_ppm: monacc=15810, gcc=20675, clang=16284
-```
-
-The call *density* (per text byte) is actually lower in monacc! This means:
-- monacc code is less dense overall
-- GCC inlines heavily, making remaining code very call-heavy
 
 **Recommendation:**
 - Inline small leaf functions (< 20 instructions)
@@ -120,6 +112,17 @@ Wait — monacc actually **wins** on minimal programs! The 129 bytes for `true` 
 - Mark functions with `static` where possible to enable DCE
 - Consider `-ffunction-sections` + `--gc-sections` equivalent
 
+#### 1.4.1 Structural DCE: status update
+
+This was an obvious hypothesis, but it turns out monacc is already doing the important part:
+
+- monacc emits one function per section (e.g. `.text.mc_exit`, `.text.mc_execvp`), and one string literal per section (e.g. `.rodata.LC0`).
+- the internal linker performs section reachability GC.
+
+So simply splitting `core/` translation units is **not** a meaningful lever by itself.
+
+What still matters (and shows up strongly in the size report) is **dependency footprint**: if a tiny tool references `mc_die_errno`, it will also pull in whatever `mc_die_errno` calls (printers, format helpers, etc.). The most effective global wins come from shrinking those dependency chains and improving codegen (prologues/spills/`movsxd`).
+
 ---
 
 ## Part 2: Code Quality Indicators
@@ -147,19 +150,15 @@ High LEA usage suggests monacc is doing address computation strength reduction.
 
 ### 2.3 Stack Traffic Anomaly — **Investigate**
 
+If you see surprising stack metrics, validate the matcher against monacc’s actual addressing modes.
+
+**Current aggregate counts** (matrixstat):
 ```
-stack_load:  monacc=93,   gcc=2070, clang=2829
-stack_store: monacc=0,    gcc=1874, clang=1658
+stack_load:  monacc=57264, gcc=4400, clang=5794
+stack_store: monacc=26922, gcc=3868, clang=3432
 ```
 
-These numbers are suspiciously low for monacc. Either:
-1. The pattern matcher in matrixstat doesn't recognize monacc's stack addressing mode
-2. monacc uses RBP-relative addressing that wasn't counted
-3. monacc genuinely has different stack access patterns
-
-**Recommendation:**
-- Add a diagnostic pass to dump addressing modes used
-- Verify the matrixstat tool's pattern matching for monacc output
+Given the push/pop deltas, the high stack load/store counts for monacc are consistent with a “spill-heavy” codegen.
 
 ---
 
@@ -168,7 +167,7 @@ These numbers are suspiciously low for monacc. Either:
 ### 3.1 Conditional Branches
 
 ```
-jcc: monacc=28499, gcc=11100, clang=12320  (2.6× more)
+jcc: monacc=36648, gcc=22094, clang=24566
 ```
 
 monacc generates significantly more conditional branches. This could indicate:
@@ -184,7 +183,7 @@ monacc generates significantly more conditional branches. This could indicate:
 ### 3.2 Unconditional Jumps
 
 ```
-jmp: monacc=8511, gcc=3596, clang=2822  (2.4× more)
+jmp: monacc=17030, gcc=7154, clang=5660
 ```
 
 Excess jumps often indicate:
@@ -200,7 +199,7 @@ Excess jumps often indicate:
 ### 3.3 RET Instruction Count
 
 ```
-ret: monacc=4626, gcc=3507, clang=3193
+ret: monacc=9302, gcc=6996, clang=6326
 ```
 
 More RET instructions than necessary could indicate:
@@ -210,6 +209,18 @@ More RET instructions than necessary could indicate:
 **Recommendation:**
 - Consider tail call optimization
 - Merge multiple returns to single exit point where beneficial
+
+### 3.4 Sign-extension / widen ops — **HIGH IMPACT**
+
+**Observation from matrixstat (aggregate over all tools):**
+```
+movsxd: monacc=11140, gcc=1444, clang=1816
+```
+
+`movsxd` is often a symptom of conservative integer-width tracking (e.g., materializing values as 64-bit too early). Two broad fixes tend to shrink code:
+
+- Keep values in 32-bit registers when semantics allow (x86_64 zero-extends 32-bit writes)
+- Avoid repeated sign-extension in loop induction variables and array indexing
 
 ---
 
@@ -344,6 +355,8 @@ The `mc_die_errno` calls are unlikely paths. Consider:
 - Marking with `__builtin_expect(fd < 0, 0)`
 - Moving error paths to cold sections
 
+In addition, consider **factoring error/usage reporting into a dedicated, linkable “heavy” object** so tools that choose “tiny mode” can return exit codes without pulling formatting and string-heavy helpers.
+
 ---
 
 ## Part 6: Specific Per-Tool Analysis
@@ -452,12 +465,12 @@ Set up CI to track:
 
 ## Conclusion
 
-The monacc compiler is in excellent shape for a self-hosting compiler. The 2× size overhead is primarily explained by:
+The monacc compiler is in excellent shape for a self-hosting compiler. The size overhead is primarily explained by:
 
-1. **Frame pointers everywhere** (~11-15 KB overhead)
-2. **Conservative register allocation** (2.6× more push/pop)
-3. **Less aggressive inlining** (2× more calls)
-4. **More control flow instructions** (2.6× more jumps/branches)
+1. **Frequent frame-pointer prologues** (see `prologue_fp`)
+2. **Conservative register allocation / spilling** (~2.3× pushes and ~3.5× pops vs gcc/clang in aggregate)
+3. **Control-flow bloat** (notably `jmp`, plus elevated `jcc`)
+4. **Integer width churn** (high `movsxd` suggests avoidable sign-extension)
 
 None of these are fundamental architectural issues. With the improvements outlined above, it should be possible to reduce the gap from 2× to 1.4-1.5× within a few months of focused work.
 

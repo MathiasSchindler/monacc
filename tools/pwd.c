@@ -2,30 +2,37 @@
 
 __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	(void)argc;
+	(void)argv;
 	(void)envp;
 
-	const char *argv0 = (argv && argv[0]) ? argv[0] : "pwd";
-
-	// Fixed-buffer strategy: try small first, then a larger cap.
-	char buf1[4096];
-	mc_i64 r1 = mc_sys_getcwd(buf1, (mc_usize)sizeof(buf1));
-	if (r1 >= 0) {
-		if (mc_write_str(1, buf1) < 0 || mc_write_all(1, "\n", 1) < 0) {
-			mc_die_errno(argv0, "write", -1);
+	// Keep the implementation minimal: use the raw syscall return length and avoid
+	// pulling in generic I/O/error helpers.
+	char buf[65536];
+	mc_i64 n = mc_sys_getcwd(buf, (mc_usize)sizeof(buf));
+	if (n < 0) {
+		// Keep behavior simple: nonzero exit on failure.
+		(void)mc_syscall1(MC_SYS_exit_group, 1);
+		for (;;) {
+			__asm__ volatile("hlt");
 		}
-		return 0;
 	}
 
-	// If the cwd is longer than buf1, Linux returns -ERANGE.
-	// Retry with a larger (still fixed) buffer.
-	char buf2[65536];
-	mc_i64 r2 = mc_sys_getcwd(buf2, (mc_usize)sizeof(buf2));
-	if (r2 < 0) {
-		mc_die_errno(argv0, "getcwd", r2);
-	}
+	// Linux getcwd returns the number of bytes written, including the NUL.
+	mc_usize len = (n > 0) ? (mc_usize)(n - 1) : 0;
 
-	if (mc_write_str(1, buf2) < 0 || mc_write_all(1, "\n", 1) < 0) {
-		mc_die_errno(argv0, "write", -1);
+	// Best-effort write loop (handles short writes).
+	const mc_u8 *p = (const mc_u8 *)buf;
+	mc_usize off = 0;
+	while (off < len) {
+		mc_i64 w = mc_sys_write(1, p + off, len - off);
+		if (w <= 0) {
+			(void)mc_syscall1(MC_SYS_exit_group, 1);
+			for (;;) {
+				__asm__ volatile("hlt");
+			}
+		}
+		off += (mc_usize)w;
 	}
+	(void)mc_sys_write(1, "\n", 1);
 	return 0;
 }

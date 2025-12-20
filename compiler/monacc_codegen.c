@@ -280,10 +280,10 @@ static int expr_pred_contains_nonsyscall_call(const Expr *e, void *ctx) {
 static int expr_pred_uses_frame_pointer(const Expr *e, void *ctx) {
     (void)ctx;
     if (!e) return 0;
-    // Any access to locals/temps uses rbp-relative addressing in this codegen.
+    // Any access to addressable stack storage uses rbp-relative addressing.
+    // Note: var_offset can be negative (locals) or positive (stack args).
     if (e->kind == EXPR_VAR || e->kind == EXPR_COMPOUND || e->kind == EXPR_SRET_CALL) {
-        if (e->var_offset != 0) return 1;
-        return 1;
+        return (e->var_offset != 0);
     }
     return 0;
 }
@@ -1047,11 +1047,19 @@ static int fn_can_be_frameless(const Function *fn) {
     if (!fn || !fn->has_body) return 0;
     if (fn->stack_size != 0) return 0;
     if (fn->sret_offset != 0) return 0;
+    // Presence of parameter stack slots does not necessarily require a frame if
+    // the parameters are never actually referenced (the prologue spill will be
+    // skipped and codegen won't touch the slot). Treat unused params like they
+    // don't exist so leaf/trivial functions can stay frameless.
     for (int i = 0; i < 6; i++) {
-        if (fn->param_offsets[i] != 0) return 0;
+        int off = fn->param_offsets[i];
+        if (off == 0) continue;
+        if (stmt_count_var_uses(fn->body, off) != 0) return 0;
     }
     for (int i = 0; i < 8; i++) {
-        if (fn->xmm_param_offsets[i] != 0) return 0;
+        int off = fn->xmm_param_offsets[i];
+        if (off == 0) continue;
+        if (stmt_count_var_uses(fn->body, off) != 0) return 0;
     }
     // Frameless functions start with rsp misaligned by 8 bytes (SysV). That's OK
     // only if we don't emit CALL instructions (we still allow syscall builtins).
@@ -1298,7 +1306,7 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
         // Note: don't rely on lval_size here (rvalue expressions often have lval_size==0).
         if (e->rhs && e->rhs->ptr == 0 && !e->rhs->is_unsigned &&
             e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
-            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+            str_appendf(&cg->out, "  cdqe\n");
         }
         if (scale != 1) {
             str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", scale);
@@ -1488,7 +1496,7 @@ static void cg_call(CG *cg, const Expr *e) {
             } else if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
                        a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
                 if (!(a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
-                    str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                    str_appendf(&cg->out, "  cdqe\n");
                 }
             }
             str_appendf(&cg->out, "  push %%rax\n");
@@ -1648,7 +1656,7 @@ static void cg_call(CG *cg, const Expr *e) {
             if (ai[i].is_float) {
                 str_appendf(&cg->out, "  mov %%eax, %%eax\n");
             } else if (need_sext[i] && !(a && a->kind == EXPR_NUM && a->num >= 0 && a->num <= 0x7fffffffLL)) {
-                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                str_appendf(&cg->out, "  cdqe\n");
             }
             str_appendf(&cg->out, "  push %%rax\n");
         } else if (ai[i].kind == CALLARG_STACK_STRUCT) {
@@ -2349,7 +2357,7 @@ slow_binop:
     if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
         if (e->ptr_index_side == 1) {
             if (e->rhs && e->rhs->ptr == 0 && e->rhs->lval_size == 4 && !e->rhs->is_unsigned && e->rhs->base != BT_LONG && e->rhs->base != BT_FLOAT) {
-                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                str_appendf(&cg->out, "  cdqe\n");
             }
             if (e->ptr_scale != 1) {
                 str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", e->ptr_scale);
@@ -2850,7 +2858,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                     if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) {
                         // 32-bit values in %eax are already zero-extended into %rax.
                     } else {
-                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                        str_appendf(&cg->out, "  cdqe\n");
                     }
                 }
                 return;
@@ -3630,7 +3638,7 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                     str_appendf(&cg->out, "  cmp %%ecx, %%eax\n");
                 } else {
                     if (rhs_is64 && lhs_i32_signed) {
-                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                        str_appendf(&cg->out, "  cdqe\n");
                     }
                     if (lhs_is64 && rhs_i32_signed) {
                         str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
@@ -3671,7 +3679,7 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                         str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
                     }
                     if (lhs_is64 && rhs_i32_signed) {
-                        str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                        str_appendf(&cg->out, "  cdqe\n");
                     }
                     str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
                 }
@@ -3765,7 +3773,7 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
                 str_appendf(&cg->out, "  movslq %%ecx, %%rcx\n");
             }
             if (lhs_is64 && rhs_i32_signed) {
-                str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                str_appendf(&cg->out, "  cdqe\n");
             }
             str_appendf(&cg->out, "  cmp %%rax, %%rcx\n");
         }
@@ -4244,7 +4252,7 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                         if (s->expr->ptr > 0 || s->expr->is_unsigned) {
                             // 32-bit return values in %eax are already zero-extended.
                         } else {
-                            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                            str_appendf(&cg->out, "  cdqe\n");
                         }
                     }
                 }
@@ -4322,7 +4330,7 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                         if (is_unsigned) {
                             // %eax write already zero-extends into %rax.
                         } else {
-                            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                            str_appendf(&cg->out, "  cdqe\n");
                         }
                     }
                     emit_store_disp(cg, s->decl_offset, "%rbp", 8);

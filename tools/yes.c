@@ -11,15 +11,13 @@ static void ignore_sigpipe_best_effort(void) {
 
 __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	(void)envp;
-	const char *argv0 = (argc > 0 && argv && argv[0]) ? argv[0] : "yes";
-
 	ignore_sigpipe_best_effort();
 
 	char buf[4096];
 	mc_usize n = 0;
 
 	int ai = 1;
-	if (ai < argc && argv[ai] && mc_streq(argv[ai], "--")) {
+	if (ai < argc && argv && argv[ai] && argv[ai][0] == '-' && argv[ai][1] == '-' && argv[ai][2] == 0) {
 		ai++;
 	}
 
@@ -31,13 +29,13 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 			const char *s = argv[i] ? argv[i] : "";
 			if (i != ai) {
 				if (n + 1 >= sizeof(buf)) {
-					mc_die_usage(argv0, "yes [STRING...]");
+					return 2;
 				}
 				buf[n++] = ' ';
 			}
 			for (const char *p = s; *p; p++) {
 				if (n + 1 >= sizeof(buf)) {
-					mc_die_usage(argv0, "yes [STRING...]");
+					return 2;
 				}
 				buf[n++] = *p;
 			}
@@ -45,7 +43,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	}
 
 	if (n + 1 > sizeof(buf)) {
-		mc_die_usage(argv0, "yes [STRING...]");
+		return 2;
 	}
 	buf[n++] = '\n';
 
@@ -57,7 +55,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 				if (r == -(mc_i64)MC_EPIPE) {
 					return 0;
 				}
-				mc_die_errno(argv0, "write", r);
+				return 1;
 			}
 			if (r == 0) {
 				return 0;

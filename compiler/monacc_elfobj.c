@@ -1701,6 +1701,12 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
         bin_put_u8(&st->cur->data, 0x99);
         return;
     }
+    if (!mc_strcmp(mnem, "cdqe") || !mc_strcmp(mnem, "cltq")) {
+        // 64-bit sign extend: RAX = sign-extend EAX
+        bin_put_u8(&st->cur->data, 0x48);
+        bin_put_u8(&st->cur->data, 0x98);
+        return;
+    }
     if (!mc_strcmp(mnem, "cdq")) {
         // 32-bit sign extend: EDX:EAX = sign-extend EAX
         bin_put_u8(&st->cur->data, 0x99);

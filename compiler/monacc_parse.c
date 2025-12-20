@@ -281,6 +281,92 @@ static void struct_relayout(Parser *p, int struct_id) {
     if (sd->size == 0) sd->size = 1;
 }
 
+static void stackscan_consider_off(int off, int *io_min_off) {
+    if (!io_min_off) return;
+    if (off < *io_min_off) *io_min_off = off;
+}
+
+static int expr_is_void_cast_of_var(const Expr *e) {
+    return e && e->kind == EXPR_CAST && e->base == BT_VOID && e->ptr == 0 && e->lhs && e->lhs->kind == EXPR_VAR;
+}
+
+static void stackscan_expr(const Expr *e, int *io_min_off) {
+    if (!e) return;
+    if (e->kind == EXPR_VAR || e->kind == EXPR_COMPOUND || e->kind == EXPR_SRET_CALL) {
+        stackscan_consider_off(e->var_offset, io_min_off);
+    }
+    stackscan_expr(e->lhs, io_min_off);
+    stackscan_expr(e->rhs, io_min_off);
+    stackscan_expr(e->third, io_min_off);
+    for (int i = 0; i < e->nargs; i++) {
+        stackscan_expr(e->args[i], io_min_off);
+    }
+    for (int i = 0; i < e->ninits; i++) {
+        stackscan_expr(e->inits[i].value, io_min_off);
+    }
+}
+
+static void stackscan_stmt(const Stmt *s, int *io_min_off) {
+    if (!s) return;
+    switch (s->kind) {
+        case STMT_BLOCK:
+            for (const Stmt *cur = s->block_first; cur; cur = cur->next) {
+                stackscan_stmt(cur, io_min_off);
+            }
+            return;
+        case STMT_RETURN:
+            stackscan_expr(s->expr, io_min_off);
+            return;
+        case STMT_IF:
+            stackscan_expr(s->if_cond, io_min_off);
+            stackscan_stmt(s->if_then, io_min_off);
+            stackscan_stmt(s->if_else, io_min_off);
+            return;
+        case STMT_WHILE:
+            stackscan_expr(s->while_cond, io_min_off);
+            stackscan_stmt(s->while_body, io_min_off);
+            return;
+        case STMT_FOR:
+            stackscan_stmt(s->for_init, io_min_off);
+            stackscan_expr(s->for_cond, io_min_off);
+            stackscan_expr(s->for_inc, io_min_off);
+            stackscan_stmt(s->for_body, io_min_off);
+            return;
+        case STMT_SWITCH:
+            stackscan_expr(s->switch_expr, io_min_off);
+            stackscan_stmt(s->switch_body, io_min_off);
+            return;
+        case STMT_LABEL:
+            stackscan_stmt(s->label_stmt, io_min_off);
+            return;
+        case STMT_EXPR:
+            if (expr_is_void_cast_of_var(s->expr)) return;
+            stackscan_expr(s->expr, io_min_off);
+            return;
+        case STMT_DECL:
+            if (s->decl_init) {
+                stackscan_consider_off(s->decl_offset, io_min_off);
+                stackscan_expr(s->decl_init, io_min_off);
+            }
+            return;
+        case STMT_ASM:
+            for (int i = 0; i < s->asm_noutputs; i++) {
+                stackscan_expr(s->asm_outputs[i].expr, io_min_off);
+            }
+            for (int i = 0; i < s->asm_ninputs; i++) {
+                stackscan_expr(s->asm_inputs[i].expr, io_min_off);
+            }
+            return;
+        case STMT_CASE:
+        case STMT_DEFAULT:
+        case STMT_GOTO:
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+        default:
+            return;
+    }
+}
+
 static int skip_type_qualifiers(Parser *p, int *io_is_unsigned, int *io_is_short, int *io_is_long) {
     int any = 0;
     for (;;) {
@@ -3207,8 +3293,16 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
 
     fn.body = parse_block(p, &ls);
     p->cur_fn_name[0] = 0;
-    fn.stack_size = -ls.next_offset;
-    fn.stack_size = (fn.stack_size + 15) & ~15;
+
+    // Compute stack size based on the deepest stack slot we will actually touch.
+    // This avoids paying for unused parameter locals (and other dead locals) that
+    // were allocated during parsing but never referenced.
+    int min_off = 0; // most negative offset referenced; 0 => no stack needed
+    stackscan_consider_off(fn.sret_offset, &min_off);
+    stackscan_stmt(fn.body, &min_off);
+    int need = -min_off;
+    if (need < 0) need = 0;
+    fn.stack_size = (need + 15) & ~15;
     return fn;
 }
 

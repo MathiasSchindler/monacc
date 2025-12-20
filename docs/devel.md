@@ -127,7 +127,82 @@ Expect to use syscalls via `mc_sys_*` wrappers (open/read/write/poll/socket/conn
 
 ---
 
-## 8) If you are blocked: write a request spec (don’t patch core/compiler)
+## 8) Binary size optimization
+
+Small binaries are a project goal. Here's how to minimize size:
+
+### 8.1 Link only what you need
+
+Start with a minimal set and add modules only as needed:
+
+**Minimal build (most tools):**
+```
+./bin/monacc -I core tools/foo.c core/mc_str.c core/mc_io.c -o bin/foo
+```
+
+**Add modules incrementally:**
+- `core/mc_regex.c` — if you use `mc_regex_match_first()`
+- `core/mc_fmt.c` + `core/mc_snprint.c` — if you need formatted output helpers
+
+**Avoid `core/mc_libc_compat.c`** — this module provides libc-compatible wrappers (`memcpy`, `strlen`, etc.) and should not be linked. Use the `mc_*` equivalents directly (`mc_memcpy`, `mc_strlen`, etc.).
+
+**Avoid linking unused modules.** While monacc has `--gc-sections`-equivalent dead code elimination, referencing any symbol in a module may pull in related code.
+
+### 8.2 Code-level optimizations
+
+| Technique | Example | Savings |
+|-----------|---------|---------|
+| Short error messages | `die("read")` vs `die("failed to read BMP header")` | ~20B each |
+| Single `die()` function | Consolidate repeated `mc_write_str(2,...); mc_exit(1);` | ~50B+ |
+| Merge related structs | Combine file header + info header into one read | ~100B |
+| Inline string literals | `mc_write_str(1, "msg")` vs global `static const char *MSG` | minor |
+| Smaller temp buffers | `tmp[64]` vs `tmp[256]` for skip loops | minor |
+| Reduce max limits | `4096` vs `16384` for max dimensions | reduces stack, minor code |
+| Use `mc_sys_*` directly | Avoid wrapper functions for simple syscalls | minor |
+
+### 8.3 Argument parsing pattern (compact)
+
+```c
+int main(int argc, char **argv) {
+    mc_i32 fd = 0;
+    if (argc > 1) {
+        if (mc_streq(argv[1], "-h") || mc_streq(argv[1], "--help")) {
+            mc_write_str(1, "Usage: tool [FILE]\n");
+            return 0;
+        }
+        if (argv[1][0] != '-' || argv[1][1]) {
+            fd = (mc_i32)mc_sys_openat(MC_AT_FDCWD, argv[1], MC_O_RDONLY, 0);
+            if (fd < 0) die("open");
+        }
+    }
+    // ... tool logic using fd (0 = stdin) ...
+}
+```
+
+### 8.4 Compact error handling
+
+```c
+static void die(const char *msg) {
+    mc_write_str(2, "toolname: ");
+    mc_write_str(2, msg);
+    mc_write_str(2, "\n");
+    mc_exit(1);
+}
+```
+
+Use short messages: `die("read")`, `die("format")`, `die("size")`.
+
+### 8.5 Size verification
+
+After building, verify size is reasonable:
+```
+ls -l bin/foo          # should be 3-6 KB for simple tools
+file bin/foo           # should say "statically linked"
+```
+
+---
+
+## 9) If you are blocked: write a request spec (don't patch core/compiler)
 
 If you suspect a missing `core/` feature or a compiler bug/limitation:
 

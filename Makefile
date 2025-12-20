@@ -110,7 +110,8 @@ CORE_TLS_SRC := \
 	core/mc_tls_record.c \
 	core/mc_tls13.c \
 	core/mc_tls13_transcript.c \
-	core/mc_tls13_handshake.c
+	core/mc_tls13_handshake.c \
+	core/mc_tls13_client.c
 
 CORE_MATH_SRC := \
 	core/mc_mathf.c

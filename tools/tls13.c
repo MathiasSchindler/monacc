@@ -6,6 +6,7 @@
 #include "mc_tls13_handshake.h"
 #include "mc_tls13_transcript.h"
 #include "mc_tls_record.h"
+#include "mc_tls13_client.h"
 #include "mc_x25519.h"
 
 // Consolidated TLS 1.3 tool.
@@ -13,15 +14,17 @@
 //   tls13 rec   --smoke
 //   tls13 kdf   --rfc8448-1rtt
 //   tls13 hello --rfc8448-1rtt
-//   tls13 hs    [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT
+//   tls13 hs    [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT
+//   tls13 cat   [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] HOST PORT
 
 static MC_NORETURN void tls13_usage(const char *argv0) {
 	mc_die_usage(argv0,
-		"tls13 <rec|kdf|hello|hs> ...\n"
+		"tls13 <rec|kdf|hello|hs|cat> ...\n"
 		"  tls13 rec   --smoke\n"
 		"  tls13 kdf   --rfc8448-1rtt\n"
 		"  tls13 hello --rfc8448-1rtt\n"
-		"  tls13 hs    [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT\n"
+		"  tls13 hs    [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT\n"
+		"  tls13 cat   [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] HOST PORT\n"
 	);
 }
 
@@ -39,6 +42,13 @@ static void hex_encode(const mc_u8 *in, mc_usize in_len, char *out, mc_usize out
 static int bytes_eq(const mc_u8 *a, const mc_u8 *b, mc_usize n) {
 	if (!a || !b) return 0;
 	return mc_memcmp(a, b, n) == 0;
+}
+
+static int tls13_debug_enabled(char **envp) {
+	const char *v = envp ? mc_getenv_kv(envp, "TLS13_DEBUG=") : 0;
+	if (!v || !*v) return 0;
+	if (mc_streq(v, "0")) return 0;
+	return 1;
 }
 
 // === tls13 rec ===
@@ -685,6 +695,48 @@ static int connect_with_timeout(const char *argv0, mc_i32 fd, const void *sa, mc
 	return 1;
 }
 
+static mc_i32 tls13_connect6(const char *argv0, const char *host, mc_u16 port, mc_u32 timeout_ms,
+	mc_u8 dns_server[16], int have_dns_server) {
+	if (!argv0) argv0 = "tls13";
+	if (!host) return -1;
+
+	mc_u8 dst_ip[16];
+	if (!parse_ipv6_literal(host, dst_ip)) {
+		if (!have_dns_server) {
+			if (!resolv_conf_pick_v6(dns_server)) {
+				(void)parse_ipv6_literal("2001:4860:4860::8888", dns_server);
+			}
+			have_dns_server = 1;
+		}
+		if (!dns6_resolve_first_aaaa(argv0, dns_server, 53, host, timeout_ms, dst_ip)) {
+			mc_u8 dns2[16];
+			(void)parse_ipv6_literal("2001:4860:4860::8844", dns2);
+			if (!dns6_resolve_first_aaaa(argv0, dns2, 53, host, timeout_ms, dst_ip)) {
+				(void)mc_write_str(2, argv0);
+				(void)mc_write_str(2, ": resolve failed\n");
+				return -1;
+			}
+		}
+	}
+
+	struct mc_sockaddr_in6 dst;
+	mc_memset(&dst, 0, sizeof(dst));
+	dst.sin6_family = (mc_u16)MC_AF_INET6;
+	dst.sin6_port = mc_htons(port);
+	for (int k = 0; k < 16; k++) dst.sin6_addr.s6_addr[k] = dst_ip[k];
+
+	mc_i64 fd = mc_sys_socket(MC_AF_INET6, MC_SOCK_STREAM | MC_SOCK_CLOEXEC, MC_IPPROTO_TCP);
+	if (fd < 0) mc_die_errno(argv0, "socket", fd);
+
+	if (!connect_with_timeout(argv0, (mc_i32)fd, &dst, (mc_u32)sizeof(dst), timeout_ms)) {
+		mc_print_errno(argv0, "connect", (mc_i64)-MC_ETIMEDOUT);
+		(void)mc_sys_close((mc_i32)fd);
+		return -1;
+	}
+
+	return (mc_i32)fd;
+}
+
 static int poll_in(mc_i32 fd, mc_u32 timeout_ms) {
 	struct mc_pollfd pfd;
 	pfd.fd = fd;
@@ -790,19 +842,27 @@ static int hs_consume_one(mc_u8 *buf, mc_usize *io_len, mc_u8 *out_type, mc_u32 
 
 static MC_NORETURN void tls13_hs_usage(const char *argv0) {
 	mc_die_usage(argv0,
-		"tls13 hs [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT\n"
+		"tls13 hs [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] [-p PATH] HOST PORT\n"
 		"  HOST: IPv6 literal or hostname (AAAA)\n"
 		"  PORT: usually 443\n"
 	);
 }
 
+static MC_NORETURN void tls13_cat_usage(const char *argv0) {
+	mc_die_usage(argv0,
+		"tls13 cat [-v] [-W TIMEOUT_MS] [-D DNS_SERVER] [-n SNI] HOST PORT\n"
+		"  stdin -> TLS -> server\n"
+		"  server -> TLS -> stdout\n"
+	);
+}
+
 static int cmd_hs(int argc, char **argv, char **envp) {
-	(void)envp;
 	const char *argv0 = (argc > 0 && argv && argv[0]) ? argv[0] : "tls13";
 
 	mc_u32 timeout_ms = 5000;
 	const char *sni = 0;
 	const char *path = "/";
+	int debug = tls13_debug_enabled(envp);
 
 	mc_u8 dns_server[16];
 	int have_dns_server = 0;
@@ -821,6 +881,10 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 			mc_u32 v = 0;
 			if (mc_parse_u32_dec(argv[i], &v) != 0) tls13_hs_usage(argv0);
 			timeout_ms = v;
+			continue;
+		}
+		if (mc_streq(a, "-v") || mc_streq(a, "--debug") || mc_streq(a, "--verbose")) {
+			debug = 1;
 			continue;
 		}
 		if (mc_streq(a, "-D")) {
@@ -858,499 +922,34 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 	mc_usize path_len = mc_strlen(path);
 	if (path_len == 0 || path[0] != '/' || path_len > 2048u) tls13_hs_usage(argv0);
 
-	mc_u8 dst_ip[16];
-	if (!parse_ipv6_literal(host, dst_ip)) {
-		if (!have_dns_server) {
-			if (!resolv_conf_pick_v6(dns_server)) {
-				(void)parse_ipv6_literal("2001:4860:4860::8888", dns_server);
-			}
-			have_dns_server = 1;
-		}
-		if (!dns6_resolve_first_aaaa(argv0, dns_server, 53, host, timeout_ms, dst_ip)) {
-			mc_u8 dns2[16];
-			(void)parse_ipv6_literal("2001:4860:4860::8844", dns2);
-			if (!dns6_resolve_first_aaaa(argv0, dns2, 53, host, timeout_ms, dst_ip)) {
-				(void)mc_write_str(2, argv0);
-				(void)mc_write_str(2, ": resolve failed\n");
-				return 1;
-			}
-		}
-	}
+	mc_i32 fd = tls13_connect6(argv0, host, port, timeout_ms, dns_server, have_dns_server);
+	if (fd < 0) return 1;
 
-	struct mc_sockaddr_in6 dst;
-	mc_memset(&dst, 0, sizeof(dst));
-	dst.sin6_family = (mc_u16)MC_AF_INET6;
-	dst.sin6_port = mc_htons(port);
-	for (int k = 0; k < 16; k++) dst.sin6_addr.s6_addr[k] = dst_ip[k];
-
-	mc_i64 fd = mc_sys_socket(MC_AF_INET6, MC_SOCK_STREAM | MC_SOCK_CLOEXEC, MC_IPPROTO_TCP);
-	if (fd < 0) mc_die_errno(argv0, "socket", fd);
-
-	if (!connect_with_timeout(argv0, (mc_i32)fd, &dst, (mc_u32)sizeof(dst), timeout_ms)) {
-		mc_print_errno(argv0, "connect", (mc_i64)-MC_ETIMEDOUT);
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	// Build ClientHello
-	mc_u8 ch_random[32];
-	mc_u8 ch_sid[32];
-	mc_u8 x25519_priv[32];
-	mc_u8 x25519_pub[32];
-	getrandom_or_die(argv0, ch_random, sizeof(ch_random));
-	getrandom_or_die(argv0, ch_sid, sizeof(ch_sid));
-	getrandom_or_die(argv0, x25519_priv, sizeof(x25519_priv));
-	mc_x25519_public(x25519_pub, x25519_priv);
-
-	mc_u8 ch[2048];
-	mc_usize ch_len = 0;
-	if (mc_tls13_build_client_hello(sni, sni_len, ch_random, ch_sid, sizeof(ch_sid), x25519_pub, ch, sizeof(ch), &ch_len) != 0) {
+	struct mc_tls13_client c;
+	mc_tls13_client_init(&c, fd, timeout_ms);
+	c.debug = debug;
+	if (mc_tls13_client_handshake(&c, sni, sni_len) != 0) {
 		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": ClientHello build failed\n");
-		(void)mc_sys_close((mc_i32)fd);
+		(void)mc_write_str(2, ": handshake failed\n");
+		(void)mc_sys_close(fd);
 		return 1;
 	}
+	if (debug) (void)mc_write_str(2, "handshake_ok 1\n");
 
-	// TLSPlaintext record wrapping the handshake message.
-	mc_u8 rec[5 + 2048];
-	if (ch_len > 2048) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	rec[0] = 22; // handshake
-	rec[1] = 0x03;
-	rec[2] = 0x01; // legacy_record_version
-	rec[3] = (mc_u8)((ch_len >> 8) & 0xFFu);
-	rec[4] = (mc_u8)(ch_len & 0xFFu);
-	mc_memcpy(rec + 5, ch, ch_len);
-
-	mc_i64 wr = mc_write_all((mc_i32)fd, rec, 5 + ch_len);
-	if (wr < 0) mc_die_errno(argv0, "write", wr);
-
-	// Read records until we see ServerHello.
-	mc_u8 rhdr[5];
-	mc_u8 payload[65536];
-	mc_u8 sh_msg[2048];
-	mc_usize sh_len = 0;
-	int got_sh = 0;
-
-	for (int iter = 0; iter < 32; iter++) {
-		if (!read_exact_timeout((mc_i32)fd, rhdr, 5, timeout_ms)) break;
-		mc_u8 rtype = rhdr[0];
-		mc_u16 rlen = (mc_u16)(((mc_u16)rhdr[3] << 8) | (mc_u16)rhdr[4]);
-		if (rlen > sizeof(payload)) break;
-		if (!read_exact_timeout((mc_i32)fd, payload, (mc_usize)rlen, timeout_ms)) break;
-
-		if (rtype != 22) continue;
-
-		mc_usize off = 0;
-		while (off + 4 <= (mc_usize)rlen) {
-			mc_u8 ht = payload[off + 0];
-			mc_u32 hl = ((mc_u32)payload[off + 1] << 16) | ((mc_u32)payload[off + 2] << 8) | (mc_u32)payload[off + 3];
-			mc_usize htot = 4u + (mc_usize)hl;
-			if (off + htot > (mc_usize)rlen) break;
-			if (ht == MC_TLS13_HANDSHAKE_SERVER_HELLO) {
-				if (htot > sizeof(sh_msg)) break;
-				mc_memcpy(sh_msg, payload + off, htot);
-				sh_len = htot;
-				got_sh = 1;
-				break;
-			}
-			off += htot;
-		}
-		if (got_sh) break;
-	}
-
-	if (!got_sh) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": did not receive ServerHello\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	struct mc_tls13_server_hello sh;
-	if (mc_tls13_parse_server_hello(sh_msg, sh_len, &sh) != 0) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": ServerHello parse failed\n");
-		return 1;
-	}
-
-	struct mc_tls13_transcript t;
-	mc_tls13_transcript_init(&t);
-	mc_tls13_transcript_update(&t, ch, ch_len);
-	mc_tls13_transcript_update(&t, sh_msg, sh_len);
-	mc_u8 chsh_hash[32];
-	mc_tls13_transcript_final(&t, chsh_hash);
-
-	if (sh.key_share_group != MC_TLS13_GROUP_X25519 || sh.key_share_len != 32) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": unsupported server key_share\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	if (sh.selected_version != 0x0304) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": server did not select TLS 1.3\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 ecdhe[32];
-	if (mc_x25519_shared(ecdhe, x25519_priv, sh.key_share) != 0) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": x25519_shared failed\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 early[32];
-	mc_u8 zeros32[32];
-	mc_memset(zeros32, 0, sizeof(zeros32));
-	mc_hkdf_extract(zeros32, sizeof(zeros32), zeros32, sizeof(zeros32), early);
-
-	mc_u8 derived[32];
-	if (mc_tls13_derive_secret(early, "derived", sha256_empty_hs_ptr(), derived) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 handshake_secret[32];
-	mc_hkdf_extract(derived, sizeof(derived), ecdhe, sizeof(ecdhe), handshake_secret);
-
-	mc_u8 c_hs[32];
-	mc_u8 s_hs[32];
-	if (mc_tls13_derive_secret(handshake_secret, "c hs traffic", chsh_hash, c_hs) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	if (mc_tls13_derive_secret(handshake_secret, "s hs traffic", chsh_hash, s_hs) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 c_key[16];
-	mc_u8 c_iv[12];
-	if (mc_tls13_hkdf_expand_label(c_hs, "key", MC_NULL, 0, c_key, sizeof(c_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	if (mc_tls13_hkdf_expand_label(c_hs, "iv", MC_NULL, 0, c_iv, sizeof(c_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 s_key[16];
-	mc_u8 s_iv[12];
-	if (mc_tls13_hkdf_expand_label(s_hs, "key", MC_NULL, 0, s_key, sizeof(s_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	if (mc_tls13_hkdf_expand_label(s_hs, "iv", MC_NULL, 0, s_iv, sizeof(s_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u64 s_hs_seq = 0;
-	mc_u64 c_hs_seq = 0;
-	int verified_server_finished = 0;
-
-	mc_u8 hs_buf[131072];
-	mc_usize hs_buf_len = 0;
-
-	for (int iter = 0; iter < 256; iter++) {
-		mc_usize rlen = 0;
-		if (!record_read((mc_i32)fd, timeout_ms, rhdr, payload, sizeof(payload), &rlen)) {
-			break;
-		}
-		mc_u8 rtype = rhdr[0];
-		if (rtype == MC_TLS_CONTENT_CHANGE_CIPHER_SPEC) continue;
-		if (rtype == MC_TLS_CONTENT_ALERT) {
-			(void)mc_write_str(2, argv0);
-			(void)mc_write_str(2, ": got alert\n");
-			break;
-		}
-		if (rtype != MC_TLS_CONTENT_APPLICATION_DATA) continue;
-
-		mc_u8 record[5 + 65536];
-		mc_usize record_len = 5u + rlen;
-		if (record_len > sizeof(record)) break;
-		mc_memcpy(record, rhdr, 5);
-		mc_memcpy(record + 5, payload, rlen);
-
-		mc_u8 inner_type = 0;
-		mc_u8 pt[65536];
-		mc_usize pt_len = 0;
-		if (mc_tls_record_decrypt(s_key, s_iv, s_hs_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) {
-			(void)mc_write_str(2, argv0);
-			(void)mc_write_str(2, ": record decrypt failed\n");
-			break;
-		}
-		s_hs_seq++;
-
-		if (inner_type != MC_TLS_CONTENT_HANDSHAKE) {
-			continue;
-		}
-		if (hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len) != 0) {
-			(void)mc_write_str(2, argv0);
-			(void)mc_write_str(2, ": handshake buffer overflow\n");
-			break;
-		}
-
-		for (;;) {
-			mc_u8 msg_type = 0;
-			mc_u32 msg_body_len = 0;
-			mc_u8 msg[65536];
-			mc_usize msg_len = 0;
-			int cr = hs_consume_one(hs_buf, &hs_buf_len, &msg_type, &msg_body_len, msg, sizeof(msg), &msg_len);
-			if (cr == 1) break;
-			if (cr != 0) {
-				(void)mc_write_str(2, argv0);
-				(void)mc_write_str(2, ": handshake parse failed\n");
-				iter = 9999;
-				break;
-			}
-
-			(void)mc_write_str(2, "hs_type ");
-			(void)mc_write_u64_dec(2, (mc_u64)msg_type);
-			(void)mc_write_str(2, " hs_len ");
-			(void)mc_write_u64_dec(2, (mc_u64)msg_body_len);
-			(void)mc_write_str(2, "\n");
-
-			if (msg_type == MC_TLS13_HS_FINISHED) {
-				mc_u8 th_pre[32];
-				mc_tls13_transcript_final(&t, th_pre);
-				mc_u8 s_finished_key[32];
-				if (mc_tls13_finished_key(s_hs, s_finished_key) != 0) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": finished_key failed\n");
-					iter = 9999;
-					break;
-				}
-				mc_u8 expected_verify[32];
-				mc_tls13_finished_verify_data(s_finished_key, th_pre, expected_verify);
-				mc_memset(s_finished_key, 0, sizeof(s_finished_key));
-				if (msg_body_len != 32 || msg_len != 36) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": bad Finished length\n");
-					iter = 9999;
-					break;
-				}
-				if (!bytes_eq(expected_verify, msg + 4, 32)) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": server Finished verify failed\n");
-					iter = 9999;
-					break;
-				}
-				verified_server_finished = 1;
-			}
-
-			mc_tls13_transcript_update(&t, msg, msg_len);
-			if (msg_type == MC_TLS13_HS_FINISHED) break;
-		}
-
-		if (verified_server_finished) break;
-	}
-
-	if (!verified_server_finished) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": handshake did not reach verified server Finished\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	mc_u8 th_post_server_finished[32];
-	mc_tls13_transcript_final(&t, th_post_server_finished);
-
-	mc_u8 c_finished_key[32];
-	if (mc_tls13_finished_key(c_hs, c_finished_key) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	mc_u8 c_verify[32];
-	mc_tls13_finished_verify_data(c_finished_key, th_post_server_finished, c_verify);
-	mc_memset(c_finished_key, 0, sizeof(c_finished_key));
-
-	mc_u8 cfin[4 + 32];
-	cfin[0] = (mc_u8)MC_TLS13_HS_FINISHED;
-	cfin[1] = 0;
-	cfin[2] = 0;
-	cfin[3] = 32;
-	mc_memcpy(cfin + 4, c_verify, 32);
-
-	mc_u8 cfin_record[5 + 1024];
-	mc_usize cfin_record_len = 0;
-	if (mc_tls_record_encrypt(c_key, c_iv, c_hs_seq, MC_TLS_CONTENT_HANDSHAKE, cfin, sizeof(cfin), cfin_record, sizeof(cfin_record),
-		&cfin_record_len) != 0) {
-		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": encrypt client Finished failed\n");
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-	c_hs_seq++;
-	wr = mc_write_all((mc_i32)fd, cfin_record, cfin_record_len);
-	if (wr < 0) mc_die_errno(argv0, "write", wr);
-
-	mc_tls13_transcript_update(&t, cfin, sizeof(cfin));
-	(void)mc_write_str(2, "sent_client_finished 1\n");
-
-	mc_u8 th_post_client_finished[32];
-	mc_tls13_transcript_final(&t, th_post_client_finished);
-
-	// Derive application traffic keys.
-	mc_u8 derived2[32];
-	if (mc_tls13_derive_secret(handshake_secret, "derived", sha256_empty_hs_ptr(), derived2) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 1;
-	}
-
-	struct ap_variant vars[4];
-	mc_usize nvars = 0;
-	for (int master_mode = 0; master_mode < 2; master_mode++) {
-		mc_u8 master_secret[32];
-		if (master_mode == 0) {
-			mc_u8 zeros32b[32];
-			mc_memset(zeros32b, 0, sizeof(zeros32b));
-			mc_hkdf_extract(derived2, sizeof(derived2), zeros32b, sizeof(zeros32b), master_secret);
-		} else {
-			mc_hkdf_extract(derived2, sizeof(derived2), MC_NULL, 0, master_secret);
-		}
-		for (int th_mode = 0; th_mode < 2; th_mode++) {
-			const mc_u8 *th = (th_mode == 0) ? th_post_server_finished : th_post_client_finished;
-			mc_u8 c_ap[32];
-			mc_u8 s_ap[32];
-			if (mc_tls13_derive_secret(master_secret, "c ap traffic", th, c_ap) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-			if (mc_tls13_derive_secret(master_secret, "s ap traffic", th, s_ap) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-
-			struct ap_variant *v = &vars[nvars++];
-			v->which_master = (mc_u8)master_mode;
-			v->which_th = (mc_u8)th_mode;
-			if (mc_tls13_hkdf_expand_label(c_ap, "key", MC_NULL, 0, v->c_key, sizeof(v->c_key)) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-			if (mc_tls13_hkdf_expand_label(c_ap, "iv", MC_NULL, 0, v->c_iv, sizeof(v->c_iv)) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-			if (mc_tls13_hkdf_expand_label(s_ap, "key", MC_NULL, 0, v->s_key, sizeof(v->s_key)) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-			if (mc_tls13_hkdf_expand_label(s_ap, "iv", MC_NULL, 0, v->s_iv, sizeof(v->s_iv)) != 0) {
-				(void)mc_sys_close((mc_i32)fd);
-				return 1;
-			}
-		}
-		mc_memset(master_secret, 0, sizeof(master_secret));
-	}
-
-	mc_u8 c_ap_key[16];
-	mc_u8 c_ap_iv[12];
-	mc_u8 s_ap_key[16];
-	mc_u8 s_ap_iv[12];
-	mc_u64 c_ap_seq = 0;
-	mc_u64 s_ap_seq = 0;
-	int have_active_ap = 0;
-
-	// Pre-decrypt one record to select active keys.
-	{
-		mc_usize rlen = 0;
-		if (record_read((mc_i32)fd, timeout_ms, rhdr, payload, sizeof(payload), &rlen)) {
-			mc_u8 rtype = rhdr[0];
-			if (rtype == MC_TLS_CONTENT_APPLICATION_DATA) {
-				mc_u8 record[5 + 65536];
-				mc_usize record_len = 5u + rlen;
-				if (record_len <= sizeof(record)) {
-					mc_memcpy(record, rhdr, 5);
-					mc_memcpy(record + 5, payload, rlen);
-
-					mc_u8 inner_type = 0;
-					mc_u8 pt[65536];
-					mc_usize pt_len = 0;
-
-					for (mc_usize vi = 0; vi < nvars && !have_active_ap; vi++) {
-						for (int seq_mode = 0; seq_mode < 2 && !have_active_ap; seq_mode++) {
-							mc_u64 try_seq = (seq_mode == 0) ? 0 : s_hs_seq;
-							if (mc_tls_record_decrypt(vars[vi].s_key, vars[vi].s_iv, try_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) == 0) {
-								mc_memcpy(c_ap_key, vars[vi].c_key, sizeof(c_ap_key));
-								mc_memcpy(c_ap_iv, vars[vi].c_iv, sizeof(c_ap_iv));
-								mc_memcpy(s_ap_key, vars[vi].s_key, sizeof(s_ap_key));
-								mc_memcpy(s_ap_iv, vars[vi].s_iv, sizeof(s_ap_iv));
-								s_ap_seq = try_seq + 1;
-								c_ap_seq = (seq_mode == 0) ? 0 : c_hs_seq;
-								have_active_ap = 1;
-								(void)mc_write_str(2, "selected_ap_keys master=");
-								(void)mc_write_u64_dec(2, (mc_u64)vars[vi].which_master);
-								(void)mc_write_str(2, " th=");
-								(void)mc_write_u64_dec(2, (mc_u64)vars[vi].which_th);
-								(void)mc_write_str(2, " seq_mode=");
-								(void)mc_write_u64_dec(2, (mc_u64)seq_mode);
-								(void)mc_write_str(2, "\n");
-								break;
-							}
-						}
-					}
-
-					if (!have_active_ap) {
-						(void)mc_write_str(2, "post_handshake_record_decrypt_failed 1\n");
-					} else {
-						if (inner_type == MC_TLS_CONTENT_HANDSHAKE) {
-							hs_buf_len = 0;
-							(void)hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len);
-							for (;;) {
-								mc_u8 msg_type = 0;
-								mc_u32 msg_body_len = 0;
-								mc_u8 msg[65536];
-								mc_usize msg_len = 0;
-								int cr = hs_consume_one(hs_buf, &hs_buf_len, &msg_type, &msg_body_len, msg, sizeof(msg), &msg_len);
-								if (cr == 1) break;
-								if (cr != 0) break;
-								(void)mc_write_str(2, "post_hs_type ");
-								(void)mc_write_u64_dec(2, (mc_u64)msg_type);
-								(void)mc_write_str(2, " post_hs_len ");
-								(void)mc_write_u64_dec(2, (mc_u64)msg_body_len);
-								(void)mc_write_str(2, "\n");
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if (!have_active_ap) {
-		// Default to the tls.md diagram: master IKM=0^32, th=ServerFinished, new epoch.
-		mc_memcpy(c_ap_key, vars[0].c_key, sizeof(c_ap_key));
-		mc_memcpy(c_ap_iv, vars[0].c_iv, sizeof(c_ap_iv));
-		mc_memcpy(s_ap_key, vars[0].s_key, sizeof(s_ap_key));
-		mc_memcpy(s_ap_iv, vars[0].s_iv, sizeof(s_ap_iv));
-		c_ap_seq = 0;
-		s_ap_seq = 0;
-		have_active_ap = 1;
-		(void)mc_write_str(2, "selected_ap_keys_default 1\n");
-	}
-
-	// Send a minimal HTTP/1.1 request as application data.
 	char req[4096];
 	mc_usize req_len = 0;
 	{
 		const char *p0 = "GET ";
 		const char *p1 = " HTTP/1.1\r\nHost: ";
 		const char *p2 = "\r\nUser-Agent: monacc-tls13\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-		mc_usize l0 = 4u;
-		mc_usize l1 = 17u;
-		mc_usize l2 = 62u;
+		mc_usize l0 = mc_strlen(p0);
+		mc_usize l1 = mc_strlen(p1);
+		mc_usize l2 = mc_strlen(p2);
 		mc_usize need = l0 + path_len + l1 + sni_len + l2;
 		if (need > sizeof(req)) {
 			(void)mc_write_str(2, argv0);
 			(void)mc_write_str(2, ": request too large\n");
-			(void)mc_sys_close((mc_i32)fd);
+			(void)mc_sys_close(fd);
 			return 1;
 		}
 		mc_memcpy(req + req_len, p0, l0);
@@ -1365,106 +964,167 @@ static int cmd_hs(int argc, char **argv, char **envp) {
 		req_len += l2;
 	}
 
-	mc_u8 req_record[5 + 4096 + 64];
-	mc_usize req_record_len = 0;
-	if (mc_tls_record_encrypt(c_ap_key, c_ap_iv, c_ap_seq, MC_TLS_CONTENT_APPLICATION_DATA, (const mc_u8 *)req, req_len, req_record,
-		sizeof(req_record), &req_record_len) != 0) {
+	if (mc_tls13_client_write_app(&c, (const mc_u8 *)req, req_len) < 0) {
 		(void)mc_write_str(2, argv0);
-		(void)mc_write_str(2, ": encrypt http request failed\n");
-		(void)mc_sys_close((mc_i32)fd);
+		(void)mc_write_str(2, ": write_app failed\n");
+		(void)mc_sys_close(fd);
 		return 1;
 	}
-	c_ap_seq++;
-	wr = mc_write_all((mc_i32)fd, req_record, req_record_len);
-	if (wr < 0) mc_die_errno(argv0, "write", wr);
-	(void)mc_write_str(2, "sent_http_request 1\n");
+	if (debug) (void)mc_write_str(2, "sent_http_request 1\n");
 
-	hs_buf_len = 0;
-	for (int iter = 0; iter < 4096; iter++) {
-		mc_usize rlen = 0;
-		if (!record_read((mc_i32)fd, timeout_ms, rhdr, payload, sizeof(payload), &rlen)) {
-			break;
-		}
-		mc_u8 rtype = rhdr[0];
-		if (rtype == MC_TLS_CONTENT_CHANGE_CIPHER_SPEC) continue;
-		if (rtype == MC_TLS_CONTENT_ALERT) {
-			(void)mc_write_str(2, argv0);
-			(void)mc_write_str(2, ": got plaintext alert\n");
-			break;
-		}
-		if (rtype != MC_TLS_CONTENT_APPLICATION_DATA) continue;
-
-		mc_u8 record[5 + 65536];
-		mc_usize record_len = 5u + rlen;
-		if (record_len > sizeof(record)) break;
-		mc_memcpy(record, rhdr, 5);
-		mc_memcpy(record + 5, payload, rlen);
-
-		mc_u8 inner_type = 0;
-		mc_u8 pt[65536];
-		mc_usize pt_len = 0;
-		if (mc_tls_record_decrypt(s_ap_key, s_ap_iv, s_ap_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) {
-			(void)mc_write_str(2, argv0);
-			(void)mc_write_str(2, ": app record decrypt failed\n");
-			break;
-		}
-		s_ap_seq++;
-
-		if (inner_type == MC_TLS_CONTENT_APPLICATION_DATA) {
-			if (pt_len) (void)mc_write_all(1, pt, pt_len);
+	for (;;) {
+		mc_u8 buf[8192];
+		mc_i64 rn = mc_tls13_client_read_app(&c, buf, sizeof(buf));
+		if (rn > 0) {
+			(void)mc_write_all(1, buf, (mc_usize)rn);
 			continue;
 		}
-		if (inner_type == MC_TLS_CONTENT_HANDSHAKE) {
-			if (hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len) != 0) {
-				(void)mc_write_str(2, argv0);
-				(void)mc_write_str(2, ": post-handshake buffer overflow\n");
-				break;
-			}
-			for (;;) {
-				mc_u8 msg_type = 0;
-				mc_u32 msg_body_len = 0;
-				mc_u8 msg[65536];
-				mc_usize msg_len = 0;
-				int cr = hs_consume_one(hs_buf, &hs_buf_len, &msg_type, &msg_body_len, msg, sizeof(msg), &msg_len);
-				if (cr == 1) break;
-				if (cr != 0) {
-					(void)mc_write_str(2, argv0);
-					(void)mc_write_str(2, ": post-handshake parse failed\n");
-					iter = 9999;
-					break;
+		if (rn == 0) break;
+		(void)mc_write_str(2, argv0);
+		(void)mc_write_str(2, ": read_app failed\n");
+		(void)mc_sys_close(fd);
+		return 1;
+	}
+
+	(void)mc_sys_close(fd);
+	return 0;
+}
+
+static int cmd_cat(int argc, char **argv, char **envp) {
+	const char *argv0 = (argc > 0 && argv && argv[0]) ? argv[0] : "tls13";
+
+	mc_u32 timeout_ms = 5000;
+	const char *sni = 0;
+	int debug = tls13_debug_enabled(envp);
+
+	mc_u8 dns_server[16];
+	int have_dns_server = 0;
+
+	int i = 2;
+	for (; i < argc; i++) {
+		const char *a = argv[i];
+		if (!a) break;
+		if (mc_streq(a, "--")) {
+			i++;
+			break;
+		}
+		if (mc_streq(a, "-W")) {
+			i++;
+			if (i >= argc) tls13_cat_usage(argv0);
+			mc_u32 v = 0;
+			if (mc_parse_u32_dec(argv[i], &v) != 0) tls13_cat_usage(argv0);
+			timeout_ms = v;
+			continue;
+		}
+		if (mc_streq(a, "-v") || mc_streq(a, "--debug") || mc_streq(a, "--verbose")) {
+			debug = 1;
+			continue;
+		}
+		if (mc_streq(a, "-D")) {
+			i++;
+			if (i >= argc) tls13_cat_usage(argv0);
+			if (!parse_ipv6_literal(argv[i], dns_server)) tls13_cat_usage(argv0);
+			have_dns_server = 1;
+			continue;
+		}
+		if (mc_streq(a, "-n")) {
+			i++;
+			if (i >= argc) tls13_cat_usage(argv0);
+			sni = argv[i];
+			continue;
+		}
+		if (a[0] == '-' && a[1] != 0) tls13_cat_usage(argv0);
+		break;
+	}
+
+	if (i + 2 != argc) tls13_cat_usage(argv0);
+	const char *host = argv[i];
+	mc_u32 pv = 0;
+	if (mc_parse_u32_dec(argv[i + 1], &pv) != 0 || pv == 0 || pv > 65535u) tls13_cat_usage(argv0);
+	mc_u16 port = (mc_u16)pv;
+
+	if (!sni) sni = host;
+	mc_usize sni_len = mc_strlen(sni);
+	if (sni_len == 0 || sni_len > 255u) tls13_cat_usage(argv0);
+
+	mc_i32 fd = tls13_connect6(argv0, host, port, timeout_ms, dns_server, have_dns_server);
+	if (fd < 0) return 1;
+
+	struct mc_tls13_client c;
+	mc_tls13_client_init(&c, fd, timeout_ms);
+	c.debug = debug;
+	if (mc_tls13_client_handshake(&c, sni, sni_len) != 0) {
+		(void)mc_write_str(2, argv0);
+		(void)mc_write_str(2, ": handshake failed\n");
+		(void)mc_sys_close(fd);
+		return 1;
+	}
+	if (debug) (void)mc_write_str(2, "handshake_ok 1\n");
+
+	int stdin_eof = 0;
+	int sent_close = 0;
+	(void)set_nonblock(0, 1);
+
+	for (;;) {
+		struct mc_pollfd pfds[2];
+		mc_u32 nfds = 0;
+		mc_u32 stdin_idx = 0;
+		mc_u32 sock_idx = 0;
+
+		if (!stdin_eof) {
+			stdin_idx = nfds;
+			pfds[nfds].fd = 0;
+			pfds[nfds].events = MC_POLLIN;
+			pfds[nfds].revents = 0;
+			nfds++;
+		}
+		sock_idx = nfds;
+		pfds[nfds].fd = c.fd;
+		pfds[nfds].events = MC_POLLIN;
+		pfds[nfds].revents = 0;
+		nfds++;
+
+		mc_i64 pr = mc_sys_poll(pfds, nfds, (mc_i32)timeout_ms);
+		if (pr < 0) break;
+		if (pr == 0) continue;
+
+		if (!stdin_eof) {
+			if (pfds[stdin_idx].revents & (MC_POLLIN | MC_POLLHUP)) {
+				mc_u8 inbuf[4096];
+				mc_i64 rn = mc_sys_read(0, inbuf, sizeof(inbuf));
+				if (rn <= 0) {
+					stdin_eof = 1;
+				} else {
+					if (mc_tls13_client_write_app(&c, inbuf, (mc_usize)rn) < 0) {
+						(void)mc_write_str(2, argv0);
+						(void)mc_write_str(2, ": write_app failed\n");
+						break;
+					}
 				}
-				(void)mc_write_str(2, "post_hs_type ");
-				(void)mc_write_u64_dec(2, (mc_u64)msg_type);
-				(void)mc_write_str(2, " post_hs_len ");
-				(void)mc_write_u64_dec(2, (mc_u64)msg_body_len);
-				(void)mc_write_str(2, "\n");
+				if (stdin_eof && !sent_close) {
+					if (mc_tls13_client_close_notify(&c) == 0) {
+						sent_close = 1;
+						if (debug) (void)mc_write_str(2, "sent_close_notify 1\n");
+					}
+				}
 			}
-			continue;
 		}
-		if (inner_type == MC_TLS_CONTENT_ALERT) {
-			(void)mc_write_str(2, "got_encrypted_alert 1\n");
+
+		if (pfds[sock_idx].revents & (MC_POLLIN | MC_POLLHUP)) {
+			mc_u8 outbuf[8192];
+			mc_i64 on = mc_tls13_client_read_app(&c, outbuf, sizeof(outbuf));
+			if (on > 0) {
+				(void)mc_write_all(1, outbuf, (mc_usize)on);
+				continue;
+			}
+			if (on == 0) break;
+			(void)mc_write_str(2, argv0);
+			(void)mc_write_str(2, ": read_app failed\n");
 			break;
 		}
 	}
 
-	(void)mc_sys_close((mc_i32)fd);
-
-	(void)mc_write_str(2, "server_version ");
-	mc_write_hex_u64(2, (mc_u64)sh.selected_version);
-	(void)mc_write_str(2, "\n");
-	(void)mc_write_str(2, "cipher_suite ");
-	mc_write_hex_u64(2, (mc_u64)sh.cipher_suite);
-	(void)mc_write_str(2, "\n");
-	(void)mc_write_str(2, "key_share_group ");
-	mc_write_hex_u64(2, (mc_u64)sh.key_share_group);
-	(void)mc_write_str(2, "\n");
-	(void)mc_write_str(2, "server_key_share ");
-	write_hex_bytes(2, sh.key_share, sh.key_share_len);
-	(void)mc_write_str(2, "\n");
-	(void)mc_write_str(2, "chsh_hash ");
-	write_hex_bytes(2, chsh_hash, sizeof(chsh_hash));
-	(void)mc_write_str(2, "\n");
-
+	(void)mc_sys_close(fd);
 	return 0;
 }
 
@@ -1474,6 +1134,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	if (mc_streq(argv[1], "kdf")) return cmd_kdf(argc, argv);
 	if (mc_streq(argv[1], "hello")) return cmd_hello(argc, argv);
 	if (mc_streq(argv[1], "hs")) return cmd_hs(argc, argv, envp);
+	if (mc_streq(argv[1], "cat")) return cmd_cat(argc, argv, envp);
 	tls13_usage(argv[0]);
 	return 1;
 }

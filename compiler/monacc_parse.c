@@ -3474,6 +3474,7 @@ void parse_program(Parser *p, Program *out) {
         gv.is_extern = saw_extern;
         gv.has_init = 0;
         gv.init_str_id = -1;
+        gv.init_kind = 0;
 
         int elem_size = type_sizeof(p->prg, base, ptr, sid);
         gv.elem_size = elem_size;
@@ -3590,6 +3591,19 @@ void parse_program(Parser *p, Program *out) {
                     int blob_id = program_add_str(out, buf8, (mc_usize)elem_size);
                     gv.has_init = 1;
                     gv.init_str_id = blob_id;
+                    gv.init_kind = 0;
+                    supported = 1;
+                }
+            }
+
+            // Minimal pointer initializer support:
+            // - `static const char *p = "literal";`  (address of string literal)
+            if (!supported && gv.ptr == 1 && gv.base == BT_CHAR && gv.array_len == 0 && p->tok.kind == TOK_STR) {
+                Expr *se = parse_expr(p, &dummy_ls);
+                if (se && se->kind == EXPR_STR) {
+                    gv.has_init = 1;
+                    gv.init_str_id = se->str_id;
+                    gv.init_kind = 1;
                     supported = 1;
                 }
             }

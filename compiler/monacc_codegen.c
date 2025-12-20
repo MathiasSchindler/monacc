@@ -4555,25 +4555,38 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
                 if (gv->init_str_id >= prg->nstrs) {
                     die("internal: bad init_str_id %d", gv->init_str_id);
                 }
-                const StringLit *sl = &prg->strs[gv->init_str_id];
-                mc_usize len = sl->len;
-                if (gv->size > 0 && len > (mc_usize)gv->size) len = (mc_usize)gv->size;
 
-                for (mc_usize off = 0; off < len; ) {
-                    str_appendf(&cg.out, "  .byte ");
-                    mc_usize n = len - off;
-                    if (n > 16) n = 16;
-                    for (mc_usize j = 0; j < n; j++) {
-                        unsigned int b = (unsigned int)sl->data[off + j];
-                        str_appendf_su(&cg.out, "%s%u", (j == 0) ? "" : ", ", (unsigned long long)b);
+                if (gv->init_kind == 1) {
+                    // Pointer to string literal: store the address of .LC<id>.
+                    // This requires the internal linker to support R_X86_64_64 relocations.
+                    str_appendf_i64(&cg.out, "  .quad .LC%d\n", (long long)gv->init_str_id);
+                    if (gv->size > 8) {
+                        str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size - 8);
+                    } else {
+                        str_appendf(&cg.out, "\n");
                     }
-                    str_appendf(&cg.out, "\n");
-                    off += n;
-                }
-                if (gv->size > (int)len) {
-                    str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size - (int)len);
                 } else {
-                    str_appendf(&cg.out, "\n");
+                    // Raw init bytes.
+                    const StringLit *sl = &prg->strs[gv->init_str_id];
+                    mc_usize len = sl->len;
+                    if (gv->size > 0 && len > (mc_usize)gv->size) len = (mc_usize)gv->size;
+
+                    for (mc_usize off = 0; off < len; ) {
+                        str_appendf(&cg.out, "  .byte ");
+                        mc_usize n = len - off;
+                        if (n > 16) n = 16;
+                        for (mc_usize j = 0; j < n; j++) {
+                            unsigned int b = (unsigned int)sl->data[off + j];
+                            str_appendf_su(&cg.out, "%s%u", (j == 0) ? "" : ", ", (unsigned long long)b);
+                        }
+                        str_appendf(&cg.out, "\n");
+                        off += n;
+                    }
+                    if (gv->size > (int)len) {
+                        str_appendf_i64(&cg.out, "  .zero %d\n\n", gv->size - (int)len);
+                    } else {
+                        str_appendf(&cg.out, "\n");
+                    }
                 }
                 continue;
             }

@@ -39,6 +39,7 @@
 
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
+#define R_X86_64_64 1
 
 typedef struct {
     unsigned char e_ident[EI_NIDENT];
@@ -1546,6 +1547,49 @@ static void parse_byte_directive(AsmState *st, const char *p, const char *end) {
     }
 }
 
+static void parse_quad_directive(AsmState *st, const char *p, const char *end) {
+    if (!st->cur) die("asm: .quad outside section");
+    if (st->cur->sh_type == SHT_NOBITS) die("asm: .quad in @nobits section");
+
+    p += mc_strlen(".quad");
+    p = skip_ws(p, end);
+    if (p >= end) die("asm: .quad missing value");
+
+    // Support either an integer constant or a single symbol with optional +/- addend.
+    if (*p == '-' || *p == '+' || (*p >= '0' && *p <= '9')) {
+        long long v = 0;
+        if (!parse_int64(p, end, &v)) die("asm: bad .quad value");
+        mc_u64 uv = (mc_u64)v;
+        for (int i = 0; i < 8; i++) {
+            bin_put_u8(&st->cur->data, (unsigned int)((uv >> (8 * i)) & 0xffu));
+        }
+        return;
+    }
+
+    const char *nm = p;
+    const char *q = p;
+    while (q < end && !is_space(*q) && *q != '+' && *q != '-' && *q != ',') q++;
+    const char *nm_end = q;
+    nm_end = rskip_ws(nm, nm_end);
+    if (nm >= nm_end) die("asm: bad .quad symbol");
+
+    int64_t addend = 0;
+    p = skip_ws(q, end);
+    if (p < end && (*p == '+' || *p == '-')) {
+        int neg = (*p == '-');
+        p++;
+        p = skip_ws(p, end);
+        long long av = 0;
+        if (!parse_int64(p, end, &av)) die("asm: bad .quad addend");
+        addend = (int64_t)(neg ? -av : av);
+    }
+
+    ObjSym *s = get_or_add_sym(st, nm, span_len(nm, nm_end));
+    uint64_t off = (uint64_t)st->cur->data.len;
+    sec_add_rela(st->cur, off, s->name, R_X86_64_64, addend);
+    for (int i = 0; i < 8; i++) bin_put_u8(&st->cur->data, 0);
+}
+
 static void parse_align_directive(AsmState *st, const char *p, const char *end) {
     if (!st->cur) die("asm: .align outside section");
     p += mc_strlen(".align");
@@ -2456,6 +2500,10 @@ void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *o
             }
             if (starts_with(a, b, ".byte")) {
                 parse_byte_directive(&st, a, b);
+                continue;
+            }
+            if (starts_with(a, b, ".quad")) {
+                parse_quad_directive(&st, a, b);
                 continue;
             }
             if (starts_with(a, b, ".zero")) {

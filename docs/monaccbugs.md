@@ -204,6 +204,20 @@ Additional coverage: `extern-array-values` checks that the bytes are correct at 
 
 ---
 
+#### 9) Global `const char *` string initializer dropped
+
+- **Symptom**: `static const char *p = "literal";` behaves as if `p == NULL` at runtime.
+- **Impact**: common CLI patterns crash when the pointer is used.
+- **Likely root cause**: unsupported global initializer got silently ignored, leaving the symbol in `.bss`.
+
+**Fix sketch**
+- Support pointer-to-string-literal global init by emitting a `.data.*` entry with an absolute relocation to the `.LC*` label.
+- Ensure the internal assembler and linker support `R_X86_64_64` for `.quad <symbol>`.
+
+**Status**: fixed (regression test: `global-strptr-init`).
+
+---
+
 ### P2: deliberate limitation / product choice
 
 #### 9) Privileged / rare instructions rejected by internal assembler

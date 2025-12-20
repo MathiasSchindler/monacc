@@ -272,11 +272,14 @@ typedef struct {
     int array_len;      // number of elements if array; -1 => incomplete (extern T name[]); 0 => not an array
     int is_extern;
 
-    // Optional initializer support (minimal): emit initial bytes for string-initialized char arrays.
-    // If has_init is set and init_str_id >= 0, codegen will emit this global into a .data.* section
-    // with the string bytes and then pad with zeros up to `size`.
+    // Optional initializer support (minimal).
+    // If has_init is set and init_str_id >= 0, codegen will emit this global into a .data.* section.
+    // init_kind controls how init_str_id is interpreted:
+    // - 0: raw bytes (Program.strs[init_str_id]) copied into .data.* (used for numeric scalars and arrays)
+    // - 1: pointer to string literal .LC<init_str_id> (writes an address-sized word)
     int has_init;
     int init_str_id; // index into Program.strs
+    int init_kind;
 } GlobalVar;
 
 struct Program {

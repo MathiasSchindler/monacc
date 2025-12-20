@@ -31,6 +31,7 @@
 
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
+#define R_X86_64_64 1
 
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
@@ -111,6 +112,17 @@ static void put_u32_le(unsigned char *p, mc_u32 v) {
     p[1] = (unsigned char)((v >> 8) & 0xffu);
     p[2] = (unsigned char)((v >> 16) & 0xffu);
     p[3] = (unsigned char)((v >> 24) & 0xffu);
+}
+
+static void put_u64_le(unsigned char *p, mc_u64 v) {
+    p[0] = (unsigned char)(v & 0xffu);
+    p[1] = (unsigned char)((v >> 8) & 0xffu);
+    p[2] = (unsigned char)((v >> 16) & 0xffu);
+    p[3] = (unsigned char)((v >> 24) & 0xffu);
+    p[4] = (unsigned char)((v >> 32) & 0xffu);
+    p[5] = (unsigned char)((v >> 40) & 0xffu);
+    p[6] = (unsigned char)((v >> 48) & 0xffu);
+    p[7] = (unsigned char)((v >> 56) & 0xffu);
 }
 
 static mc_u64 align_up_u64(mc_u64 v, mc_u64 a) {
@@ -689,8 +701,13 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                 mc_u64 P = in->sec_vaddr[tgt] + rels[i].r_offset;
                 mc_u64 out_off = in->sec_fileoff[tgt] + rels[i].r_offset;
 
-                if (rels[i].r_offset + 4 > tsh->sh_size) die("link-internal: relocation overflows target section");
-                if (out_off + 4 > seg_file_end) die("link-internal: relocation overflows output image");
+                mc_u64 rsz = 0;
+                if (rtype == R_X86_64_PC32 || rtype == R_X86_64_PLT32) rsz = 4;
+                else if (rtype == R_X86_64_64) rsz = 8;
+                else die("link-internal: unsupported relocation type");
+
+                if (rels[i].r_offset + rsz > tsh->sh_size) die("link-internal: relocation overflows target section");
+                if (out_off + rsz > seg_file_end) die("link-internal: relocation overflows output image");
 
                 if (rtype == R_X86_64_PC32 || rtype == R_X86_64_PLT32) {
                     mc_i64 disp = (mc_i64)((mc_i64)S + (mc_i64)rels[i].r_addend - (mc_i64)P);
@@ -748,8 +765,9 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
 #endif
                     }
                     put_u32_le(out + (mc_usize)out_off, (mc_u32)(mc_i32)disp);
-                } else {
-                    die("link-internal: unsupported relocation type");
+                } else if (rtype == R_X86_64_64) {
+                    mc_u64 v = (mc_u64)((mc_i64)S + (mc_i64)rels[i].r_addend);
+                    put_u64_le(out + (mc_usize)out_off, v);
                 }
             }
         }

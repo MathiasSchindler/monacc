@@ -54,9 +54,8 @@ isr\vec:
 .macro EXC_ERR vec
     .global isr\vec
 isr\vec:
-    /* CPU pushed an error code. Pop it and normalize the stack layout. */
-    popq %rsi
-    pushq %rsi
+    /* CPU pushed an error code on the stack already.
+     * Normalize to: [gprs...][vector][err][cpu frame...] */
     pushq $\vec
     PUSH_GPRS
     movq %rsp, %rdi

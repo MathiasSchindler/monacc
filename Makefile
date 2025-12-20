@@ -176,6 +176,11 @@ INITRAMFS_ROOT := $(INITRAMFS_DIR)/root
 INITRAMFS_CPIO := $(INITRAMFS_DIR)/sysbox.cpio
 INITRAMFS_GZ := $(INITRAMFS_CPIO).gz
 
+# Which tool should be installed as /init inside the initramfs.
+# For sysbox on Linux, the default `init` mounts /dev,/proc,/sys and spawns /bin/sh.
+# For the experimental kernel bring-up, `kinit` is often more appropriate.
+INITRAMFS_INIT ?= init
+
 .PHONY: initramfs initramfs-cpio initramfs-root
 
 all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
@@ -305,7 +310,7 @@ initramfs-root: all
 	@rm -rf $(INITRAMFS_ROOT)
 	@mkdir -p $(INITRAMFS_ROOT)/bin $(INITRAMFS_ROOT)/dev $(INITRAMFS_ROOT)/proc $(INITRAMFS_ROOT)/sys
 	@cp -a bin/* $(INITRAMFS_ROOT)/bin/
-	@cp -a $(INITRAMFS_ROOT)/bin/init $(INITRAMFS_ROOT)/init
+	@cp -a $(INITRAMFS_ROOT)/bin/$(INITRAMFS_INIT) $(INITRAMFS_ROOT)/init
 
 # Create an uncompressed newc cpio (useful for debugging).
 initramfs-cpio: initramfs-root

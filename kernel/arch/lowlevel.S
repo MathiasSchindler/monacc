@@ -93,7 +93,6 @@ enter_user:
     pushq $0x23
     pushq %rsi
     pushfq
-    orq $0x200, (%rsp)   /* IF */
     pushq $0x1b
     pushq %rdi
 

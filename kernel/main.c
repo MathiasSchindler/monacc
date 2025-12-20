@@ -3,6 +3,9 @@
 #define KEXEC_MAX_ARGS 16
 #define KEXEC_MAX_STR  256
 
+/* Userland tools (e.g. ls) use large on-stack buffers; 8 pages is too small. */
+#define USER_STACK_PAGES 256
+
 void serial_init(void);
 void serial_write(const char *s);
 void gdt_tss_init(void);
@@ -905,7 +908,7 @@ void syscall_handler(struct regs *r) {
 			g_user_stack_base = 0;
 			g_user_stack_pages = 0;
 		}
-		uint64_t stack_pages = 8;
+		uint64_t stack_pages = USER_STACK_PAGES;
 		uint64_t stack_base = pmm_alloc_pages((uint32_t)stack_pages);
 		if (stack_base == 0) {
 			r->rax = (uint64_t)(-(int64_t)12);
@@ -1037,7 +1040,7 @@ __attribute__((noreturn)) void kmain(void) {
 		/* Allocate a user stack in free RAM and set up argc/argv.
 		 * Stack format: argc, argv[], NULL, envp(NULL), auxv(AT_NULL).
 		 */
-		uint64_t stack_pages = 8;
+		uint64_t stack_pages = USER_STACK_PAGES;
 		uint64_t stack_base = pmm_alloc_pages((uint32_t)stack_pages);
 		if (stack_base == 0) {
 			serial_write("[k] no memory for user stack\n");

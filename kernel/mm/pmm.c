@@ -114,6 +114,58 @@ uint64_t pmm_alloc_pages(uint32_t n) {
 	return 0;  /* Not enough contiguous memory */
 }
 
+/* Allocate n contiguous physical pages from the high end of the PMM range.
+ * Useful for keeping large allocations (e.g. user stacks) away from low memory
+ * which is often used by ET_EXEC user images.
+ */
+uint64_t pmm_alloc_pages_high(uint32_t n) {
+	uint32_t start;
+	uint32_t j;
+
+	if (n == 0) return 0;
+	if (n == 1) {
+		for (start = PMM_NUM_PAGES; start > 0; start--) {
+			uint32_t page = start - 1;
+			uint32_t byte_idx = page / 8;
+			uint32_t bit_idx = page % 8;
+			uint8_t mask = (uint8_t)(1 << bit_idx);
+			if ((pmm_bitmap[byte_idx] & mask) == 0) {
+				pmm_bitmap[byte_idx] = pmm_bitmap[byte_idx] | mask;
+				return PMM_START_ADDR + ((uint64_t)page * PAGE_SIZE);
+			}
+		}
+		return 0;
+	}
+	if (n > PMM_NUM_PAGES) return 0;
+
+	/* Search for n contiguous free pages, starting from the highest possible. */
+	for (start = PMM_NUM_PAGES - n; ; start--) {
+		int found = 1;
+		for (j = 0; j < n; j++) {
+			uint32_t page = start + j;
+			uint32_t byte_idx = page / 8;
+			uint32_t bit_idx = page % 8;
+			uint8_t mask = (uint8_t)(1 << bit_idx);
+			if (pmm_bitmap[byte_idx] & mask) {
+				found = 0;
+				break;
+			}
+		}
+		if (found) {
+			for (j = 0; j < n; j++) {
+				uint32_t page = start + j;
+				uint32_t byte_idx = page / 8;
+				uint32_t bit_idx = page % 8;
+				uint8_t mask = (uint8_t)(1 << bit_idx);
+				pmm_bitmap[byte_idx] = pmm_bitmap[byte_idx] | mask;
+			}
+			return PMM_START_ADDR + ((uint64_t)start * PAGE_SIZE);
+		}
+		if (start == 0) break;
+	}
+	return 0;
+}
+
 /* Free n contiguous physical pages starting at paddr */
 void pmm_free_pages(uint64_t paddr, uint32_t n) {
 	uint32_t i;

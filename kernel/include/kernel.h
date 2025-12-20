@@ -133,6 +133,7 @@ void pmm_init(void);
 uint64_t pmm_alloc_page(void);
 void pmm_free_page(uint64_t paddr);
 uint64_t pmm_alloc_pages(uint32_t n);
+uint64_t pmm_alloc_pages_high(uint32_t n);
 void pmm_free_pages(uint64_t paddr, uint32_t n);
 
 /* Reserve an explicit physical range (identity-mapped): returns 0 on success. */

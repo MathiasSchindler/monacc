@@ -30,6 +30,11 @@ syscall_kstack_top:
 syscall_user_rsp:
     .quad 0
 
+/* Current PID (written by the scheduler in C; read by exception reporting). */
+.global k_current_pid
+k_current_pid:
+    .quad 0
+
 .section .text
 
 /* Keep in sync with kernel/main.c struct regs layout and arch/isr.S PUSH_GPRS.

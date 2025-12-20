@@ -39,6 +39,15 @@ static void kmemcpy_u8(uint8_t *dst, const uint8_t *src, uint64_t n) {
 	for (i = 0; i < n; i++) dst[i] = src[i];
 }
 
+static void kmemmove_u8(uint8_t *dst, const uint8_t *src, uint64_t n) {
+	if (n == 0 || dst == src) return;
+	if (dst < src) {
+		for (uint64_t i = 0; i < n; i++) dst[i] = src[i];
+		return;
+	}
+	for (uint64_t i = n; i > 0; i--) dst[i - 1] = src[i - 1];
+}
+
 static void kmemset_u8(uint8_t *dst, uint8_t val, uint64_t n) {
 	uint64_t i;
 	for (i = 0; i < n; i++) dst[i] = val;
@@ -112,8 +121,11 @@ int elf_load_exec(const uint8_t *img, uint64_t img_sz, uint64_t *entry_out, uint
 				if (pmm_reserve_pages(seg_start, (uint32_t)pages) != 0) return -14;
 			}
 
-			/* Copy file bytes, then zero BSS tail. */
-			kmemcpy_u8((uint8_t *)p_vaddr, img + p_offset, p_filesz);
+			/* Copy file bytes, then zero BSS tail.
+			 * Note: the source image may overlap the destination if the initramfs
+			 * module is placed in low memory near the fixed ET_EXEC load address.
+			 */
+			kmemmove_u8((uint8_t *)p_vaddr, img + p_offset, p_filesz);
 			if (p_memsz > p_filesz) {
 				kmemset_u8((uint8_t *)(p_vaddr + p_filesz), 0, p_memsz - p_filesz);
 			}

@@ -31,31 +31,87 @@ _start:
 	/* Temporary 32-bit stack. */
 	mov $stack_top, %esp
 
-	/* Build minimal identity-mapped page tables (first 1GiB via 2MiB pages). */
+	/* Build minimal identity-mapped page tables (first 4GiB via 2MiB pages).
+	 * GRUB may place Multiboot2 modules (e.g. initramfs) above 1GiB.
+	 */
 	/* PML4[0] -> PDPT */
 	mov $pdpt, %eax
 	or  $0x007, %eax
 	movl %eax, pml4
 	movl $0, pml4+4
 
-	/* PDPT[0] -> PD */
-	mov $pd, %eax
+	/* PDPT[0..3] -> PD0..PD3 */
+	mov $pd0, %eax
 	or  $0x007, %eax
 	movl %eax, pdpt
 	movl $0, pdpt+4
 
-	/* PD[i] -> 2MiB pages identity-mapped */
+	mov $pd1, %eax
+	or  $0x007, %eax
+	movl %eax, pdpt+8
+	movl $0, pdpt+12
+
+	mov $pd2, %eax
+	or  $0x007, %eax
+	movl %eax, pdpt+16
+	movl $0, pdpt+20
+
+	mov $pd3, %eax
+	or  $0x007, %eax
+	movl %eax, pdpt+24
+	movl $0, pdpt+28
+
+	/* PDx[i] -> 2MiB pages identity-mapped */
+	/* 0..1GiB */
 	xor %ecx, %ecx
-.pd_fill_loop:
+.pd0_fill_loop:
 	mov %ecx, %eax
 	shl $21, %eax              /* i * 2MiB */
-	or  $0x083, %eax           /* present|write|huge */
-	or  $0x004, %eax           /* user */
-	movl %eax, pd(,%ecx,8)
-	movl $0, pd+4(,%ecx,8)
+	or  $0x087, %eax           /* present|write|user|huge */
+	movl %eax, pd0(,%ecx,8)
+	movl $0, pd0+4(,%ecx,8)
 	inc %ecx
 	cmp $512, %ecx
-	jne .pd_fill_loop
+	jne .pd0_fill_loop
+
+	/* 1..2GiB */
+	xor %ecx, %ecx
+.pd1_fill_loop:
+	mov %ecx, %eax
+	shl $21, %eax
+	add $0x40000000, %eax
+	or  $0x087, %eax
+	movl %eax, pd1(,%ecx,8)
+	movl $0, pd1+4(,%ecx,8)
+	inc %ecx
+	cmp $512, %ecx
+	jne .pd1_fill_loop
+
+	/* 2..3GiB */
+	xor %ecx, %ecx
+.pd2_fill_loop:
+	mov %ecx, %eax
+	shl $21, %eax
+	add $0x80000000, %eax
+	or  $0x087, %eax
+	movl %eax, pd2(,%ecx,8)
+	movl $0, pd2+4(,%ecx,8)
+	inc %ecx
+	cmp $512, %ecx
+	jne .pd2_fill_loop
+
+	/* 3..4GiB */
+	xor %ecx, %ecx
+.pd3_fill_loop:
+	mov %ecx, %eax
+	shl $21, %eax
+	add $0xC0000000, %eax
+	or  $0x087, %eax
+	movl %eax, pd3(,%ecx,8)
+	movl $0, pd3+4(,%ecx,8)
+	inc %ecx
+	cmp $512, %ecx
+	jne .pd3_fill_loop
 
 	/* Load GDT (contains 64-bit code/data segments). */
 	lgdt gdt64_ptr
@@ -93,6 +149,19 @@ long_mode_start:
 	mov %ax, %fs
 	mov %ax, %gs
 
+	/* Enable x87/SSE (userland tools like sh may use XMM instructions).
+	 * - Clear CR0.EM and CR0.TS; set CR0.MP
+	 * - Set CR4.OSFXSR and CR4.OSXMMEXCPT
+	 */
+	mov %cr0, %rax
+	and $0xfffffffffffffff3, %rax /* clear EM(2) and TS(3) */
+	or  $0x2, %rax               /* set MP(1) */
+	mov %rax, %cr0
+	mov %cr4, %rax
+	or  $((1<<9) | (1<<10)), %rax
+	mov %rax, %cr4
+	fninit
+
 	/* 64-bit stack. */
 	lea stack_top(%rip), %rsp
 
@@ -125,7 +194,7 @@ gdt64_end:
 mb2_info_ptr:
 	.quad 0
 
-/* Identity map the first 1GiB using 2MiB pages. */
+	/* Identity map the first 4GiB using 2MiB pages. */
 .align 4096
 pml4:
 	.skip 4096
@@ -133,7 +202,17 @@ pml4:
 pdpt:
 	.skip 4096
 .align 4096
-pd:
+	/* 4x page directories (each covers 1GiB with 2MiB pages). */
+pd0:
+	.skip 4096
+	.align 4096
+pd1:
+	.skip 4096
+	.align 4096
+pd2:
+	.skip 4096
+	.align 4096
+pd3:
 	.skip 4096
 
 /* Stack */

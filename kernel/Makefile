@@ -21,6 +21,9 @@ INITRAMFS ?=
 INITRAMFS_ISO := $(ISO_DIR)/boot/initramfs.cpio
 INITRAMFS_STAMP := $(BUILD)/.initramfs_path
 
+.PHONY: FORCE
+FORCE:
+
 # UEFI firmware (OVMF). Optional: use the `run-uefi-*` targets.
 OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS_TEMPLATE ?= /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -144,7 +147,7 @@ elf: $(KERNEL_ELF)
 $(KERNEL_ELF): $(OBJS) link.ld | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-$(INITRAMFS_STAMP): | $(BUILD)
+$(INITRAMFS_STAMP): FORCE | $(BUILD)
 	@{ \
 		printf '%s' "$(INITRAMFS)" > $@.tmp; \
 		if [ ! -f $@ ] || ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm -f $@.tmp; fi; \

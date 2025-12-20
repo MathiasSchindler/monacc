@@ -1,5 +1,7 @@
 #include "kernel.h"
 
+extern uint64_t k_current_pid;
+
 struct exc_frame {
 	uint64_t r15;
 	uint64_t r14;
@@ -48,11 +50,33 @@ static void serial_write_u64_dec(uint64_t v) {
 	while (i--) serial_putc(buf[i]);
 }
 
+static void serial_write_hex_u8(uint8_t v) {
+	static const char hex[] = "0123456789abcdef";
+	serial_putc(hex[(v >> 4) & 0xF]);
+	serial_putc(hex[v & 0xF]);
+}
+
+static void dump_bytes16(const char *label, uint64_t addr) {
+	serial_write("    ");
+	serial_write(label);
+	serial_write(" @ ");
+	serial_write_hex_u64(addr);
+	serial_write(": ");
+	volatile const uint8_t *p = (volatile const uint8_t *)addr;
+	for (int i = 0; i < 16; i++) {
+		serial_write_hex_u8(p[i]);
+		if (i != 15) serial_putc(' ');
+	}
+	serial_write("\n");
+}
+
 __attribute__((noreturn)) void exception_handler(struct exc_frame *f) {
 	disable_interrupts();
 
 	serial_write("\n[k] EXCEPTION vector=");
 	serial_write_u64_dec(f->vector);
+	serial_write(" pid=");
+	serial_write_u64_dec(k_current_pid);
 	serial_write(" err=");
 	serial_write_hex_u64(f->err);
 	serial_write("\n");
@@ -71,6 +95,16 @@ __attribute__((noreturn)) void exception_handler(struct exc_frame *f) {
 		serial_write(" SS=");
 		serial_write_hex_u64(f->ss);
 		serial_write("\n");
+		dump_bytes16("RIP bytes", f->rip);
+		dump_bytes16("RSP bytes", f->rsp);
+		/* Helpful for diagnosing execve/startup issues: dump the well-known user image entry region.
+		 * USER_IMG_BASE is 0x400000 in this kernel.
+		 */
+		if (f->vector == 6 || f->vector == 13) {
+			dump_bytes16("0x4000b0 bytes", 0x4000b0);
+			dump_bytes16("0x4000c0 bytes", 0x4000c0);
+			dump_bytes16("0x40b6a8 bytes", 0x40b6a8);
+		}
 	}
 
 	if (f->vector == 14) {

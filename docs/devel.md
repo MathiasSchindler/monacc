@@ -1,6 +1,6 @@
 # monacc app development quick reference (LLM distro)
 
-Date: 2025-12-20
+Date: 2025-12-21
 
 This file is the single “reference sheet” for an LLM working in a *minimal monacc distro*.
 That distro contains only:
@@ -37,6 +37,7 @@ Typical includes in a tool:
 - `#include "mc.h"`
 - Optionally `#include "mc_net.h"` (networking)
 - Optionally TLS/crypto headers (`mc_tls13.h`, `mc_sha256.h`, etc.)
+- Optionally `#include "mc_tls13_client.h"` (TLS 1.3 client over an existing fd)
 
 Do not call libc APIs like `printf`, `malloc`, `strcpy`, `getaddrinfo`, etc.
 
@@ -70,7 +71,7 @@ From the repo root:
 `./bin/monacc -I core tools/foo.c \
   core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c \
   core/mc_sha256.c core/mc_hmac.c core/mc_hkdf.c core/mc_aes.c core/mc_gcm.c core/mc_x25519.c \
-  core/mc_tls_record.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c \
+    core/mc_tls_record.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c core/mc_tls13_client.c \
   core/mc_mathf.c \
   -o bin/foo`
 

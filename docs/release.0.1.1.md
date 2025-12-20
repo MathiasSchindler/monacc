@@ -1,84 +1,24 @@
 # Release 0.1.1 — QEMU test-drive gaps
 
-This note tracks items discovered while booting the initramfs in QEMU (Linux x86_64) and using the monacc userland interactively.
+This note tracks items discovered while booting the monacc kernel in QEMU and using the monacc userland interactively.
 
 Goal for 0.1.1: improve basic usability in the minimal VM without expanding scope beyond the syscall-only toolchain.
 
-## Missing tools
+## Networking (monacc kernel)
 
-### `tar`
-Why:
-- Moving files in/out of the VM or between host/guest is awkward without a basic archiver.
+This section used to describe “boot initramfs on a Linux kernel and use Linux networking”.
 
-Acceptance:
-- `tar cf out.tar dir/` and `tar xf out.tar` work.
-- Supports regular files + directories, preserves file modes (at least executable bit).
-- Optional (nice): `tar czf`/`tar xzf` when paired with gzip.
+Now that we have our own kernel, networking needs to be re-thought end-to-end:
 
-### `gzip` / `gunzip`
-Why:
-- Needed for handling `.gz` artifacts and pairing with `tar` for portable bundles.
+Key design questions (pick an approach before writing tools):
+- **API surface**: do we want Linux-like `socket()` syscalls (so existing net tools can run), or a smaller custom net API?
+- **Where the stack lives**: full in-kernel TCP/IP, or a **host-proxy** transport (e.g. a simple “net proxy” over a virtio/serial channel) as a stepping stone?
+- **Device**: which emulated NIC do we target first (e1000 vs virtio-net), and do we need IRQ-driven RX yet?
+- **Configuration**: static IP first vs DHCP; IPv4 vs IPv6 as the first supported path.
 
-Acceptance:
-- `gzip <in >out.gz` and `gunzip <in.gz >out` work.
-- File-based `gzip file` / `gunzip file.gz` is optional but preferred.
-
-### `dmesg`
-Why:
-- Debugging boot/device/network issues in the VM needs quick access to the kernel ring buffer.
-
-Acceptance:
-- Prints kernel log buffer.
-- Optional flags later; for 0.1.1 a minimal default output is fine.
-
-## Shell usability tweaks
-
-### Prompt formatting (show current directory)
-Why:
-- In an interactive VM, it’s easy to get lost without context.
-
-Acceptance:
-- Default interactive prompt includes at least current directory, e.g. `PWD $ `.
-- Keep it simple (no colors required).
-
-Notes / approach:
-- Implement minimal `$PWD` tracking in `sh` (update on `cd`).
-- Either add `PS1` support or hardcode a reasonable default for interactive sessions.
-
-## `ls` usability tweaks
-
-### Human-readable timestamps
-Why:
-- Debugging and basic file inspection in the VM benefits from readable times.
-
-Acceptance:
-- When showing a long listing (or a new flag), timestamps are human readable.
-- Example target behavior: `ls -la` prints `YYYY-MM-DD HH:MM` (exact format can be simple and consistent).
-
-Notes / approach:
-- Add a minimal time formatting helper (UTC is acceptable).
-- No need for locale handling.
-
-## Networking in QEMU
-
-### Guest connectivity
-Why:
-- The userland includes network tools, but in the initramfs VM there is no connectivity unless devices and IP configuration are present.
-
-Acceptance:
-- VM can reach an external IP/host using existing tools (e.g. `ping6` where applicable).
-- At least one documented QEMU invocation provides working networking.
-
-Minimum plan:
-- Document a known-good QEMU config (e.g. user-mode networking + an emulated NIC):
-  - `-netdev user,id=n0 -device e1000,netdev=n0`
-- Add one of:
-  1) a tiny DHCP client tool (preferred), or
-  2) a minimal static IP configuration tool (even more minimal), or
-  3) teach `init` to configure a default setup when kernel cmdline provides IP parameters.
-
-Notes:
-- The kernel must include the relevant NIC driver (e1000/virtio-net) built-in, otherwise modules would be needed (not present in initramfs).
+Suggested minimum milestone (if we want network access soon):
+- Decide the approach (socket-compat vs proxy).
+- Get **one** reliable connectivity demo working in QEMU (even if it’s only outbound TCP/UDP via a proxy).
 
 ## Non-goals for 0.1.1
 
@@ -86,11 +26,67 @@ Notes:
 - Full GNU coreutils parity
 - Complex networking stack configuration / module management
 
+## Developer tools (low-hanging fruit)
+
+### Minimal ELF inspector (`readelf`-like)
+
+Why:
+- During bring-up and debugging we frequently want quick answers to “what is this binary?” (entry point, load segments, symbols) without needing external host tooling.
+
+Minimal useful features:
+- `-h`: print ELF header (class, endianness, machine, entry point).
+- `-l`: print program headers (PT_LOAD ranges, flags) so loader issues are easy to spot.
+- `-S`: print section headers (names, addresses, sizes) for quick sanity checks.
+- `-s`: print symbol table (at least name/value/size/binding/type) if present.
+
+Non-goals:
+- Disassembly or relocation decoding (can be added later if needed).
+
+### Minimal object inspector (`objdump`-like)
+
+Why:
+- Sometimes the useful view is “object-centric” (sections + symbols) rather than ELF-loader-centric.
+- Helps debug internal-linker/assembler issues without requiring host `objdump`.
+
+Minimal useful features:
+- `-h`: print section table summary (name, size, vma/lma, flags) for ET_REL and ET_EXEC.
+- `-t`: print symbols (name, value, size, section index) if present.
+- `-p` (optional): show file format + machine + entry point for ET_EXEC.
+
+Non-goals:
+- Full disassembly (`-d`) or relocation decoding.
+
+### Hex dump (`xxd`-like)
+
+Why:
+- Faster than `hexdump` for eyeballing binary structures (CPIO headers, ELF headers, TLS records, etc.).
+
+Minimal useful features:
+- Default: canonical `xxd`-style output with offsets + hex bytes + ASCII.
+- `-g1` (or default 1-byte grouping): show byte granularity.
+- `-l N`: limit output length.
+- `-s OFF`: start offset.
+
+Non-goals:
+- Reverse mode (`-r`) can wait.
+
+### Initramfs helpers (`cpio` / `uncpio`)
+
+Why:
+- The initramfs format is CPIO newc; being able to list/extract/create archives inside the VM reduces friction.
+
+Minimal useful features:
+- `cpio -t < archive.cpio`: list file names.
+- `cpio -i < archive.cpio`: extract to current directory (regular files + dirs).
+- `cpio -o > archive.cpio`: create a newc archive from a file list on stdin.
+
+Non-goals:
+- Full permission/mtime preservation, devices, symlinks, and all GNU cpio flags.
+
 ## Checklist
 
-- [x] Add `tools/tar.c`
-- [x] Add `tools/gzip.c` and `tools/gunzip.c` (or a single multi-call binary)
-- [x] Add `tools/dmesg.c`
-- [x] Improve interactive prompt in `tools/sh.c`
-- [x] Add human-readable time formatting in `tools/ls.c`
-- [ ] Provide documented QEMU command line that yields working networking (and add the minimal userland support needed to configure it)
+- [ ] Decide and document the networking approach for the monacc kernel (socket-compat vs host-proxy), and implement the first working connectivity demo in QEMU
+- [ ] Add a minimal ELF inspector tool (`readelf`-like: `-h/-l/-S/-s`)
+- [ ] Add a minimal object inspector tool (`objdump`-like: `-h/-t`)
+- [ ] Add an `xxd`-like hex dump tool (`-l/-s`, byte grouping)
+- [ ] Add minimal `cpio` / `uncpio` tools for newc (list/extract/create)

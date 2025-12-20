@@ -244,6 +244,8 @@ maybe_build_and_initramfs() {
 	INIT_ROOT="$STAGE_BASE/initramfs-root"
 	rm -rf "$INIT_ROOT"
 	mkdir -p "$INIT_ROOT/bin" "$INIT_ROOT/dev" "$INIT_ROOT/proc" "$INIT_ROOT/sys"
+	# Small sanity file for early kernel bring-up tests.
+	printf '%s\n' 'hello from initramfs file' > "$INIT_ROOT/hello.txt"
 	cp -a "$STAGE_ROOT/bin"/* "$INIT_ROOT/bin/"
 	if [ -z "$INITRAMFS_INIT_NAME" ]; then
 		echo "error: initramfs: --init=<name> must not be empty" >&2

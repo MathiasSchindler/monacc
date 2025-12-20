@@ -19,6 +19,7 @@ DEBUGCON_LOG := $(BUILD)/debugcon.log
 #   make -C kernel INITRAMFS=../release/monacc-0.1.1-test2-initramfs.cpio run
 INITRAMFS ?=
 INITRAMFS_ISO := $(ISO_DIR)/boot/initramfs.cpio
+INITRAMFS_STAMP := $(BUILD)/.initramfs_path
 
 # UEFI firmware (OVMF). Optional: use the `run-uefi-*` targets.
 OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
@@ -135,7 +136,13 @@ elf: $(KERNEL_ELF)
 $(KERNEL_ELF): $(OBJS) link.ld | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
-$(GRUB_CFG): | $(ISO_DIR)/boot/grub
+$(INITRAMFS_STAMP): | $(BUILD)
+	@{ \
+		printf '%s' "$(INITRAMFS)" > $@.tmp; \
+		if [ ! -f $@ ] || ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm -f $@.tmp; fi; \
+	}
+
+$(GRUB_CFG): $(INITRAMFS_STAMP) | $(ISO_DIR)/boot/grub
 	{ \
 		printf '%s\n' \
 		'insmod serial' \

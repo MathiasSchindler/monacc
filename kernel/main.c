@@ -79,6 +79,52 @@ static const char *skip_leading_slash(const char *s) {
 /* initramfs module cached for syscalls like execve(). */
 static const uint8_t *g_initramfs = 0;
 static uint64_t g_initramfs_sz = 0;
+/* Very small initramfs-backed FD table.
+ * Kernel reserves 0,1,2 for stdin/stdout/stderr.
+ */
+#define KFD_MAX 32
+struct kfd_file {
+	uint8_t used;
+	uint8_t writable;
+	uint16_t _pad;
+	const uint8_t *data;
+	uint64_t size;
+	uint64_t off;
+};
+
+static struct kfd_file g_fds[KFD_MAX];
+
+static int kfd_alloc(const uint8_t *data, uint64_t size) {
+	for (int i = 0; i < KFD_MAX; i++) {
+		if (!g_fds[i].used) {
+			g_fds[i].used = 1;
+			g_fds[i].writable = 0;
+			g_fds[i].data = data;
+			g_fds[i].size = size;
+			g_fds[i].off = 0;
+			return 3 + i;
+		}
+	}
+	return -1;
+}
+
+static struct kfd_file *kfd_get(int fd) {
+	if (fd < 3) return 0;
+	int idx = fd - 3;
+	if (idx < 0 || idx >= KFD_MAX) return 0;
+	if (!g_fds[idx].used) return 0;
+	return &g_fds[idx];
+}
+
+static int kfd_close(int fd) {
+	struct kfd_file *f = kfd_get(fd);
+	if (!f) return -1;
+	f->used = 0;
+	f->data = 0;
+	f->size = 0;
+	f->off = 0;
+	return 0;
+}
 
 /* Track current user stack so execve() can replace it. */
 static uint64_t g_user_stack_base = 0;
@@ -129,40 +175,82 @@ void syscall_handler(struct regs *r) {
 	serial_write("[k] syscall ");
 	serial_write_hex(r->rax);
 	serial_write("\n");
-	/* Linux x86_64 syscall numbers */
+
 	switch (r->rax) {
 	case 0: { /* read(fd, buf, count) */
-		uint64_t fd = r->rdi;
+		int fd = (int)r->rdi;
 		uint8_t *buf = (uint8_t *)r->rsi;
 		uint64_t count = r->rdx;
-		if (fd != 0 || buf == 0 || count == 0) {
+		if (!buf) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		if (count == 0) {
 			r->rax = 0;
 			return;
 		}
-		uint64_t i = 0;
-		for (; i < count; i++) {
-			char c = serial_getc();
-			buf[i] = (uint8_t)c;
-			if (c == '\n') {
-				i++;
-				break;
+		if (fd == 0) {
+			uint64_t i = 0;
+			for (; i < count; i++) {
+				char c = serial_getc();
+				buf[i] = (uint8_t)c;
+				if (c == '\n') {
+					i++;
+					break;
+				}
 			}
+			r->rax = i;
+			return;
 		}
-		r->rax = i;
-		return;
+		{
+			struct kfd_file *f = kfd_get(fd);
+			if (!f) {
+				r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
+				return;
+			}
+			uint64_t avail = (f->off < f->size) ? (f->size - f->off) : 0;
+			uint64_t n = (count < avail) ? count : avail;
+			for (uint64_t i = 0; i < n; i++) {
+				buf[i] = f->data[f->off + i];
+			}
+			f->off += n;
+			r->rax = n;
+			return;
+		}
 	}
 	case 1: { /* write(fd, buf, count) */
-		uint64_t fd = r->rdi;
+		int fd = (int)r->rdi;
 		const uint8_t *buf = (const uint8_t *)r->rsi;
 		uint64_t count = r->rdx;
-		if ((fd != 1 && fd != 2) || buf == 0 || count == 0) {
+		if (!buf) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		if (count == 0) {
 			r->rax = 0;
+			return;
+		}
+		if (fd != 1 && fd != 2) {
+			r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
 			return;
 		}
 		for (uint64_t i = 0; i < count; i++) {
 			serial_putc((char)buf[i]);
 		}
 		r->rax = count;
+		return;
+	}
+	case 3: { /* close(fd) */
+		int fd = (int)r->rdi;
+		if (fd <= 2) {
+			r->rax = 0;
+			return;
+		}
+		if (kfd_close(fd) != 0) {
+			r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
+			return;
+		}
+		r->rax = 0;
 		return;
 	}
 	case 9: { /* mmap(addr, len, prot, flags, fd, offset) */
@@ -172,84 +260,45 @@ void syscall_handler(struct regs *r) {
 		uint64_t flags = r->r10;
 		int64_t fd = (int64_t)r->r8;
 		uint64_t offset = r->r9;
-		
-		serial_write("[k] mmap: len=");
-		serial_write_u64_dec(len);
-		serial_write(" flags=0x");
-		serial_write_hex(flags);
-		serial_write("\n");
-		
-		/* We only support anonymous private mappings */
-		if (!(flags & MAP_ANONYMOUS) || !(flags & MAP_PRIVATE)) {
-			serial_write("[k] mmap: bad flags\n");
-			r->rax = (uint64_t)-22;  /* -EINVAL */
-			return;
-		}
-		/* fd must be -1 for anonymous, offset must be 0 */
-		if (fd != -1 || offset != 0) {
-			serial_write("[k] mmap: bad fd/offset\n");
-			r->rax = (uint64_t)-22;  /* -EINVAL */
-			return;
-		}
-		/* We ignore addr hint for now (always pick our own address) */
 		(void)addr;
-		(void)prot;  /* We always map read+write for now */
-		
-		/* Round up length to page size */
+		(void)prot;
+
+		if (!(flags & MAP_ANONYMOUS) || !(flags & MAP_PRIVATE) || fd != -1 || offset != 0) {
+			r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+			return;
+		}
 		uint64_t pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
 		if (pages == 0) pages = 1;
-		
 		uint64_t paddr = pmm_alloc_pages((uint32_t)pages);
 		if (paddr == 0) {
-			serial_write("[k] mmap: out of memory\n");
-			r->rax = (uint64_t)-12;  /* -ENOMEM */
+			r->rax = (uint64_t)(-(int64_t)12); /* -ENOMEM */
 			return;
 		}
-		
-		/* Zero the allocated memory (mmap guarantees zeroed pages) */
 		uint8_t *p = (uint8_t *)paddr;
-		uint64_t i;
-		for (i = 0; i < pages * PAGE_SIZE; i++) {
-			p[i] = 0;
-		}
-		
-		serial_write("[k] mmap: returning 0x");
-		serial_write_hex(paddr);
-		serial_write("\n");
-		
-		/* Since we use identity mapping, physical = virtual */
+		for (uint64_t i = 0; i < pages * PAGE_SIZE; i++) p[i] = 0;
 		r->rax = paddr;
 		return;
 	}
 	case 11: { /* munmap(addr, len) */
 		uint64_t addr = r->rdi;
 		uint64_t len = r->rsi;
-		
 		uint64_t pages = (len + PAGE_SIZE - 1) / PAGE_SIZE;
 		if (pages == 0) pages = 1;
-		
 		pmm_free_pages(addr, (uint32_t)pages);
 		r->rax = 0;
 		return;
 	}
-	case 60: /* exit(code) */
-		serial_write("Process exited with code ");
-		serial_write_u64_dec(r->rdi);
-		serial_write("\n");
-		outb(0xF4, 0x10);
-		halt_forever();
-	case 231: /* exit_group(code) */
-		serial_write("Process exited with code ");
-		serial_write_u64_dec(r->rdi);
-		serial_write("\n");
-		outb(0xF4, 0x10);
-		halt_forever();
-	case 59: { /* execve(filename, argv, envp) */
-		const char *filename = (const char *)r->rdi;
-		const uint64_t *argvp = (const uint64_t *)r->rsi;
-		(void)r->rdx; /* envp ignored for now */
+	case 257: { /* openat(dirfd, pathname, flags, mode) */
+		int dirfd = (int)r->rdi;
+		const char *pathname = (const char *)r->rsi;
+		uint64_t flags = r->rdx;
+		(void)r->r10;
 
-		if (!filename) {
+		if (dirfd != -100) {
+			r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+			return;
+		}
+		if (!pathname) {
 			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
 			return;
 		}
@@ -257,22 +306,60 @@ void syscall_handler(struct regs *r) {
 			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
 			return;
 		}
-
-		/* Copy filename early: the new ELF may overwrite old rodata. */
-		char filename_buf[KEXEC_MAX_STR];
-		if (kcopy_cstr(filename_buf, KEXEC_MAX_STR, filename) != 0) {
-			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+		if ((flags & 3u) != 0u) {
+			r->rax = (uint64_t)(-(int64_t)13); /* -EACCES */
+			return;
+		}
+		if (flags & 0x40u) {
+			r->rax = (uint64_t)(-(int64_t)30); /* -EROFS */
 			return;
 		}
 
-		/* Normalize path for CPIO lookup (strip leading '/'). */
+		char pathbuf[KEXEC_MAX_STR];
+		if (kcopy_cstr(pathbuf, KEXEC_MAX_STR, pathname) != 0) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
+		const char *p = skip_leading_slash(pathbuf);
+		const uint8_t *data = 0;
+		uint64_t size = 0;
+		if (cpio_newc_find(g_initramfs, g_initramfs_sz, p, &data, &size) != 0) {
+			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
+			return;
+		}
+		int fd = kfd_alloc(data, size);
+		if (fd < 0) {
+			r->rax = (uint64_t)(-(int64_t)24); /* -EMFILE */
+			return;
+		}
+		r->rax = (uint64_t)fd;
+		return;
+	}
+	case 59: { /* execve(filename, argv, envp) */
+		const char *filename = (const char *)r->rdi;
+		const uint64_t *argvp = (const uint64_t *)r->rsi;
+		(void)r->rdx;
+
+		if (!filename) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
+		if (!g_initramfs || g_initramfs_sz == 0) {
+			r->rax = (uint64_t)(-(int64_t)2);
+			return;
+		}
+
+		char filename_buf[KEXEC_MAX_STR];
+		if (kcopy_cstr(filename_buf, KEXEC_MAX_STR, filename) != 0) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
 		const char *path = skip_leading_slash(filename_buf);
 		if (!path[0]) {
 			r->rax = (uint64_t)(-(int64_t)2);
 			return;
 		}
 
-		/* Snapshot argv strings before we free/replace the old user stack. */
 		char argv_buf[KEXEC_MAX_ARGS][KEXEC_MAX_STR];
 		uint64_t argc = 0;
 		if (argvp) {
@@ -293,14 +380,12 @@ void syscall_handler(struct regs *r) {
 			argc = 1;
 		}
 
-		/* Locate ELF bytes in initramfs. */
 		const uint8_t *img = 0;
 		uint64_t img_sz = 0;
 		if (cpio_newc_find(g_initramfs, g_initramfs_sz, path, &img, &img_sz) != 0) {
-			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
+			r->rax = (uint64_t)(-(int64_t)2);
 			return;
 		}
-
 		uint64_t user_entry = 0;
 		uint64_t brk_init = 0;
 		if (elf_load_exec(img, img_sz, &user_entry, &brk_init) != 0) {
@@ -308,7 +393,6 @@ void syscall_handler(struct regs *r) {
 			return;
 		}
 
-		/* Replace user stack (safe now: argv strings are copied). */
 		if (g_user_stack_base && g_user_stack_pages) {
 			pmm_free_pages(g_user_stack_base, (uint32_t)g_user_stack_pages);
 			g_user_stack_base = 0;
@@ -317,13 +401,12 @@ void syscall_handler(struct regs *r) {
 		uint64_t stack_pages = 8;
 		uint64_t stack_base = pmm_alloc_pages((uint32_t)stack_pages);
 		if (stack_base == 0) {
-			r->rax = (uint64_t)(-(int64_t)12); /* -ENOMEM */
+			r->rax = (uint64_t)(-(int64_t)12);
 			return;
 		}
 		g_user_stack_base = stack_base;
 		g_user_stack_pages = stack_pages;
-		uint64_t sp = stack_base + stack_pages * PAGE_SIZE;
-		sp = align_down_u64(sp, 16);
+		uint64_t sp = align_down_u64(stack_base + stack_pages * PAGE_SIZE, 16);
 
 		uint64_t u_argv_ptrs[KEXEC_MAX_ARGS];
 		for (uint64_t i = 0; i < argc; i++) {
@@ -331,49 +414,39 @@ void syscall_handler(struct regs *r) {
 			sp = user_stack_push_bytes(sp, argv_buf[argc - 1 - i], len + 1);
 			u_argv_ptrs[argc - 1 - i] = sp;
 		}
-
-		/* Minimal envp: PATH=/bin */
 		const char *env0 = "PATH=/bin";
 		sp = user_stack_push_bytes(sp, env0, 10);
 		uint64_t u_env0 = sp;
-
 		sp = align_down_u64(sp, 16);
-
-		/* auxv terminator: AT_NULL (0), 0 */
 		sp = user_stack_push_u64(sp, 0);
 		sp = user_stack_push_u64(sp, 0);
-		/* envp: env0, NULL */
 		sp = user_stack_push_u64(sp, 0);
 		sp = user_stack_push_u64(sp, u_env0);
-		/* argv: pointers + NULL */
 		sp = user_stack_push_u64(sp, 0);
 		for (uint64_t i = 0; i < argc; i++) {
 			sp = user_stack_push_u64(sp, u_argv_ptrs[argc - 1 - i]);
 		}
-		/* argc */
 		sp = user_stack_push_u64(sp, argc);
 
-		/* Redirect the return from sysretq into the new image. */
 		syscall_user_rsp = sp;
 		r->rcx = user_entry;
 		r->rax = 0;
-		r->rdi = 0;
-		r->rsi = 0;
-		r->rdx = 0;
-		r->rbx = 0;
-		r->rbp = 0;
-		r->r8 = 0;
-		r->r9 = 0;
-		r->r10 = 0;
-		r->r12 = 0;
-		r->r13 = 0;
-		r->r14 = 0;
-		r->r15 = 0;
 		return;
 	}
+	case 60: /* exit(code) */
+		serial_write("Process exited with code ");
+		serial_write_u64_dec(r->rdi);
+		serial_write("\n");
+		outb(0xF4, 0x10);
+		halt_forever();
+	case 231: /* exit_group(code) */
+		serial_write("Process exited with code ");
+		serial_write_u64_dec(r->rdi);
+		serial_write("\n");
+		outb(0xF4, 0x10);
+		halt_forever();
 	default:
-		/* -ENOSYS */
-		r->rax = (uint64_t)(-(int64_t)38);
+		r->rax = (uint64_t)(-(int64_t)38); /* -ENOSYS */
 		return;
 	}
 }

@@ -854,6 +854,9 @@ enum sink_kind {
 	SINK_DISCARD = 2,
 };
 
+struct html;
+static void html_feed_byte(struct html *h, mc_u8 c);
+
 struct body_sink {
 	enum sink_kind kind;
 	void *ctx;
@@ -2250,8 +2253,6 @@ static void handle_tag(struct html *h, const char *tag, mc_u32 taglen) {
 	(void)closing;
 }
 
-static void html_feed_byte(struct html *h, mc_u8 c);
-
 static void comment_feed_byte(struct html *h, mc_u8 c) {
 	// Match "-->".
 	if (!h) return;
@@ -2541,46 +2542,6 @@ static int cmd_fetch_and_render(const char *argv0, const char *url_s, int dump_l
 		return 0;
 	}
 	return 1;
-
-	if (dump_links_only) {
-		// If content-type isn't HTML, emit an empty link table.
-		struct html h;
-		html_init(&h);
-		h.emit_text = 0;
-		struct body_sink html_sink;
-		html_sink.kind = SINK_HTML;
-		html_sink.ctx = &h;
-		struct body_sink text_sink;
-		text_sink.kind = SINK_DISCARD;
-		text_sink.ctx = 0;
-		int rc = http_fetch(argv0, &u, timeout_ms, &meta, &is_html, &html_sink, &text_sink);
-		if (rc != 0) return rc;
-		if (is_html) {
-			html_finish(&h, &u);
-			return 0;
-		}
-		mc_write_str(1, "Links:\n");
-		return 0;
-	}
-
-	struct html h;
-	html_init(&h);
-	struct body_sink html_sink;
-	html_sink.kind = SINK_HTML;
-	html_sink.ctx = &h;
-	struct body_sink text_sink;
-	text_sink.kind = SINK_STDOUT;
-	text_sink.ctx = 0;
-
-	int rc = http_fetch(argv0, &u, timeout_ms, &meta, &is_html, &html_sink, &text_sink);
-	if (rc != 0) return rc;
-	if (is_html) {
-		html_finish(&h, &u);
-		return 0;
-	}
-	// Plain text: body already written to stdout.
-	mc_write_str(1, "\n\nLinks:\n");
-	return 0;
 }
 
 __attribute__((used)) int main(int argc, char **argv, char **envp) {

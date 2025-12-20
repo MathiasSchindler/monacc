@@ -50,6 +50,14 @@ Validated tools / behaviors:
 - `cat`/`tail` from initramfs
 - `ls /`, `ls -l /`, and `ls -R /` complete without faults (with user IF forced off)
 - `/bin/sh -c "cd /bin; /bin/pwd; /bin/echo hello | /bin/cat"` completes and prints expected output
+- Interactive `bin/sh` works as PID 1 (serial prompt + basic line editing)
+- `cat hello.txt` works from the initramfs
+- `mandelbrot` runs successfully
+
+Build artifacts (ISO/initramfs):
+
+- The ISO produced by `grub-mkrescue` is expected to look “large” relative to the kernel/initramfs because it embeds a full GRUB runtime (hundreds of modules) plus BIOS+UEFI El Torito boot images.
+- The kernel ISO build defaults to using `../release/monacc-dev-initramfs.cpio` (if present) as the Multiboot2 initramfs module.
 
 Key implementation detail for correctness under identity mapping:
 
@@ -85,15 +93,23 @@ The kernel now builds with monacc instead of gcc/clang. Several workarounds were
 ## How to build
 
 ```bash
-# Build and test kernel (from kernel/ directory)
+# Build kernel ISO (from kernel/ directory)
 cd kernel
 make clean && make iso
+
+# Run (implies iso rebuild if needed)
 make run-bios-serial
 
-# If you have a CPIO initramfs image already built (repo top-level Makefile can generate one),
-# pass it explicitly:
-make clean && make iso
-make INITRAMFS=../build/initramfs/sysbox.cpio run-bios-serial
+# Note: if ../release/monacc-dev-initramfs.cpio exists, it will be included
+# by default in the ISO as a Multiboot2 module.
+
+# Override (or disable) the initramfs module explicitly:
+make INITRAMFS=../build/initramfs/sysbox.cpio iso
+make INITRAMFS= run-bios-serial
+
+# From the repo root instead:
+cd ..
+make -C kernel iso
 ```
 
 The Makefile uses monacc (../bin/monacc) for C files and GNU as for assembly files.
@@ -102,6 +118,15 @@ The Makefile uses monacc (../bin/monacc) for C files and GNU as for assembly fil
 
 - Main run: `make run-serial`
 - Debug logging (exceptions etc): `make run-bios-serial-log` (writes `build/qemu.log`)
+
+You can also run QEMU manually (equivalent to `make run-bios-serial`):
+
+```bash
+cd kernel
+qemu-system-x86_64 -cdrom build/kernel.iso -display none -monitor none \
+	-serial stdio -no-reboot \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04
+```
 
 Expected serial output includes:
 - `monacc kernel`

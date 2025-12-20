@@ -26,6 +26,10 @@ Newly validated (since the original Phase 5 bring-up):
 - `fork()`/`wait4()` implemented sufficiently for real shell usage
 - `pipe2()`/`dup2()` implemented sufficiently for pipelines
 - `/bin/sh -c "cd /bin; /bin/pwd; /bin/echo hello | /bin/cat"` now completes and prints expected output
+- Interactive `bin/sh` works as PID 1 (serial prompt + basic line editing)
+- `cat hello.txt` works from the initramfs
+- `mandelbrot` runs successfully
+- Minimal tty detection (`ioctl(TCGETS)`) is implemented so `sh` enables interactive mode
 
 **The kernel now compiles with monacc!** As of Phase 2, all C files are compiled with `../bin/monacc`, with only assembly files (`.S`) using GNU as.
 
@@ -503,6 +507,13 @@ Notes:
 ### Test
 
 ```bash
+# Preferred (from repo root):
+make -C kernel run-bios-serial
+
+# Or, from kernel/ directly:
+cd kernel
+make run-bios-serial
+
 # Boot (Multiboot2 via bootloader ISO)
 qemu-system-x86_64 -cdrom build/kernel.iso -serial stdio -display none
 
@@ -510,6 +521,10 @@ qemu-system-x86_64 -cdrom build/kernel.iso -serial stdio -display none
 qemu-system-x86_64 -cdrom build/kernel.iso -serial stdio -display none -s -S &
 gdb build/kernel.elf -ex "target remote :1234"
 ```
+
+Note: the ISO produced by `grub-mkrescue` embeds GRUB modules and BIOS+UEFI boot images, so it will be much larger than just `kernel.elf` + the initramfs.
+
+Initramfs default: if `release/monacc-dev-initramfs.cpio` exists, `kernel/Makefile` will include it in the ISO by default as a Multiboot2 module.
 
 ### Debug Output
 

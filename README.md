@@ -6,10 +6,12 @@ monacc is a small C compiler that can compile itself and a full suite of Unix co
 
 ## What is this?
 
-This project combines two pieces:
+This project primarily combines two pieces:
 
 1. **monacc** — A C compiler targeting Linux x86_64 (SysV ABI)
 2. **A userland toolkit** — 86 syscall-only command-line tools (`cat`, `ls`, `grep`, `sh`, `awk`, plus crypto + net tools)
+
+It also includes an **optional experimental kernel** (in `kernel/`) that can boot under QEMU and run a subset of the monacc-built userland (including `bin/sh`) from an initramfs.
 
 The compiler compiles the tools. The tools provide the environment needed to build and test the compiler.
 
@@ -38,9 +40,14 @@ monacc-unified/
 
 ## Kernel (optional)
 
-This repo also contains an experimental kernel in kernel/.
+This repo also contains an experimental kernel in `kernel/`.
 
 It is a separate subproject intended to run monacc-built userland under QEMU (Linux x86_64 syscall ABI). It is not required to build or use monacc on Linux.
+
+Current capabilities (high level):
+- Boots via GRUB (Multiboot2) into a serial console
+- Loads an initramfs (CPIO `newc`) and starts `bin/sh` interactively
+- Can execute a growing subset of the monacc tools (e.g. `cat`, `ls`, `mandelbrot`)
 
 - Status and build/run notes: kernel/status.md
 - Roadmap and implementation plan: kernel/plan.md
@@ -152,11 +159,13 @@ Notes:
 
 ## Design Principles
 
+These principles apply to **monacc + the userland tools** (the optional kernel is a separate experimental subproject):
+
 1. **Syscalls only** — No libc dependency in output binaries
 2. **Static binaries** — Each tool is standalone
 3. **Size-oriented** — Built with `-Os` + section GC (host build uses `-flto`/`--gc-sections`; monacc outputs do equivalent internally)
 4. **Scope-limited** — Implements what's needed, not everything
-5. **Single platform** — Linux x86_64 only, no abstraction layers
+5. **Single target ABI** — Linux x86_64 (SysV ABI) output; the `kernel/` subproject targets x86_64 bare metal (QEMU-first)
 
 ## License
 

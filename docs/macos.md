@@ -189,7 +189,46 @@ Deliverable:
 Current repo status:
 
 - `bin-host/monacc --target aarch64-darwin` exists.
-- The backend is intentionally minimal for bring-up: it supports a single `main` with simple locals and `return` expressions (currently: constants, vars, and add/sub).
+- The backend is intentionally minimal for bring-up, but now supports a small (useful) subset:
+   - locals (4/8-byte) + assignment
+   - address-of (`&`) and dereference (`*`) for 4/8-byte loads/stores (minimal subset)
+   - arithmetic: `+` / `-`
+   - bitwise: `&` `|` `^` `~`
+   - shifts: `<<` `>>` (signed/unsigned right shift)
+   - comparisons as expressions: `== != < <= > >=` (returns 0/1)
+   - integer mul/div/mod: `* / %` (32-bit)
+   - short-circuit boolean ops: `&&` / `||` (returns 0/1)
+   - control flow: `if`, `while`, `break`, `continue`
+   - direct calls with up to 6 scalar args (ints in `wN`, pointers in `xN`)
+   - string literals (emitted into `__TEXT,__const`)
+   - global 4-byte loads and simple global emission for initialized scalars (plus basic global stores)
+
+### Current status, trajectory, and next milestones
+
+The Darwin backend is now at the point where it can compile and run a growing set of “real C” patterns on macOS arm64, while still being intentionally conservative:
+
+- It is still a **bring-up backend**: lots of constructs fail fast with a clear error.
+- The pipeline is stable end-to-end via `clang` (assemble/link), and we keep correctness anchored by `make darwin-native-smoke`.
+
+Near-term (next “high leverage” increments)
+
+- **More expression coverage**: ternary `?:` (`EXPR_COND`), comma operator, and more unary/cast cases.
+- **Pointer arithmetic + indexing**: `p + i`, `p[i]` / `*(p+i)` for basic arrays.
+- **Better integer widths**: support `char/short` loads/stores (sign/zero extend), and 64-bit `long` in expressions.
+
+Medium-term
+
+- **Richer globals**: more init forms (init blobs, arrays/struct init), more reliable section placement.
+- **Function pointers**: `&fn`, calls through function pointers.
+- **Structs**: layout + member access + copies (likely in stages).
+
+Longer-term / harder parts
+
+- **Floats** and ABI details.
+- **Varargs** calling convention.
+- **Inline asm** (currently x86_64-shaped) for arm64.
+
+The guiding principle remains: expand one small feature at a time, add a focused `examples/ret42_*.c` test, and extend `darwin-native-smoke` so regressions get caught immediately.
 
 #### Stage 2 — External assemble + link (via clang)
 
@@ -212,7 +251,7 @@ Deliverable:
 
 Current repo status:
 
-- `make darwin-native-smoke` builds `bin-host/monacc`, compiles a couple of tiny examples (including `examples/ret42.c` and `examples/ret42_local.c`) to native arm64 macOS binaries, and runs them (expects exit code 42).
+- `make darwin-native-smoke` builds `bin-host/monacc`, compiles several `examples/ret42_*.c` programs to native arm64 macOS binaries, and runs them (expects exit code 42). The smoke suite now includes cases that exercise control flow, calls with args, string literal pointer args (`puts`), and global loads.
 
 #### Stage 3 — Expand coverage until it can compile real code
 

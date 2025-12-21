@@ -711,6 +711,62 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call_args.c -o $(HOST_BIN)/ret42_call_args >/dev/null
 	@test -x $(HOST_BIN)/ret42_call_args
 	@rc=0; $(HOST_BIN)/ret42_call_args || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_puts
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_puts.c -o $(HOST_BIN)/ret42_puts >/dev/null
+	@test -x $(HOST_BIN)/ret42_puts
+	@rc=0; $(HOST_BIN)/ret42_puts >/dev/null || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_global
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_global.c -o $(HOST_BIN)/ret42_global >/dev/null
+	@test -x $(HOST_BIN)/ret42_global
+	@rc=0; $(HOST_BIN)/ret42_global || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_ptr_local
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_ptr_local.c -o $(HOST_BIN)/ret42_ptr_local >/dev/null
+	@test -x $(HOST_BIN)/ret42_ptr_local
+	@rc=0; $(HOST_BIN)/ret42_ptr_local || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_ptr_store
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_ptr_store.c -o $(HOST_BIN)/ret42_ptr_store >/dev/null
+	@test -x $(HOST_BIN)/ret42_ptr_store
+	@rc=0; $(HOST_BIN)/ret42_ptr_store || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_global_store
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_global_store.c -o $(HOST_BIN)/ret42_global_store >/dev/null
+	@test -x $(HOST_BIN)/ret42_global_store
+	@rc=0; $(HOST_BIN)/ret42_global_store || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_cmp_expr
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_cmp_expr.c -o $(HOST_BIN)/ret42_cmp_expr >/dev/null
+	@test -x $(HOST_BIN)/ret42_cmp_expr
+	@rc=0; $(HOST_BIN)/ret42_cmp_expr || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_cmp_eqne
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_cmp_eqne.c -o $(HOST_BIN)/ret42_cmp_eqne >/dev/null
+	@test -x $(HOST_BIN)/ret42_cmp_eqne
+	@rc=0; $(HOST_BIN)/ret42_cmp_eqne || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_mul
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_mul.c -o $(HOST_BIN)/ret42_mul >/dev/null
+	@test -x $(HOST_BIN)/ret42_mul
+	@rc=0; $(HOST_BIN)/ret42_mul || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_divmod
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_divmod.c -o $(HOST_BIN)/ret42_divmod >/dev/null
+	@test -x $(HOST_BIN)/ret42_divmod
+	@rc=0; $(HOST_BIN)/ret42_divmod || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_land_lor
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_land_lor.c -o $(HOST_BIN)/ret42_land_lor >/dev/null
+	@test -x $(HOST_BIN)/ret42_land_lor
+	@rc=0; $(HOST_BIN)/ret42_land_lor || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_bitwise
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_bitwise.c -o $(HOST_BIN)/ret42_bitwise >/dev/null
+	@test -x $(HOST_BIN)/ret42_bitwise
+	@rc=0; $(HOST_BIN)/ret42_bitwise || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_shift
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_shift.c -o $(HOST_BIN)/ret42_shift >/dev/null
+	@test -x $(HOST_BIN)/ret42_shift
+	@rc=0; $(HOST_BIN)/ret42_shift || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_not_bnot
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_not_bnot.c -o $(HOST_BIN)/ret42_not_bnot >/dev/null
+	@test -x $(HOST_BIN)/ret42_not_bnot
+	@rc=0; $(HOST_BIN)/ret42_not_bnot || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_cond
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_cond.c -o $(HOST_BIN)/ret42_cond >/dev/null
+	@test -x $(HOST_BIN)/ret42_cond
+	@rc=0; $(HOST_BIN)/ret42_cond || rc=$$?; test $$rc -eq 42
 	@echo "Native smoke complete"
 
 darwin-net-smoke: darwin-tools

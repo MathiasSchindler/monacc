@@ -691,6 +691,26 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_if.c -o $(HOST_BIN)/ret42_if >/dev/null
 	@test -x $(HOST_BIN)/ret42_if
 	@rc=0; $(HOST_BIN)/ret42_if || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_while
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_while.c -o $(HOST_BIN)/ret42_while >/dev/null
+	@test -x $(HOST_BIN)/ret42_while
+	@rc=0; $(HOST_BIN)/ret42_while || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_while_dec
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_while_dec.c -o $(HOST_BIN)/ret42_while_dec >/dev/null
+	@test -x $(HOST_BIN)/ret42_while_dec
+	@rc=0; $(HOST_BIN)/ret42_while_dec || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_call
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call.c -o $(HOST_BIN)/ret42_call >/dev/null
+	@test -x $(HOST_BIN)/ret42_call
+	@rc=0; $(HOST_BIN)/ret42_call || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_break_continue
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_break_continue.c -o $(HOST_BIN)/ret42_break_continue >/dev/null
+	@test -x $(HOST_BIN)/ret42_break_continue
+	@rc=0; $(HOST_BIN)/ret42_break_continue || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_call_args
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call_args.c -o $(HOST_BIN)/ret42_call_args >/dev/null
+	@test -x $(HOST_BIN)/ret42_call_args
+	@rc=0; $(HOST_BIN)/ret42_call_args || rc=$$?; test $$rc -eq 42
 	@echo "Native smoke complete"
 
 darwin-net-smoke: darwin-tools

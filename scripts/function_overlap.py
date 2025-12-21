@@ -159,17 +159,20 @@ def find_similar(
     functions: Sequence[FunctionDef], threshold: float, limit: int
 ) -> List[Tuple[float, FunctionDef, FunctionDef]]:
     pairs: List[Tuple[float, FunctionDef, FunctionDef]] = []
-    funcs = list(functions)
+    funcs = sorted(functions, key=lambda f: len(f.tokens))
     for i, left in enumerate(funcs):
+        left_len = len(left.tokens)
+        if left_len == 0:
+            continue
         for right in funcs[i + 1 :]:
+            if len(right.tokens) > left_len * 1.6:
+                break  # longer entries will only diverge more
             if left.file == right.file:
                 continue
             if left.normalized == right.normalized:
                 continue  # exact match handled separately
-            longer = max(len(left.tokens), len(right.tokens))
-            if longer == 0:
-                continue
-            length_ratio = min(len(left.tokens), len(right.tokens)) / longer
+            longer = max(left_len, len(right.tokens))
+            length_ratio = min(left_len, len(right.tokens)) / longer
             if length_ratio < 0.5:
                 continue  # skip wildly different sizes
             score = difflib.SequenceMatcher(None, left.tokens, right.tokens).ratio()
@@ -199,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--root",
         type=Path,
         default=Path(__file__).resolve().parents[1],
-        help="Repository root (defaults to script/..)",
+        help="Repository root (defaults to scripts/..)",
     )
     parser.add_argument(
         "--paths",

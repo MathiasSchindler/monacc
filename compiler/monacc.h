@@ -608,6 +608,7 @@ int run_cmd(char *const argv[]);
 
 void emit_x86_64_sysv_freestanding(const Program *prg, Str *out);
 void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int with_start);
+void emit_aarch64_darwin_hosted(const Program *prg, Str *out);
 
 // Internal toolchain reduction: assemble monacc-emitted x86_64 assembly into an ELF64 relocatable object.
 void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path);

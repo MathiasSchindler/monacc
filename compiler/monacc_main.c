@@ -138,15 +138,15 @@ out:
     xclose_best_effort(fd);
 }
 
-static void usage(const char *argv0) {
+static MC_NORETURN void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
         "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
          "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n");
 #endif
     _exit(2);
@@ -158,6 +158,18 @@ static int ends_with_lit(const char *s, const char *lit) {
     mc_usize nl = mc_strlen(lit);
     if (nl > ns) return 0;
     return mc_memcmp(s + (ns - nl), lit, nl) == 0;
+}
+
+typedef enum {
+    TARGET_X86_64_LINUX = 0,
+    TARGET_AARCH64_DARWIN = 1,
+} Target;
+
+static Target parse_target_or_die(const char *argv0, const char *s) {
+    if (!s) usage(argv0);
+    if (!mc_strcmp(s, "x86_64-linux")) return TARGET_X86_64_LINUX;
+    if (!mc_strcmp(s, "aarch64-darwin")) return TARGET_AARCH64_DARWIN;
+    usage(argv0);
 }
 
 typedef struct {
@@ -206,7 +218,7 @@ static void mt_apply_cmd_defines(MacroTable *mt, const CmdDefine *defs, int ndef
     }
 }
 
-static void compile_to_obj(const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
+static void compile_to_obj(Target target, const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
                            const CmdDefine *defs, int ndefs, int with_start, const char *dump_pp_path, const char *as_prog, int emit_obj) {
     trace_checkpoint("read input", in_path);
 
@@ -250,7 +262,14 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
     mc_memset(&out_asm, 0, sizeof(out_asm));
 
     trace_checkpoint("codegen start", in_path);
-    emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
+    if (target == TARGET_X86_64_LINUX) {
+        emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
+    } else if (target == TARGET_AARCH64_DARWIN) {
+        (void)with_start;
+        emit_aarch64_darwin_hosted(&prg, &out_asm);
+    } else {
+        die("internal: unknown target");
+    }
     trace_checkpoint("codegen end", in_path);
 
     // Always emit the textual assembly as well; it's used by the external 'as' path
@@ -258,12 +277,32 @@ static void compile_to_obj(const char *in_path, const char *tmp_s, const char *t
     write_file(tmp_s, out_asm.buf, out_asm.len);
 
     if (emit_obj) {
+        if (target != TARGET_X86_64_LINUX) {
+            die("emit-obj is only supported for x86_64-linux today");
+        }
         trace_checkpoint("assemble (internal) start", tmp_o);
         assemble_x86_64_elfobj(out_asm.buf ? out_asm.buf : "", out_asm.len, tmp_o);
         trace_checkpoint("assemble (internal) end", tmp_o);
     } else {
         trace_checkpoint("assemble (external) start", tmp_o);
-        char *as_argv[6] = {(char *)(as_prog ? as_prog : "as"), "--64", (char *)tmp_s, "-o", (char *)tmp_o, NULL};
+        char *as_argv[8];
+        if (target == TARGET_AARCH64_DARWIN) {
+            // Drive the platform assembler via clang.
+            int k = 0;
+            as_argv[k++] = (char *)(as_prog ? as_prog : "clang");
+            as_argv[k++] = "-c";
+            as_argv[k++] = (char *)tmp_s;
+            as_argv[k++] = "-o";
+            as_argv[k++] = (char *)tmp_o;
+            as_argv[k] = NULL;
+        } else {
+            as_argv[0] = (char *)(as_prog ? as_prog : "as");
+            as_argv[1] = "--64";
+            as_argv[2] = (char *)tmp_s;
+            as_argv[3] = "-o";
+            as_argv[4] = (char *)tmp_o;
+            as_argv[5] = NULL;
+        }
         int rc = run_cmd(as_argv);
         if (rc != 0) die_i64("as failed (", rc, ")");
         trace_checkpoint("assemble (external) end", tmp_o);
@@ -307,6 +346,7 @@ int main(int argc, char **argv) {
     int emit_obj = 1;
     int link_internal = 1;
     int keep_shdr = 0;
+    Target target = TARGET_X86_64_LINUX;
     PPConfig cfg;
     mc_memset(&cfg, 0, sizeof(cfg));
 
@@ -337,6 +377,26 @@ int main(int argc, char **argv) {
                 cmd_define_add(&defs, &ndefs, arg, (mc_usize)(eq - arg), eq + 1);
             }
         } else if (argv[i][0] == '-') {
+            if (!mc_strcmp(argv[i], "--target")) {
+                if (i + 1 >= argc) usage(argv[0]);
+                target = parse_target_or_die(argv[0], argv[++i]);
+                // aarch64-darwin bring-up uses external clang asm/link.
+                if (target == TARGET_AARCH64_DARWIN) {
+                    emit_obj = 0;
+                    link_internal = 0;
+                    if (as_prog_alloc) {
+                        monacc_free(as_prog_alloc);
+                        as_prog_alloc = NULL;
+                    }
+                    if (ld_prog_alloc) {
+                        monacc_free(ld_prog_alloc);
+                        ld_prog_alloc = NULL;
+                    }
+                    as_prog = "clang";
+                    ld_prog = "clang";
+                }
+                continue;
+            }
             if (!mc_strcmp(argv[i], "--dump-pp")) {
                 if (i + 1 >= argc) usage(argv[0]);
                 dump_pp_path = argv[++i];
@@ -446,6 +506,9 @@ int main(int argc, char **argv) {
         if (compile_only) die("-c does not accept .o inputs");
 
         if (link_internal) {
+            if (target != TARGET_X86_64_LINUX) {
+                die("link-internal is only supported for x86_64-linux today");
+            }
             trace_checkpoint("link (internal) start", out_path);
             link_internal_exec_objs((const char **)in_paths, nin_paths, out_path, keep_shdr);
             trace_checkpoint("link (internal) end", out_path);
@@ -455,27 +518,31 @@ int main(int argc, char **argv) {
             int argc_ld = nin_paths + 32;
             char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
             if (!ld_argv) die("oom");
-            ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
-            ld_argv[base++] = "-nostdlib";
-            ld_argv[base++] = "-static";
-            ld_argv[base++] = "-s";
-            ld_argv[base++] = "--gc-sections";
-            ld_argv[base++] = "--build-id=none";
-            if (use_nmagic) {
-                ld_argv[base++] = "-n";
-            }
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "noseparate-code";
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "max-page-size=0x1000";
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "common-page-size=0x1000";
-            ld_argv[base++] = "-e";
-            ld_argv[base++] = "_start";
+            if (target == TARGET_AARCH64_DARWIN) {
+                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "clang");
+            } else {
+                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+                ld_argv[base++] = "-nostdlib";
+                ld_argv[base++] = "-static";
+                ld_argv[base++] = "-s";
+                ld_argv[base++] = "--gc-sections";
+                ld_argv[base++] = "--build-id=none";
+                if (use_nmagic) {
+                    ld_argv[base++] = "-n";
+                }
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "noseparate-code";
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "max-page-size=0x1000";
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "common-page-size=0x1000";
+                ld_argv[base++] = "-e";
+                ld_argv[base++] = "_start";
 
-            if (xpath_exists("compiler/minimal.ld")) {
-                ld_argv[base++] = "-T";
-                ld_argv[base++] = "compiler/minimal.ld";
+                if (xpath_exists("compiler/minimal.ld")) {
+                    ld_argv[base++] = "-T";
+                    ld_argv[base++] = "compiler/minimal.ld";
+                }
             }
 
             for (int i = 0; i < nin_paths; i++) {
@@ -490,7 +557,7 @@ int main(int argc, char **argv) {
             trace_checkpoint("link (external) end", out_path);
         }
 
-        if (!keep_shdr) {
+        if (target == TARGET_X86_64_LINUX && !keep_shdr) {
             elf_trim_shdr_best_effort(out_path);
         }
 
@@ -513,7 +580,7 @@ int main(int argc, char **argv) {
         char tmp_s[4096];
         if (mc_snprint_cstr_cstr(tmp_s, sizeof(tmp_s), out_path, ".s") >= (int)sizeof(tmp_s)) die("path too long");
         // In -c mode we intentionally do not emit _start.
-        compile_to_obj(in_paths[0], tmp_s, out_path, &cfg, defs, ndefs, 0, dump_pp_path, as_prog, emit_obj);
+        compile_to_obj(target, in_paths[0], tmp_s, out_path, &cfg, defs, ndefs, 0, dump_pp_path, as_prog, emit_obj);
         if (!emit_obj) xunlink_best_effort(tmp_s);
 
         if (as_prog_alloc) monacc_free(as_prog_alloc);
@@ -555,13 +622,16 @@ int main(int argc, char **argv) {
             mc_memcpy(obj_paths[i], tmp_o, no);
         }
 
-        compile_to_obj(in_paths[i], tmp_s, tmp_o, &cfg, defs, ndefs, i == 0, dump_pp_path, as_prog, emit_obj);
+        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &cfg, defs, ndefs, i == 0, dump_pp_path, as_prog, emit_obj);
     }
 
     // Link all objects.
     // Size-oriented defaults: we emit per-function/per-string sections and link with --gc-sections.
     {
         if (link_internal) {
+            if (target != TARGET_X86_64_LINUX) {
+                die("link-internal is only supported for x86_64-linux today");
+            }
             trace_checkpoint("link (internal) re-exec start", out_path);
             // Run the internal linker in a fresh process to isolate it from any allocator state
             // left behind by the compile phase (important for large self-host builds).
@@ -594,33 +664,38 @@ int main(int argc, char **argv) {
             int argc_ld = nin_paths + 32;
             char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
             if (!ld_argv) die("oom");
-            ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
-            ld_argv[base++] = "-nostdlib";
-            ld_argv[base++] = "-static";
-            ld_argv[base++] = "-s";
-            ld_argv[base++] = "--gc-sections";
-            ld_argv[base++] = "--build-id=none";
-            // Reduce file-size padding by avoiding page alignment between segments (nmagic).
-            // This is slightly less conventional; can be disabled with --no-nmagic.
-            if (use_nmagic) {
-                ld_argv[base++] = "-n";
-            }
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "noseparate-code";
-            // Use 4K page sizes to reduce alignment padding in the output file.
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "max-page-size=0x1000";
-            ld_argv[base++] = "-z";
-            ld_argv[base++] = "common-page-size=0x1000";
-            ld_argv[base++] = "-e";
-            ld_argv[base++] = "_start";
+            if (target == TARGET_AARCH64_DARWIN) {
+                // Drive the native linker via clang.
+                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "clang");
+            } else {
+                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+                ld_argv[base++] = "-nostdlib";
+                ld_argv[base++] = "-static";
+                ld_argv[base++] = "-s";
+                ld_argv[base++] = "--gc-sections";
+                ld_argv[base++] = "--build-id=none";
+                // Reduce file-size padding by avoiding page alignment between segments (nmagic).
+                // This is slightly less conventional; can be disabled with --no-nmagic.
+                if (use_nmagic) {
+                    ld_argv[base++] = "-n";
+                }
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "noseparate-code";
+                // Use 4K page sizes to reduce alignment padding in the output file.
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "max-page-size=0x1000";
+                ld_argv[base++] = "-z";
+                ld_argv[base++] = "common-page-size=0x1000";
+                ld_argv[base++] = "-e";
+                ld_argv[base++] = "_start";
 
-            // Prefer the repo's minimal linker script when available: it keeps a single
-            // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
-            // This also makes small initialized data (e.g. static-local string init) affordable.
-            if (xpath_exists("compiler/minimal.ld")) {
-                ld_argv[base++] = "-T";
-                ld_argv[base++] = "compiler/minimal.ld";
+                // Prefer the repo's minimal linker script when available: it keeps a single
+                // PT_LOAD (RWX) and packs .text/.rodata/.data/.bss tightly to minimize padding.
+                // This also makes small initialized data (e.g. static-local string init) affordable.
+                if (xpath_exists("compiler/minimal.ld")) {
+                    ld_argv[base++] = "-T";
+                    ld_argv[base++] = "compiler/minimal.ld";
+                }
             }
 
             for (int i = 0; i < nin_paths; i++) {
@@ -636,7 +711,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (!keep_shdr) {
+    if (target == TARGET_X86_64_LINUX && !keep_shdr) {
         elf_trim_shdr_best_effort(out_path);
     }
 

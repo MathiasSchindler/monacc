@@ -173,6 +173,9 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 .PHONY: matrix-tool matrix-mandelbrot
 .PHONY: darwin-tools
 .PHONY: darwin-smoke
+.PHONY: darwin-monacc
+.PHONY: darwin-monacc-smoke
+.PHONY: darwin-native-smoke
 .PHONY: binsh-smoke
 .PHONY: binsh-tools-smoke
 .PHONY: binsh-tools-harness-smoke
@@ -614,10 +617,25 @@ HOST_CORE_SRC := $(filter-out core/mc_libc_compat.c,$(CORE_COMMON_SRC))
 # a rebuild.
 HOST_CORE_HDR := $(wildcard core/*.h)
 
+# Hosted compiler header deps.
+HOST_COMPILER_HDR := $(wildcard compiler/*.h)
+
 $(HOST_BIN):
 	mkdir -p $(HOST_BIN)
 
 HOST_TOOL_BINS := $(addprefix $(HOST_BIN)/,$(TOOL_NAMES))
+
+# Hosted monacc build (compiler itself). This builds a libc-linked binary that
+# can run on macOS, but still targets Linux/x86_64 in its output.
+HOST_MONACC_CC ?= $(HOST_TOOLS_CC)
+HOST_MONACC_CFLAGS ?= $(HOST_TOOLS_CFLAGS)
+HOST_MONACC_LDFLAGS ?= $(HOST_TOOLS_LDFLAGS)
+
+HOST_MONACC_SRC := $(filter-out core/mc_libc_compat.c core/mc_start.c,$(COMPILER_SRC))
+
+$(HOST_BIN)/monacc: $(HOST_MONACC_SRC) $(HOST_CORE_HDR) $(HOST_COMPILER_HDR) | $(HOST_BIN)
+	@echo "  monacc"
+	@$(HOST_MONACC_CC) $(HOST_MONACC_CFLAGS) $(HOST_MONACC_LDFLAGS) -I core -I compiler $(HOST_MONACC_SRC) -o $@
 
 # Default rule for single-file tools.
 $(HOST_BIN)/%: tools/%.c $(HOST_CORE_SRC) $(HOST_CORE_HDR) | $(HOST_BIN)
@@ -639,6 +657,9 @@ $(HOST_BIN)/[: $(HOST_BIN)/test | $(HOST_BIN)
 darwin-tools: $(HOST_TOOL_BINS) $(HOST_BIN)/realpath $(HOST_BIN)/[
 	@echo "Hosted build complete: $(HOST_BIN)/*"
 
+darwin-monacc: $(HOST_BIN)/monacc
+	@echo "Hosted compiler build complete: $(HOST_BIN)/monacc"
+
 darwin-smoke: darwin-tools
 	@echo "==> Smoke: macOS hosted tools"
 	@test -x $(HOST_BIN)/true && $(HOST_BIN)/true
@@ -647,6 +668,30 @@ darwin-smoke: darwin-tools
 		$(HOST_BIN)/echo "smoke" | $(HOST_BIN)/cat >/dev/null; \
 	fi
 	@echo "Smoke complete"
+
+darwin-monacc-smoke: darwin-monacc
+	@echo "==> Smoke: macOS hosted compiler"
+	@test -x $(HOST_BIN)/monacc
+	@rm -f $(HOST_BIN)/hello.elf
+	@$(HOST_BIN)/monacc examples/hello.c -o $(HOST_BIN)/hello.elf >/dev/null
+	@test -s $(HOST_BIN)/hello.elf
+	@echo "Compiler smoke complete"
+
+darwin-native-smoke: darwin-monacc
+	@echo "==> Smoke: macOS native aarch64-darwin target"
+	@rm -f $(HOST_BIN)/ret42
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42.c -o $(HOST_BIN)/ret42 >/dev/null
+	@test -x $(HOST_BIN)/ret42
+	@rc=0; $(HOST_BIN)/ret42 || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_local
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_local.c -o $(HOST_BIN)/ret42_local >/dev/null
+	@test -x $(HOST_BIN)/ret42_local
+	@rc=0; $(HOST_BIN)/ret42_local || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_if
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_if.c -o $(HOST_BIN)/ret42_if >/dev/null
+	@test -x $(HOST_BIN)/ret42_if
+	@rc=0; $(HOST_BIN)/ret42_if || rc=$$?; test $$rc -eq 42
+	@echo "Native smoke complete"
 
 darwin-net-smoke: darwin-tools
 	@echo "==> Smoke: macOS hosted networking"

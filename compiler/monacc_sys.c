@@ -1,7 +1,7 @@
 #include "monacc.h"
 
 static int xsys_is_err(long r) {
-    // Linux raw syscalls return -errno on failure, in range [-4095, -1].
+    // Core syscall wrappers return -errno on failure, in range [-4095, -1].
     return (unsigned long)r >= (unsigned long)-4095;
 }
 
@@ -65,11 +65,13 @@ static int xsys_execve(const char *path, char *const argv[], char *const envp[])
     return -1;
 }
 
+#if !MC_OS_DARWIN
 __attribute__((noreturn)) void _exit(int status) {
     (void)mc_syscall1(MC_SYS_exit, (mc_i64)status);
     for (;;) {
     }
 }
+#endif
 
 static int xsys_path_exists(const char *path) {
     // We only care whether it exists; struct size is plenty for kernel ABI.
@@ -105,6 +107,15 @@ static int xsys_path_exists(const char *path) {
 #define MAP_ANONYMOUS 0x20
 #endif
 
+// Always use Linux-shaped MAP_* bits in the compiler/runtime.
+// On hosted Darwin builds, core translates these to the host constants.
+#ifndef MONACC_MAP_PRIVATE
+#define MONACC_MAP_PRIVATE 0x02
+#endif
+#ifndef MONACC_MAP_ANONYMOUS
+#define MONACC_MAP_ANONYMOUS 0x20
+#endif
+
 typedef struct {
     mc_usize size;
 } MonaccAllocHdr;
@@ -117,8 +128,14 @@ static mc_usize align_up_size(mc_usize n, mc_usize a) {
 }
 
 static void *xsys_mmap_anon(mc_usize len) {
-    long r = (long)mc_syscall6(MC_SYS_mmap, (mc_i64)0, (mc_i64)len, (mc_i64)(PROT_READ | PROT_WRITE),
-                              (mc_i64)(MAP_PRIVATE | MAP_ANONYMOUS), (mc_i64)-1, (mc_i64)0);
+    long r;
+    #if MC_OS_DARWIN
+    r = (long)mc_sys_mmap((void *)0, (mc_usize)len, (mc_i32)(PROT_READ | PROT_WRITE),
+                          (mc_i32)(MONACC_MAP_PRIVATE | MONACC_MAP_ANONYMOUS), (mc_i32)-1, (mc_i64)0);
+    #else
+    r = (long)mc_syscall6(MC_SYS_mmap, (mc_i64)0, (mc_i64)len, (mc_i64)(PROT_READ | PROT_WRITE),
+                          (mc_i64)(MONACC_MAP_PRIVATE | MONACC_MAP_ANONYMOUS), (mc_i64)-1, (mc_i64)0);
+    #endif
     if (xsys_is_err(r)) return NULL;
     return (void *)r;
 }
@@ -352,7 +369,11 @@ int run_cmd(char *const argv[]) {
         }
         const char *sfx = " failed\n";
         xwrite_best_effort(2, sfx, mc_strlen(sfx));
+        #if MC_OS_DARWIN
+        mc_exit(127);
+        #else
         _exit(127);
+        #endif
     }
 
     return xwaitpid_exitcode(pid);

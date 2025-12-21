@@ -121,3 +121,141 @@ Notes:
    - The hosted build uses `-Os`, `-ffunction-sections/-fdata-sections`, and `-Wl,-dead_strip` to avoid pulling in unused core code.
 
 This should produce `bin-host/<tool>` binaries compiled with Apple clang.
+
+---
+
+## Native arm64-darwin monacc compiler port (outline)
+
+This section is about porting **monacc the C compiler** to produce **native arm64 macOS (Darwin) binaries**.
+
+Goal (as requested):
+
+- **Target**: `arm64-apple-darwin` (native)
+- **First milestone toolchain**: use external assembler and linker (practically: drive them via `clang`)
+- **Not a goal initially**: internal object emission and internal linker on macOS
+
+### Where monacc is today (relevant constraints)
+
+The compiler is currently designed around:
+
+- **Target ISA/ABI**: Linux x86_64 SysV
+- **Output**: AT&T x86_64 assembly; optionally internal ELF64 `.o` emission and internal linking
+- **Link model**: freestanding `_start` / syscall-oriented outputs for the in-tree userland tools
+
+Porting to native arm64-darwin therefore requires *real backend work* (instruction set + ABI) and a different binary format/toolchain path.
+
+### Recommended approach (staged)
+
+#### Stage 0 — Host monacc on macOS (compiler runs on Darwin)
+
+Make `monacc` itself compile and run as a **hosted** macOS executable (libc-based). This is independent of what it targets.
+
+Typical work:
+
+- Replace Linux-only syscall code paths in the compiler runtime (`compiler/monacc_sys.c`) with macOS/POSIX equivalents.
+- Make the build use Apple clang defaults for a hosted binary (no `-nostdlib`, no custom `_start`).
+
+Deliverable:
+
+- `bin-host/monacc` runs on macOS as a hosted (libc-linked) executable.
+- Build targets:
+   - `make darwin-monacc`
+   - `make darwin-monacc-smoke` (compiles `examples/hello.c` into an ELF output to validate the hosted compiler runs)
+
+#### Stage 1 — Add an arm64-darwin codegen backend (assembly only)
+
+Implement a new backend that emits **AArch64 (arm64) assembly** following the macOS ABI.
+
+Key design choice:
+
+- Start with a **hosted target** that emits a `main` symbol and relies on the platform CRT + libc.
+   - This avoids having to implement Darwin syscalls + a custom `_start` early.
+   - You can still keep monacc’s language subset and avoid full libc headers initially by compiling tiny examples.
+
+Major technical pieces:
+
+- Calling convention: AAPCS64 / Darwin arm64
+   - args in `x0..x7`, return in `x0`, stack 16-byte alignment, callee-saved registers, etc.
+- Instruction selection for the subset currently supported by monacc:
+   - integer ops, loads/stores, address calc, branches/condition codes, calls
+   - function prologues/epilogues, stack locals
+- ABI details that impact correctness:
+   - struct layout/alignment rules, integer promotions, varargs ABI (can be deferred if you restrict features)
+
+Deliverable:
+
+- `monacc` can compile a small “hello world” style program to assembly for arm64-darwin.
+
+Current repo status:
+
+- `bin-host/monacc --target aarch64-darwin` exists.
+- The backend is intentionally minimal for bring-up: it supports a single `main` with simple locals and `return` expressions (currently: constants, vars, and add/sub).
+
+#### Stage 2 — External assemble + link (via clang)
+
+On macOS, the most robust way to use “external `as` and `ld`” is to drive them through `clang`:
+
+- Assemble: `clang -c out.s -o out.o`
+- Link: `clang out.o -o a.out`
+
+Reasons:
+
+- Darwin/Mach-O has a lot of defaults (platform load commands, SDK selection, min version, codesigning entitlements in some cases) that `clang` manages reliably.
+
+Implementation notes:
+
+- You may need Mach-O symbol spelling conventions (notably leading underscores for global symbols) and section directives compatible with Apple’s assembler.
+
+Deliverable:
+
+- `./monacc … -o hello` produces a native arm64 macOS executable that runs.
+
+Current repo status:
+
+- `make darwin-native-smoke` builds `bin-host/monacc`, compiles a couple of tiny examples (including `examples/ret42.c` and `examples/ret42_local.c`) to native arm64 macOS binaries, and runs them (expects exit code 42).
+
+#### Stage 3 — Expand coverage until it can compile real code
+
+Once Stage 2 works for a tiny subset, expand incrementally:
+
+- more expression forms
+- more robust stack layout and register allocation decisions
+- globals (data / rodata) and relocations (initially let the assembler handle most relocations)
+- function pointers
+
+At this stage, it becomes realistic to compile larger self-tests and potentially a subset of the tools *as hosted programs*.
+
+#### Stage 4 (optional, later) — Native Mach-O object emission / internal linker
+
+Only if desired:
+
+- Implement Mach-O `.o` writing (replacement for `compiler/monacc_elfobj.c`).
+- Implement a Mach-O link step or a minimal internal linker.
+
+This is a large chunk of work; using `clang` to assemble/link is the pragmatic early path.
+
+### Known hard parts / risk areas
+
+- **New backend**: the existing codegen is deeply x86_64-shaped (register set, instruction forms, SysV rules).
+- **Inline asm**: current inline-asm support is x86_64-oriented; arm64 support is non-trivial. Consider initially treating inline asm as unsupported on the Darwin target.
+- **Runtime model choice**: “freestanding syscall-only Darwin binaries” is possible but significantly harder than a hosted `main` + libc target.
+
+### What has been done already (macOS work so far)
+
+The work completed to date is **not** the compiler port. It is a hosted macOS build path for the **tools**, using Apple clang.
+
+Completed changes (high level):
+
+- Added a Darwin hosted backend in `core/` (`core/mc_syscall_darwin.h`) so tools can run on macOS by calling libc/POSIX and returning `-errno`.
+- Kept Linux syscall-only behavior isolated (Linux x86_64 inline-syscall backend lives in `core/mc_syscall_linux_x86_64.h`).
+- Added hosted build targets and output isolation in the top-level Makefile:
+   - `make darwin-tools` → builds tools into `bin-host/`
+   - `make darwin-smoke` and `make darwin-net-smoke` → basic runtime validation
+- Fixed IPv6 networking ABI issues on macOS (sockaddr translation) and ensured hosted tools rebuild when core headers change (Makefile header prerequisites).
+
+Tool-side source changes (kept minimal; unavoidable portability nits):
+
+- `tools/pwd.c`: removed an x86-only inline `hlt` on error paths (replaced with a normal exit).
+- `tools/who.c`: renamed a field that collided with macOS header macros (`__unused`).
+
+Everything else for the tools port was implemented in `core/` and the Makefile.

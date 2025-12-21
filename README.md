@@ -59,6 +59,10 @@ make              # Build everything (compiler, then tools)
 make test         # Run the test suite
 ```
 
+### Developer helpers
+
+- `python3 scripts/function_overlap.py` — scans `core/` and `tools/` for functions with identical or similar bodies and reports name collisions. Use `--help` for options (custom paths, thresholds, or failing on overlaps).
+
 ### What gets built
 
 After `make`, the `bin/` directory contains:

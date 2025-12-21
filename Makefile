@@ -523,6 +523,7 @@ test: all
 	if [ "$(SELFTEST_REPO_GUARDS)" = "1" ]; then \
 		echo "==> Probe: repo guardrails"; \
 		$(HOST_SH) tests/repo/no-kernel-binutils-creep.sh .; repo_guard_rc=$$?; \
+		$(HOST_SH) tests/repo/function-overlap.sh . || repo_guard_rc=1; \
 		echo ""; \
 	fi; \
 	if [ "$(MULTI)" = "1" ]; then \

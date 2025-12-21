@@ -61,7 +61,7 @@ make test         # Run the test suite
 
 ### Developer helpers
 
-- `bin/overlap FILE.c [...]` — C helper that scans provided C files for identical or similar function bodies and name collisions. Built with the rest of the tools.
+- `tests/repo/function-overlap.sh` builds and runs a syscall-only C helper to scan specified C files for identical or similar function bodies and name collisions (used in repo guardrail).
 
 ### What gets built
 

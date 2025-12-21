@@ -150,7 +150,7 @@ def group_by_name(functions: Sequence[FunctionDef]) -> List[List[FunctionDef]]:
 def group_by_exact_body(functions: Sequence[FunctionDef]) -> List[List[FunctionDef]]:
     buckets: dict[str, List[FunctionDef]] = defaultdict(list)
     for fn in functions:
-        digest = hashlib.sha1(fn.normalized.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(fn.normalized.encode("utf-8")).hexdigest()
         buckets[digest].append(fn)
     return [group for group in buckets.values() if len({f.file for f in group}) > 1]
 
@@ -262,7 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if by_exact:
         print_section("Exact body matches")
         for group in by_exact:
-            digest = hashlib.sha1(group[0].normalized.encode("utf-8")).hexdigest()[:8]
+            digest = hashlib.sha256(group[0].normalized.encode("utf-8")).hexdigest()[:8]
             print(f"  hash {digest} shared by {len(group)} functions:")
             for fn in group:
                 print(f"    - {fn.name} ({relpath(fn.file, root)}:{fn.line})")

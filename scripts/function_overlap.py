@@ -25,20 +25,25 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 
+FUNC_QUALIFIERS = r"(?:static\s+|inline\s+|__attribute__\s*\(\(.*?\)\)\s+)*"
+RETURN_TYPE_BLOB = r"[A-Za-z_][\w\s\*\(\)]*"
 FUNC_DEF_RE = re.compile(
     r"^[ \t]*"  # leading whitespace
-    r"(?:static\s+|inline\s+|__attribute__\s*\(\(.*?\)\)\s+)*"  # qualifiers
-    r"[A-Za-z_][\w\s\*\(\)]*"  # return type-ish blob
-    r"\s+"  # whitespace before name (may span lines)
-    r"(?P<name>[A-Za-z_]\w*)"  # function name
-    r"\s*\((?P<params>[^;]*?)\)\s*"  # parameters (no semicolon)
-    r"\{",  # opening brace
+    + FUNC_QUALIFIERS
+    + RETURN_TYPE_BLOB  # return type-ish blob
+    + r"\s+"  # whitespace before name (may span lines)
+    + r"(?P<name>[A-Za-z_]\w*)"  # function name
+    + r"\s*\((?P<params>[^;]*?)\)\s*"  # parameters (no semicolon)
+    + r"\{",  # opening brace
     re.MULTILINE | re.DOTALL,
 )
 
 CONTROL_KEYWORDS = {"if", "for", "while", "switch"}
 SIMILAR_MAX_SIZE_RATIO = 1.6
 SIMILAR_MIN_SIZE_RATIO = 0.5
+TOKEN_RE = re.compile(
+    r"[A-Za-z_]\w+|==|!=|<=|>=|->|&&|\|\||[{}()\[\];,+\-*/%&|^<>!]"
+)
 
 
 @dataclass
@@ -57,6 +62,30 @@ def strip_comments(source: str) -> str:
     source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
     source = re.sub(r"//.*?$", "", source, flags=re.MULTILINE)
     return source
+
+
+def find_open_brace(source: str, start_idx: int) -> int:
+    """Find the first { after start_idx, ignoring quoted strings/chars."""
+    in_quote: str | None = None
+    escape = False
+    for i in range(start_idx, len(source)):
+        ch = source[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            continue
+        if ch == "{":
+            return i
+    return -1
 
 
 def extract_block(source: str, start_idx: int) -> Tuple[str, int]:
@@ -94,9 +123,7 @@ def normalize_body(body: str) -> Tuple[str, List[str]]:
     body = re.sub(r"\b0[xX][0-9A-Fa-f]+\b", "0x0", body)
     body = re.sub(r"\b\d+(\.\d+)?\b", "0", body)
     body = re.sub(r"\s+", " ", body).strip()
-    tokens = re.findall(
-        r"[A-Za-z_]\w+|==|!=|<=|>=|->|&&|\|\||[{}()\[\];,+\-*/%&|^<>!]", body
-    )
+    tokens = TOKEN_RE.findall(body)
     return " ".join(tokens), tokens
 
 
@@ -112,7 +139,7 @@ def iter_functions(path: Path) -> Iterable[FunctionDef]:
         if name in CONTROL_KEYWORDS:
             idx = match.end()
             continue
-        brace_start = cleaned.find("{", match.end() - 1)
+        brace_start = find_open_brace(cleaned, match.end() - 1)
         if brace_start == -1:
             break
         body, end_idx = extract_block(cleaned, brace_start)
@@ -167,14 +194,18 @@ def find_similar(
         if left_len == 0:
             continue
         for right in funcs[i + 1 :]:
-            if len(right.tokens) > left_len * SIMILAR_MAX_SIZE_RATIO:
-                break  # longer entries will only diverge more
+            right_len = len(right.tokens)
+            if right_len == 0:
+                continue
+            longer = max(left_len, right_len)
+            shorter = min(left_len, right_len)
+            length_ratio = shorter / longer
+            if right_len > left_len * SIMILAR_MAX_SIZE_RATIO and length_ratio < SIMILAR_MIN_SIZE_RATIO:
+                break  # subsequent entries only get longer and less comparable
             if left.file == right.file:
                 continue
             if left.normalized == right.normalized:
                 continue  # exact match handled separately
-            longer = max(left_len, len(right.tokens))
-            length_ratio = min(left_len, len(right.tokens)) / longer
             if length_ratio < SIMILAR_MIN_SIZE_RATIO:
                 continue  # skip wildly different sizes
             score = difflib.SequenceMatcher(None, left.tokens, right.tokens).ratio()

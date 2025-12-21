@@ -4944,7 +4944,6 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
 
 static void a64_lval_addr_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x) {
     (void)fn;
-    (void)tmp_x;
     if (!e) die("aarch64-darwin: lvalue addr missing expr");
     switch (e->kind) {
         case EXPR_VAR:
@@ -4960,6 +4959,44 @@ static void a64_lval_addr_x(Str *out, const Program *prg, const Function *fn, co
             if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
             mc_memcpy(sym + 1, gv->name, n + 1);
             a64_addr_of_sym(out, dst_x, sym);
+            return;
+        }
+        case EXPR_INDEX: {
+            // Address of base[index]. Base must be a pointer value.
+            if (!e->lhs || !e->rhs) die("aarch64-darwin: index missing operand");
+            if (e->ptr_scale <= 0) die("aarch64-darwin: index missing ptr_scale");
+
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+
+            // Evaluate index and extend to 64-bit.
+            a64_eval_expr_w(out, prg, fn, e->rhs, "w9", "w10");
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", e->rhs->is_unsigned ? "uxtw" : "sxtw");
+            str_appendf(out, " x9, w9\n");
+
+            int scale = e->ptr_scale;
+            if (scale < 0) scale = -scale;
+            if (scale == 0) scale = 1;
+            if (scale == 1) {
+                // no-op
+            } else if (scale == 2) {
+                str_appendf(out, "  lsl x9, x9, #1\n");
+            } else if (scale == 4) {
+                str_appendf(out, "  lsl x9, x9, #2\n");
+            } else if (scale == 8) {
+                str_appendf(out, "  lsl x9, x9, #3\n");
+            } else {
+                a64_mov_x_imm(out, tmp_x, scale);
+                str_appendf(out, "  mul x9, x9, ");
+                str_appendf_s(out, "%s", tmp_x);
+                str_appendf(out, "\n");
+            }
+
+            str_appendf(out, "  add ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", x9\n");
             return;
         }
         case EXPR_DEREF:
@@ -4984,6 +5021,109 @@ static void a64_binop_rrr(Str *out, const char *op, const char *dst, const char 
     str_appendf(out, "\n");
 }
 
+static void a64_load_scalar_w_from_addr(Str *out, const char *dst_w, const char *addr_x, int sz, int is_unsigned) {
+    // Load a scalar of size 1/2/4 from [addr_x] into dst_w.
+    // For 1/2 bytes, sign/zero extend to 32-bit.
+    if (sz == 1) {
+        str_appendf(out, "  ");
+        str_appendf_s(out, "%s", is_unsigned ? "ldrb" : "ldrsb");
+        str_appendf(out, " ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 2) {
+        str_appendf(out, "  ");
+        str_appendf_s(out, "%s", is_unsigned ? "ldrh" : "ldrsh");
+        str_appendf(out, " ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 4) {
+        str_appendf(out, "  ldr ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    die("aarch64-darwin: scalar load size not supported yet");
+}
+
+static void a64_store_scalar_w_to_addr(Str *out, const char *src_w, const char *addr_x, int sz) {
+    // Store low bits of src_w into [addr_x] with size 1/2/4.
+    if (sz == 1) {
+        str_appendf(out, "  strb ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 2) {
+        str_appendf(out, "  strh ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 4) {
+        str_appendf(out, "  str ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    die("aarch64-darwin: scalar store size not supported yet");
+}
+
+static void a64_normalize_small_int_w(Str *out, const char *wreg, int sz, int is_unsigned) {
+    // Normalize a value to behave like it was stored as a sz-byte integer and reloaded.
+    if (sz == 1) {
+        if (is_unsigned) {
+            str_appendf(out, "  and ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", #0xff\n");
+        } else {
+            str_appendf(out, "  sxtb ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, "\n");
+        }
+        return;
+    }
+    if (sz == 2) {
+        if (is_unsigned) {
+            str_appendf(out, "  and ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", #0xffff\n");
+        } else {
+            str_appendf(out, "  sxth ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, "\n");
+        }
+        return;
+    }
+    if (sz == 4) {
+        return;
+    }
+    die("aarch64-darwin: normalize size not supported yet");
+}
+
 static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x) {
     (void)fn;
     (void)tmp_x;
@@ -4992,6 +5132,115 @@ static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, co
         return;
     }
     switch (e->kind) {
+        case EXPR_PREINC:
+        case EXPR_PREDEC:
+        case EXPR_POSTINC:
+        case EXPR_POSTDEC: {
+            if (!e->lhs) die("aarch64-darwin: ++/-- missing lhs");
+            int sz = e->lval_size ? e->lval_size : e->lhs->lval_size;
+            if (sz != 8) {
+                die("aarch64-darwin: 64-bit ++/-- only supported for 8-byte lvalues");
+            }
+
+            a64_lval_addr_x(out, prg, fn, e->lhs, "x10", tmp_x);
+            str_appendf(out, "  ldr x0, [x10]\n");
+
+            long long delta = (long long)(e->post_delta > 0 ? e->post_delta : 1);
+            if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+            if (delta >= -4095 && delta <= 4095) {
+                if (delta >= 0) {
+                    str_appendf(out, "  add x9, x0, #");
+                    str_appendf_i64(out, "%d", delta);
+                    str_appendf(out, "\n");
+                } else {
+                    str_appendf(out, "  sub x9, x0, #");
+                    str_appendf_i64(out, "%d", -delta);
+                    str_appendf(out, "\n");
+                }
+            } else {
+                a64_mov_x_imm(out, "x9", delta);
+                str_appendf(out, "  add x9, x0, x9\n");
+            }
+
+            str_appendf(out, "  str x9, [x10]\n");
+
+            if (e->kind == EXPR_PREINC || e->kind == EXPR_PREDEC) {
+                if (mc_strcmp(dst_x, "x9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, ", x9\n");
+                }
+                return;
+            }
+
+            if (mc_strcmp(dst_x, "x0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", x0\n");
+            }
+            return;
+        }
+        case EXPR_ADD:
+        case EXPR_SUB: {
+            // Pointer arithmetic bring-up: pointer +/- int (parser provides ptr_scale + ptr_index_side).
+            if (e->ptr_scale <= 0 || e->ptr <= 0) {
+                die("aarch64-darwin: only pointer +/- int supported in 64-bit eval for now");
+            }
+            const Expr *ptr_side = NULL;
+            const Expr *idx_side = NULL;
+            if (e->ptr_index_side == 1) {
+                ptr_side = e->lhs;
+                idx_side = e->rhs;
+            } else if (e->ptr_index_side == 2) {
+                if (e->kind != EXPR_ADD) {
+                    die("aarch64-darwin: int - pointer not supported");
+                }
+                ptr_side = e->rhs;
+                idx_side = e->lhs;
+            } else {
+                die("aarch64-darwin: pointer +/- int missing ptr_index_side");
+            }
+            if (!ptr_side || !idx_side) die("aarch64-darwin: pointer arithmetic missing operand");
+
+            // Evaluate pointer value into dst_x.
+            a64_eval_expr_x(out, prg, fn, ptr_side, dst_x, tmp_x);
+
+            // Evaluate index into w9, extend to x9.
+            a64_eval_expr_w(out, prg, fn, idx_side, "w9", "w10");
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", (idx_side->is_unsigned || e->is_unsigned) ? "uxtw" : "sxtw");
+            str_appendf(out, " x9, w9\n");
+
+            // Apply scaling.
+            int scale = e->ptr_scale;
+            if (scale < 0) scale = -scale;
+            if (scale == 0) scale = 1;
+            if (scale == 1) {
+                // no-op
+            } else if (scale == 2) {
+                str_appendf(out, "  lsl x9, x9, #1\n");
+            } else if (scale == 4) {
+                str_appendf(out, "  lsl x9, x9, #2\n");
+            } else if (scale == 8) {
+                str_appendf(out, "  lsl x9, x9, #3\n");
+            } else {
+                a64_mov_x_imm(out, tmp_x, scale);
+                str_appendf(out, "  mul x9, x9, ");
+                str_appendf_s(out, "%s", tmp_x);
+                str_appendf(out, "\n");
+            }
+
+            // Apply +/-.
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", (e->kind == EXPR_ADD) ? "add" : "sub");
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", x9\n");
+            return;
+        }
         case EXPR_COND: {
             // Ternary: cond ? then : else
             int l_else = a64_new_elabel();
@@ -5035,6 +5284,11 @@ static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, co
             return;
         case EXPR_VAR:
             if (e->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+            // Arrays decay to address.
+            if (e->lval_size == 0) {
+                a64_addr_of_local_off(out, dst_x, e->var_offset);
+                return;
+            }
             if (e->lval_size == 8 || e->var_alloc_size == 8) {
                 a64_ldur_x_off(out, dst_x, e->var_offset);
                 return;
@@ -5056,6 +5310,12 @@ static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, co
             mc_usize n = mc_strlen(gv->name);
             if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
             mc_memcpy(sym + 1, gv->name, n + 1);
+
+            // Arrays decay to address.
+            if (e->lval_size == 0) {
+                a64_addr_of_sym(out, dst_x, sym);
+                return;
+            }
 
             a64_addr_of_sym(out, "x10", sym);
             if (gv->elem_size == 8) {
@@ -5117,6 +5377,78 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
         return;
     }
     switch (e->kind) {
+        case EXPR_PREINC:
+        case EXPR_PREDEC:
+        case EXPR_POSTINC:
+        case EXPR_POSTDEC: {
+            if (!e->lhs) die("aarch64-darwin: ++/-- missing lhs");
+            int sz = e->lval_size ? e->lval_size : e->lhs->lval_size;
+            if (sz != 1 && sz != 2 && sz != 4) {
+                die("aarch64-darwin: ++/-- only supported for 1/2/4-byte lvalues in 32-bit eval");
+            }
+
+            a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+            a64_load_scalar_w_from_addr(out, "w0", "x10", sz, e->is_unsigned);
+
+            int delta = (e->post_delta > 0 ? e->post_delta : 1);
+            if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+            if (delta >= -4095 && delta <= 4095) {
+                if (delta >= 0) {
+                    str_appendf(out, "  add w9, w0, #");
+                    str_appendf_i64(out, "%d", (long long)delta);
+                    str_appendf(out, "\n");
+                } else {
+                    str_appendf(out, "  sub w9, w0, #");
+                    str_appendf_i64(out, "%d", (long long)(-delta));
+                    str_appendf(out, "\n");
+                }
+            } else {
+                a64_mov_w_imm(out, tmp_w, delta);
+                str_appendf(out, "  add w9, w0, ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+            }
+
+            a64_normalize_small_int_w(out, "w9", sz, e->is_unsigned);
+            a64_store_scalar_w_to_addr(out, "w9", "x10", sz);
+
+            if (e->kind == EXPR_PREINC || e->kind == EXPR_PREDEC) {
+                if (mc_strcmp(dst_w, "w9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w9\n");
+                }
+                return;
+            }
+
+            if (mc_strcmp(dst_w, "w0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w0\n");
+            }
+            return;
+        }
+        case EXPR_POS:
+            a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+            return;
+        case EXPR_NEG:
+            a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+            str_appendf(out, "  neg ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, "\n");
+            return;
+        case EXPR_INDEX: {
+            // Load base[index] as scalar.
+            if (e->lval_size != 1 && e->lval_size != 2 && e->lval_size != 4) {
+                die("aarch64-darwin: index load size not supported yet");
+            }
+            a64_lval_addr_x(out, prg, fn, e, "x10", "x11");
+            a64_load_scalar_w_from_addr(out, dst_w, "x10", e->lval_size, e->is_unsigned);
+            return;
+        }
         case EXPR_COND: {
             // Ternary: cond ? then : else
             int l_else = a64_new_elabel();
@@ -5134,18 +5466,24 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
             a64_mov_w_imm(out, dst_w, e->num);
             return;
         case EXPR_DEREF:
-            if (e->lval_size != 4) {
-                die("aarch64-darwin: only 4-byte deref loads supported yet");
+            if (e->lval_size != 1 && e->lval_size != 2 && e->lval_size != 4) {
+                die("aarch64-darwin: deref load size not supported yet");
             }
             a64_eval_expr_x(out, prg, fn, e->lhs, "x10", "x11");
-            str_appendf(out, "  ldr ");
-            str_appendf_s(out, "%s", dst_w);
-            str_appendf(out, ", [x10]\n");
+            a64_load_scalar_w_from_addr(out, dst_w, "x10", e->lval_size, e->is_unsigned);
             return;
         case EXPR_VAR:
             // Locals/params are addressed via the function's stack slots.
             // For this minimal subset we only expect locals (negative offsets).
             if (e->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+            if (e->lval_size == 1 || e->lval_size == 2) {
+                a64_addr_of_local_off(out, "x10", e->var_offset);
+                a64_load_scalar_w_from_addr(out, dst_w, "x10", e->lval_size, e->is_unsigned);
+                return;
+            }
+            if (e->lval_size != 4) {
+                die("aarch64-darwin: local load size not supported yet");
+            }
             a64_ldur_w_off(out, dst_w, e->var_offset);
             return;
         case EXPR_CALL: {
@@ -5198,8 +5536,39 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
                 if (e->lhs->lval_size) sz = e->lhs->lval_size;
                 else sz = 4;
             }
-            if (sz != 4 && sz != 8) {
+            if (sz != 1 && sz != 2 && sz != 4 && sz != 8) {
                 die("aarch64-darwin: assignment size not supported yet");
+            }
+
+            if (sz == 1 || sz == 2) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+                // Truncate like the store does.
+                if (sz == 1) {
+                    str_appendf(out, "  and ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", #0xff\n");
+                } else {
+                    str_appendf(out, "  and ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", #0xffff\n");
+                }
+
+                if (e->lhs->kind == EXPR_VAR) {
+                    if (e->lhs->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+                    a64_addr_of_local_off(out, "x10", e->lhs->var_offset);
+                    a64_store_scalar_w_to_addr(out, dst_w, "x10", sz);
+                    return;
+                }
+                if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF || e->lhs->kind == EXPR_INDEX) {
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+                    a64_store_scalar_w_to_addr(out, dst_w, "x10", sz);
+                    return;
+                }
+                die("aarch64-darwin: assignment lhs kind not supported yet");
             }
 
             if (sz == 4) {
@@ -5209,7 +5578,7 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
                     a64_stur_w_off(out, dst_w, e->lhs->var_offset);
                     return;
                 }
-                if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF) {
+                if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF || e->lhs->kind == EXPR_INDEX) {
                     a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
                     str_appendf(out, "  str ");
                     str_appendf_s(out, "%s", dst_w);
@@ -5227,7 +5596,7 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
                 a64_mov_w_imm(out, dst_w, 0);
                 return;
             }
-            if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF) {
+            if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF || e->lhs->kind == EXPR_INDEX) {
                 a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
                 str_appendf(out, "  str x9, [x10]\n");
                 a64_mov_w_imm(out, dst_w, 0);
@@ -5507,8 +5876,8 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
             if (!prg) die("internal: aarch64-darwin: global eval needs program");
             if (e->global_id < 0 || e->global_id >= prg->nglobals) die("aarch64-darwin: bad global id");
             const GlobalVar *gv = &prg->globals[e->global_id];
-            if (gv->elem_size != 4) {
-                die("aarch64-darwin: only 4-byte global loads supported yet");
+            if (gv->elem_size != 1 && gv->elem_size != 2 && gv->elem_size != 4) {
+                die("aarch64-darwin: global load size not supported yet");
             }
             char sym[160];
             sym[0] = '_';
@@ -5516,9 +5885,7 @@ static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, co
             if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
             mc_memcpy(sym + 1, gv->name, n + 1);
             a64_addr_of_sym(out, "x10", sym);
-            str_appendf(out, "  ldr ");
-            str_appendf_s(out, "%s", dst_w);
-            str_appendf(out, ", [x10]\n");
+            a64_load_scalar_w_from_addr(out, dst_w, "x10", gv->elem_size, e->is_unsigned);
             return;
         }
         default:
@@ -5630,6 +5997,18 @@ static void a64_emit_stmt(Str *out, const Program *prg, const Function *fn, cons
             a64_emit_stmt_list(out, prg, fn, s->block_first, ret_label, label_id, ls);
             return;
         case STMT_DECL:
+            if (s->decl_store_size == 1 || s->decl_store_size == 2) {
+                a64_eval_expr_w(out, prg, fn, s->decl_init, "w0", "w9");
+                // Truncate like a store.
+                if (s->decl_store_size == 1) {
+                    str_appendf(out, "  and w0, w0, #0xff\n");
+                } else {
+                    str_appendf(out, "  and w0, w0, #0xffff\n");
+                }
+                a64_addr_of_local_off(out, "x10", s->decl_offset);
+                a64_store_scalar_w_to_addr(out, "w0", "x10", s->decl_store_size);
+                return;
+            }
             if (s->decl_store_size == 4) {
                 a64_eval_expr_w(out, prg, fn, s->decl_init, "w0", "w9");
                 a64_stur_w_off(out, "w0", s->decl_offset);
@@ -5646,10 +6025,16 @@ static void a64_emit_stmt(Str *out, const Program *prg, const Function *fn, cons
             if (stmt_is_void_cast_discard(s)) return;
             if (!s->expr) return;
             // Minimal subset: allow assignment and direct call expressions.
-            if (s->expr->kind != EXPR_ASSIGN && s->expr->kind != EXPR_CALL) {
+            if (s->expr->kind != EXPR_ASSIGN && s->expr->kind != EXPR_CALL &&
+                s->expr->kind != EXPR_PREINC && s->expr->kind != EXPR_PREDEC &&
+                s->expr->kind != EXPR_POSTINC && s->expr->kind != EXPR_POSTDEC) {
                 die("aarch64-darwin: unsupported expression statement");
             }
-            a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");
+            if (s->expr->ptr != 0 || s->expr->lval_size == 8) {
+                a64_eval_expr_x(out, prg, fn, s->expr, "x0", "x9");
+            } else {
+                a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");
+            }
             return;
         case STMT_RETURN:
             a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");

@@ -190,7 +190,7 @@ Current repo status:
 
 - `bin-host/monacc --target aarch64-darwin` exists.
 - The backend is intentionally minimal for bring-up, but now supports a small (useful) subset:
-   - locals (4/8-byte) + assignment
+   - locals (1/2/4/8-byte) + assignment
    - address-of (`&`) and dereference (`*`) for 4/8-byte loads/stores (minimal subset)
    - arithmetic: `+` / `-`
    - bitwise: `&` `|` `^` `~`
@@ -201,7 +201,11 @@ Current repo status:
    - control flow: `if`, `while`, `break`, `continue`
    - direct calls with up to 6 scalar args (ints in `wN`, pointers in `xN`)
    - string literals (emitted into `__TEXT,__const`)
-   - global 4-byte loads and simple global emission for initialized scalars (plus basic global stores)
+   - global 1/2/4-byte loads and simple global emission for initialized scalars (plus basic global stores)
+
+Notes on integer widths
+
+- `char`/`short` loads now apply correct sign/zero extension when promoted to `int` (validated by Darwin native smoke tests).
 
 ### Current status, trajectory, and next milestones
 
@@ -212,9 +216,8 @@ The Darwin backend is now at the point where it can compile and run a growing se
 
 Near-term (next “high leverage” increments)
 
-- **More expression coverage**: ternary `?:` (`EXPR_COND`), comma operator, and more unary/cast cases.
-- **Pointer arithmetic + indexing**: `p + i`, `p[i]` / `*(p+i)` for basic arrays.
-- **Better integer widths**: support `char/short` loads/stores (sign/zero extend), and 64-bit `long` in expressions.
+- **More expression coverage**: comma operator, more unary/cast cases, and more 64-bit expression coverage.
+- **Pre/post increment/decrement**: `++i`, `i++`, `--i`, `i--` (including use as expression statements).
 
 Medium-term
 
@@ -251,7 +254,7 @@ Deliverable:
 
 Current repo status:
 
-- `make darwin-native-smoke` builds `bin-host/monacc`, compiles several `examples/ret42_*.c` programs to native arm64 macOS binaries, and runs them (expects exit code 42). The smoke suite now includes cases that exercise control flow, calls with args, string literal pointer args (`puts`), and global loads.
+- `make darwin-native-smoke` builds `bin-host/monacc`, compiles several `examples/ret42_*.c` programs to native arm64 macOS binaries, and runs them (expects exit code 42). The smoke suite now includes cases that exercise control flow, calls with args, string literal pointer args (`puts`), globals, pointer arithmetic + indexing, `char/short` sign/zero extension, and `++/--`.
 
 #### Stage 3 — Expand coverage until it can compile real code
 

@@ -4,19 +4,17 @@ set -eu
 # Guardrail: ensure the overlap analyzer runs and detects known fixtures.
 
 root_dir=${1:-.}
-analyzer="$root_dir/scripts/function_overlap.py"
+analyzer="$root_dir/bin/overlap"
 
-if [ ! -f "$analyzer" ]; then
+if [ ! -x "$analyzer" ]; then
   echo "missing analyzer: $analyzer" >&2
   exit 1
 fi
 
 report=$(
-  python3 "$analyzer" \
-    --root "$root_dir" \
-    --paths "$root_dir/tests/repo/overlap-fixtures" \
-    --threshold 0.80 \
-    --max-report 5
+  "$analyzer" \
+    "$root_dir/tests/repo/overlap-fixtures/alpha.c" \
+    "$root_dir/tests/repo/overlap-fixtures/beta.c"
 )
 
 printf "%s\n" "$report"

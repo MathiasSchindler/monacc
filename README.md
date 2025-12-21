@@ -61,7 +61,7 @@ make test         # Run the test suite
 
 ### Developer helpers
 
-- `python3 scripts/function_overlap.py` — scans `core/` and `tools/` for functions with identical or similar bodies and reports name collisions. Use `--help` for options (custom paths, thresholds, or failing on overlaps).
+- `bin/overlap FILE.c [...]` — C helper that scans provided C files for identical or similar function bodies and name collisions. Built with the rest of the tools.
 
 ### What gets built
 

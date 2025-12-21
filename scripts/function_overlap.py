@@ -37,6 +37,8 @@ FUNC_DEF_RE = re.compile(
 )
 
 CONTROL_KEYWORDS = {"if", "for", "while", "switch"}
+SIMILAR_MAX_SIZE_RATIO = 1.6
+SIMILAR_MIN_SIZE_RATIO = 0.5
 
 
 @dataclass
@@ -93,7 +95,7 @@ def normalize_body(body: str) -> Tuple[str, List[str]]:
     body = re.sub(r"\b\d+(\.\d+)?\b", "0", body)
     body = re.sub(r"\s+", " ", body).strip()
     tokens = re.findall(
-        r"[A-Za-z_]\w+|==|!=|<=|>=|->|&&|\|\||[{}()\[\];,+\-*/%&|^<>]", body
+        r"[A-Za-z_]\w+|==|!=|<=|>=|->|&&|\|\||[{}()\[\];,+\-*/%&|^<>!]", body
     )
     return " ".join(tokens), tokens
 
@@ -165,7 +167,7 @@ def find_similar(
         if left_len == 0:
             continue
         for right in funcs[i + 1 :]:
-            if len(right.tokens) > left_len * 1.6:
+            if len(right.tokens) > left_len * SIMILAR_MAX_SIZE_RATIO:
                 break  # longer entries will only diverge more
             if left.file == right.file:
                 continue
@@ -173,7 +175,7 @@ def find_similar(
                 continue  # exact match handled separately
             longer = max(left_len, len(right.tokens))
             length_ratio = min(left_len, len(right.tokens)) / longer
-            if length_ratio < 0.5:
+            if length_ratio < SIMILAR_MIN_SIZE_RATIO:
                 continue  # skip wildly different sizes
             score = difflib.SequenceMatcher(None, left.tokens, right.tokens).ratio()
             if score >= threshold:

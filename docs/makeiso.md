@@ -21,8 +21,7 @@ Boot the monacc kernel under QEMU with **zero external boot toolchain dependenci
 
 Target state:
 - `bin/monacc` compiles all kernel code
-- `bin/mkimage` (new tool) creates a bootable image
-- `qemu-system-x86_64 -kernel build/kernel.elf ...` boots directly
+- `qemu-system-x86_64 -kernel build/kernel.elf ...` boots directly (no separate image tool needed for PVH)
 
 ## Why Not Just Use GRUB?
 
@@ -124,7 +123,7 @@ qemu-system-x86_64 -kernel kernel/build/kernel.elf \
    - `cli`, `sti`, `hlt`
    - `lgdt`, `lidt`, `ltr`
    - `mov` to/from control registers (`%cr0`, `%cr2`, `%cr3`, `%cr4`)
-   - `mov` to/from MSRs via `rdmsr`/`wrmsr`
+   - MSR instructions: `rdmsr`, `wrmsr`
    - `invlpg`
    - `iretq`, `sysretq`
 

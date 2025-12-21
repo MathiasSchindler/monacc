@@ -200,8 +200,8 @@ def find_similar(
             longer = max(left_len, right_len)
             shorter = min(left_len, right_len)
             length_ratio = shorter / longer
-            if right_len > left_len * SIMILAR_MAX_SIZE_RATIO and length_ratio < SIMILAR_MIN_SIZE_RATIO:
-                break  # subsequent entries only get longer and less comparable
+            if right_len > left_len / SIMILAR_MIN_SIZE_RATIO:
+                break  # subsequent entries only get longer and fall below the min ratio
             if left.file == right.file:
                 continue
             if left.normalized == right.normalized:
@@ -306,7 +306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("")
 
     if similar:
-        print_section("Similar bodies (token ratio)")
+        print_section("Similar bodies")
         for score, left, right in similar:
             print(
                 f"  {score:.2f}: {left.name} ({relpath(left.file, root)}:{left.line})"

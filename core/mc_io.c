@@ -1,6 +1,6 @@
 #include "mc.h"
 
-#if MC_OS_DARWIN
+#if MC_OS_DARWIN && !defined(__MONACC__)
 #include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
@@ -11,7 +11,12 @@ MC_NORETURN void mc_exit(mc_i32 code) {
 	// Hosted macOS build: use libc-provided _exit.
 	// (Tools are not syscall-only on macOS.)
 	_exit((int)code);
+	#if defined(__MONACC__)
+	for (;;) {
+	}
+	#else
 	__builtin_unreachable();
+	#endif
 	#else
 	(void)mc_syscall1(MC_SYS_exit_group, (mc_i64)code);
 	(void)mc_syscall1(MC_SYS_exit, (mc_i64)code);
@@ -91,6 +96,14 @@ mc_i64 mc_write_i64_dec(mc_i32 fd, mc_i64 v) {
 mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx) {
 	if (dirfd < 0 || !cb) return (mc_i64)-MC_EINVAL;
 
+	#if defined(__MONACC__)
+	// When compiling tools with monacc on Darwin, avoid pulling in macOS SDK
+	// headers (dirent/unistd/errno). Directory iteration isn't needed for the
+	// first batch of tools (true/echo), so stub it out for now.
+	(void)ctx;
+	return (mc_i64)-MC_ENOSYS;
+	#else
+
 	#if MC_OS_DARWIN
 	// Darwin has no getdents64; iterate via fdopendir/readdir.
 	// Preserve the Linux behavior of not consuming/closing the caller's fd.
@@ -140,6 +153,7 @@ mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx) {
 			bpos += d->d_reclen;
 		}
 	}
+	#endif
 	#endif
 }
 

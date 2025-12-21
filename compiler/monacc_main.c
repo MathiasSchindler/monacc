@@ -218,12 +218,37 @@ static void mt_apply_cmd_defines(MacroTable *mt, const CmdDefine *defs, int ndef
     }
 }
 
+static void mt_apply_builtin_defines(MacroTable *mt, Target target) {
+    // Identify the compiler to the preprocessor.
+    mt_define(mt, "__MONACC__", mc_strlen("__MONACC__"), "1");
+    mt_define(mt, "__STDC__", mc_strlen("__STDC__"), "1");
+    mt_define(mt, "__STDC_VERSION__", mc_strlen("__STDC_VERSION__"), "201112L");
+
+    if (target == TARGET_X86_64_LINUX) {
+        mt_define(mt, "__linux__", mc_strlen("__linux__"), "1");
+        mt_define(mt, "__x86_64__", mc_strlen("__x86_64__"), "1");
+        mt_define(mt, "__LP64__", mc_strlen("__LP64__"), "1");
+        mt_define(mt, "__ELF__", mc_strlen("__ELF__"), "1");
+        return;
+    }
+
+    if (target == TARGET_AARCH64_DARWIN) {
+        mt_define(mt, "__APPLE__", mc_strlen("__APPLE__"), "1");
+        mt_define(mt, "__MACH__", mc_strlen("__MACH__"), "1");
+        mt_define(mt, "__aarch64__", mc_strlen("__aarch64__"), "1");
+        mt_define(mt, "__arm64__", mc_strlen("__arm64__"), "1");
+        mt_define(mt, "__LP64__", mc_strlen("__LP64__"), "1");
+        return;
+    }
+}
+
 static void compile_to_obj(Target target, const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
                            const CmdDefine *defs, int ndefs, int with_start, const char *dump_pp_path, const char *as_prog, int emit_obj) {
     trace_checkpoint("read input", in_path);
 
     MacroTable mt;
     mc_memset(&mt, 0, sizeof(mt));
+    mt_apply_builtin_defines(&mt, target);
     mt_apply_cmd_defines(&mt, defs, ndefs);
 
     OnceTable ot;

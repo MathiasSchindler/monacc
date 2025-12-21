@@ -47,6 +47,25 @@ Do not call libc APIs like `printf`, `malloc`, `strcpy`, `getaddrinfo`, etc.
 
 Place source at `tools/<name>.c` and build output at `bin/<name>`.
 
+Tool identity and layout (project convention):
+
+1) Each tool has a canonical name (lowercase, no spaces), e.g. `browse`.
+2) The main tool source file is `tools/<name>.c`, e.g. `tools/browse.c`.
+3) Each tool has a directory `tools/<name>/`.
+4) That directory contains:
+  - `tools/<name>/<name>-info.md` (short doc: purpose, usage, build recipe, notes)
+  - any additional `.c/.h` sources or data files needed to build the tool
+
+Source layout convention:
+
+- Exactly one top-level file per tool: `tools/<name>.c`
+- All other `.c`/`.h` and resources for that tool go under: `tools/<name>/...`
+
+Include convention:
+
+- In `tools/<name>.c`, include helper headers via subpath, e.g. `#include "<name>/<name>_json.h"`.
+- In helper `.c` files under `tools/<name>/`, include sibling headers normally (e.g. `#include "<name>_json.h"`).
+
 Common tool shape:
 
 - Parse args early; on misuse call `mc_die_usage(argv0, "...")` (exits 2).
@@ -60,6 +79,15 @@ Common tool shape:
 
 The compiler binary is `bin/monacc`.
 
+Notes from recent bring-up work:
+
+- `monacc` is not `gcc`/`clang`: it does **not** accept common warning/optimization flags like `-Wall`, `-Wextra`, `-O2`.
+  - Keep build commands to `monacc`'s supported flags (`-I`, `-D`, `-o`, etc.).
+  - If you need to compare behavior with a “normal” toolchain, use `--as as --ld ld` (see §4.2).
+- Avoid linking `core/mc_start.c` into tools built with `monacc`.
+  - `core/mc_start.c` defines `_start`; including it can cause `duplicate global symbol _start` at link time.
+  - For env access, prefer reading `/proc/self/environ` (tool-side) or link `core/mc_start_env.c` if you rely on `mc_get_start_envp()`.
+
 Important ordering rule:
 
 - monacc emits `_start` **only for the first input file**. Therefore the *first* `.c` file should be your tool (e.g. `tools/foo.c`).
@@ -68,7 +96,7 @@ Important ordering rule:
 
 From the repo root:
 
-`./bin/monacc -I core tools/foo.c \
+`./bin/monacc -I core tools/foo.c tools/foo/foo_util.c \
   core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c \
   core/mc_sha256.c core/mc_hmac.c core/mc_hkdf.c core/mc_aes.c core/mc_gcm.c core/mc_x25519.c \
     core/mc_tls_record.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c core/mc_tls13_client.c \
@@ -92,6 +120,11 @@ If you suspect the internal object emitter or linker is the source of a problem:
 Example:
 
 `./bin/monacc --as as --ld ld -I core tools/foo.c ... -o bin/foo`
+
+Debug tip:
+
+- If you see a parse error at a line number far beyond the source file length, it may refer to the *preprocessed* output.
+  Use `--dump-pp /tmp/foo.pp` to inspect what `monacc` is actually compiling.
 
 ### 4.3 Sanity-check that the output is truly standalone
 
@@ -221,3 +254,8 @@ Template:
 - **Proposed API/behavior** (optional): what `core/` function or compiler behavior would fix it
 
 Keep it short and actionable.
+
+Known issue (documented, do not patch core here):
+
+- `core/mc_vsnprintf.c` may fail to compile under `monacc` with a preprocessor error like `#endif without #if`.
+  Workaround: use `core/mc_snprint.c` + `core/mc_fmt.c` helpers instead; if you need `mc_vsnprintf`, file a request spec under `tools/requests/`.

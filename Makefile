@@ -150,6 +150,9 @@ TOOL_BINS := $(addprefix bin/,$(TOOL_NAMES))
 TOOL_BINS_LD := $(addprefix bin/ld/,$(TOOL_NAMES))
 TOOL_BINS_INTERNAL := $(addprefix bin/internal/,$(TOOL_NAMES))
 
+# Tools with extra translation units (submodules)
+MASTO_SRCS := tools/masto.c $(wildcard tools/masto/*.c)
+
 # Examples to test (must return exit code 42)
 EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	typedef_multi enum enum_constexpr struct_array fnptr_member ternary \
@@ -348,6 +351,20 @@ bin/internal:
 	mkdir -p bin/internal
 
 # === Phase 1: Build tools with monacc ===
+
+# masto is split into tools/masto.c + tools/masto/*.c
+# Ensure the first file is tools/masto.c so monacc emits _start correctly.
+bin/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin
+	@echo "  masto"
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
+
+bin/ld/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin/ld
+	@echo "  ld/masto"
+	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
+
+bin/internal/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin/internal
+	@echo "  internal/masto"
+	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
 
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"

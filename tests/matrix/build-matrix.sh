@@ -34,7 +34,7 @@ HOST_CFLAGS="-Os -DNDEBUG -Wall -Wextra -Wpedantic -ffreestanding -fno-builtin -
 HOST_LDFLAGS="-nostdlib -nostartfiles -Wl,--gc-sections -Wl,-s -Wl,--build-id=none -Wl,-z,noseparate-code -Wl,-e,_start -no-pie"
 
 # Core sources — keep in sync with CORE_COMMON_SRC in Makefile
-CORE_COMMON="core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c core/mc_sha256.c core/mc_hmac.c core/mc_hkdf.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c core/mc_aes.c core/mc_gcm.c core/mc_x25519.c core/mc_tls_record.c core/mc_mathf.c"
+CORE_COMMON="core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c core/mc_sha256.c core/mc_hmac.c core/mc_hkdf.c core/mc_tls13.c core/mc_tls13_transcript.c core/mc_tls13_handshake.c core/mc_tls13_client.c core/mc_aes.c core/mc_gcm.c core/mc_x25519.c core/mc_tls_record.c core/mc_mathf.c"
 CORE_START="core/mc_start.c"
 
 OUT_BASE="build/matrix"
@@ -112,18 +112,22 @@ for tc in $TCS; do
 			outlog="$OUT_BASE/${TC_DIR}-${tool}.out"
 			status="OK"
 			mode=""
+			extra=""
+			if [ "$tool" = "masto" ]; then
+				extra="$(ls tools/masto/*.c 2>/dev/null || true)"
+			fi
 
 			if [ "$tc" = "monacc" ]; then
-				if ./bin/monacc -I core "$src" $CORE_COMMON -o "$out" >/dev/null 2>"$err"; then
+				if ./bin/monacc -I core "$src" $extra $CORE_COMMON -o "$out" >/dev/null 2>"$err"; then
 					mode="monacc"
 				else
 					status="FAIL"
 					mode=""
 				fi
 			else
-				if "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -static -o "$out" >"$outlog" 2>"$err"; then
+				if "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $extra $HOST_LDFLAGS -static -o "$out" >"$outlog" 2>"$err"; then
 					mode="static"
-				elif "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $HOST_LDFLAGS -o "$out" >"$outlog" 2>"$err"; then
+				elif "$CC_CMD" $HOST_CFLAGS -I core $CORE_START $CORE_COMMON "$src" $extra $HOST_LDFLAGS -o "$out" >"$outlog" 2>"$err"; then
 					mode="dynamic"
 				else
 					status="FAIL"

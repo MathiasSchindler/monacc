@@ -63,6 +63,7 @@ OBJS := \
 	$(BUILD)/arch/isr.o \
 	$(BUILD)/arch/lowlevel.o \
 	$(BUILD)/boot/mb2.o \
+	$(BUILD)/boot/pvh.o \
 	$(BUILD)/elf/elf.o \
 	$(BUILD)/fs/cpio_newc.o \
 	$(BUILD)/mm/pmm.o \
@@ -70,6 +71,8 @@ OBJS := \
 	$(BUILD)/user/echo_blob.o
 
 .PHONY: all clean elf iso run run-uefi run-debug logs iso-info
+
+.PHONY: run-pvh
 
 all: iso
 
@@ -90,6 +93,9 @@ $(BUILD)/boot/multiboot2.o: boot/multiboot2.S | $(BUILD)/boot
 
 $(BUILD)/boot/mb2.o: boot/mb2.c include/kernel.h | $(BUILD)/boot
 	$(CC) $(CFLAGS) boot/mb2.c -o $@
+
+$(BUILD)/boot/pvh.o: boot/pvh.c include/kernel.h | $(BUILD)/boot
+	$(CC) $(CFLAGS) boot/pvh.c -o $@
 
 $(BUILD)/main.o: main.c include/kernel.h | $(BUILD)
 	$(CC) $(CFLAGS) main.c -o $@
@@ -236,6 +242,16 @@ endif
 # Default run target: boot with SeaBIOS (simplest for serial bring-up).
 run: iso
 	$(QEMU) $(QEMU_COMMON) || [ $$? -eq 33 ]
+
+# Direct PVH boot (no ISO/GRUB): requires PVH ELF note in kernel.elf.
+# INITRAMFS is optional; if set, it is passed via -initrd and appears as a PVH module.
+run-pvh: elf
+	@{ \
+		initrd=""; \
+		if [ -n "$(INITRAMFS)" ]; then initrd="-initrd $(INITRAMFS)"; fi; \
+		$(QEMU) -kernel $(KERNEL_ELF) $$initrd -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			$$( [ "$(GUI)" = "0" ] && printf '%s' '-display none -monitor none -no-reboot' || true ); \
+	} || [ $$? -eq 33 ]
 
 # UEFI/OVMF run (optional).
 run-uefi: iso $(OVMF_VARS)

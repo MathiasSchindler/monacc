@@ -9,6 +9,11 @@ SECTIONS {
 		KEEP(*(.multiboot2))
 	}
 
+	/* Xen PVH ELF notes (needed for qemu -kernel direct boot). */
+	.note ALIGN(4) : {
+		KEEP(*(.note.*))
+	}
+
 	.text ALIGN(16) : {
 		*(.text .text.*)
 	}

@@ -145,7 +145,12 @@ int elf_load_exec(const uint8_t *img, uint64_t img_sz, uint64_t *entry_out, uint
 /* Multiboot2 boot info (set by boot/multiboot2.S). */
 extern uint64_t mb2_info_ptr;
 
+/* Xen PVH boot start info (set by boot/multiboot2.S when booted via PVH). */
+extern uint64_t pvh_start_info_ptr;
+
 int mb2_find_first_module(uint64_t mb2_info_ptr, uint64_t *mod_start_out, uint64_t *mod_end_out);
+
+int pvh_find_first_module(uint64_t pvh_start_info_ptr, uint64_t *mod_start_out, uint64_t *mod_end_out);
 
 int cpio_newc_find(const uint8_t *cpio, uint64_t cpio_sz, const char *path,
 			  const uint8_t **data_out, uint64_t *size_out);

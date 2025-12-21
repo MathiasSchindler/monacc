@@ -1967,8 +1967,15 @@ __attribute__((noreturn)) void kmain(void) {
 
 		/* If GRUB provided an initramfs module, prefer loading /bin/echo from it. */
 		uint64_t mod_start = 0, mod_end = 0;
-		if (mb2_find_first_module(mb2_info_ptr, &mod_start, &mod_end) == 0) {
+		int have_mod = 0;
+		if (pvh_find_first_module(pvh_start_info_ptr, &mod_start, &mod_end) == 0) {
+			serial_write("[k] found pvh module\n");
+			have_mod = 1;
+		} else if (mb2_find_first_module(mb2_info_ptr, &mod_start, &mod_end) == 0) {
 			serial_write("[k] found multiboot2 module\n");
+			have_mod = 1;
+		}
+		if (have_mod) {
 			g_initramfs = (const uint8_t *)mod_start;
 			g_initramfs_sz = mod_end - mod_start;
 			if (mod_end > mod_start) {

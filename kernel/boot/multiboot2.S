@@ -19,6 +19,21 @@ mb2_header:
 	.long 8
 mb2_header_end:
 
+/* Xen PVH direct-boot entry note.
+ * QEMU requires this note to load an uncompressed ELF via -kernel.
+ * See: https://xenbits.xen.org/docs/unstable/misc/pvh.html
+ */
+.section .note.Xen,"a"
+.align 4
+/* ELF note header: namesz, descsz, type */
+	.long 4                      /* "Xen\0" */
+	.long 4                      /* 32-bit entry address */
+	.long 0x12                   /* XEN_ELFNOTE_PHYS32_ENTRY */
+	.asciz "Xen"
+	.align 4
+	.long pvh_start32
+	.align 4
+
 .section .text
 .code32
 .global _start
@@ -27,6 +42,11 @@ _start:
 
 	/* Multiboot2: EBX points to the boot info structure. Save it before we clobber regs. */
 	movl %ebx, mb2_info_ptr
+	/* Not PVH. */
+	movl $0, pvh_start_info_ptr
+
+common_start32:
+	/* From here on, boot paths share the same 32->64 transition. */
 
 	/* Temporary 32-bit stack. */
 	mov $stack_top, %esp
@@ -172,6 +192,16 @@ long_mode_start:
 	hlt
 	jmp .hang
 
+/* Xen PVH entry point.
+ * Machine state is 32-bit protected mode; EBX points to hvm_start_info.
+ */
+.global pvh_start32
+pvh_start32:
+	cli
+	/* Do not touch mb2_info_ptr; PVH is not Multiboot2. */
+	movl %ebx, pvh_start_info_ptr
+	jmp common_start32
+
 /* 64-bit GDT */
 .align 8
 gdt64:
@@ -192,6 +222,12 @@ gdt64_end:
 .align 8
 .global mb2_info_ptr
 mb2_info_ptr:
+	.quad 0
+
+/* PVH start info pointer (physical address, identity-mapped). */
+.align 8
+.global pvh_start_info_ptr
+pvh_start_info_ptr:
 	.quad 0
 
 	/* Identity map the first 4GiB using 2MiB pages. */

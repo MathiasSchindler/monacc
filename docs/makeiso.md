@@ -56,58 +56,31 @@ PVH (Para-Virtualized Hardware) is the simplest path because:
 
 ### Phase 1: Add PVH Boot Support (Keep Multiboot2)
 
-**Goal**: Dual-boot support — both GRUB/Multiboot2 and direct QEMU PVH work.
+Status: **implemented**.
 
-**Changes**:
+This enables a direct QEMU boot path (no ISO/GRUB) while keeping the existing Multiboot2/GRUB ISO path.
 
-1. Add PVH ELF Note to `kernel/boot/multiboot2.S`:
-   ```asm
-   .section .note.PVH, "a", @note
-   .align 4
-   .long 4                    /* namesz: "Xen\0" */
-   .long 4                    /* descsz: 4-byte entry point */
-   .long 0x12                 /* type: XEN_ELFNOTE_PHYS32_ENTRY */
-   .asciz "Xen"
-   .align 4
-   .long _pvh_start           /* 32-bit physical entry point */
-   ```
+Implementation overview:
 
-2. Add PVH entry stub in `kernel/boot/pvh.S`:
-   ```asm
-   .code32
-   .global _pvh_start
-   _pvh_start:
-       /* ESI points to hvm_start_info struct */
-       movl %esi, pvh_start_info
-       /* Jump to shared 32->64 transition code */
-       jmp _start32_common
-   ```
+- PVH ELF note + PVH entry point are in `kernel/boot/multiboot2.S` (note section `.note.Xen`, type `XEN_ELFNOTE_PHYS32_ENTRY`).
+- The PVH start-info module list is parsed in `kernel/boot/pvh.c`.
+- `kmain()` prefers PVH module(s) first, then falls back to Multiboot2 module(s).
+- New Makefile target: `make -C kernel run-pvh`.
 
-3. Refactor `multiboot2.S` to share the 32->64 transition:
-   - Extract common code into `_start32_common`
-   - Both Multiboot2 and PVH entries converge there
+How to run:
 
-4. Parse `hvm_start_info` for initramfs location (similar to Multiboot2 modules)
-
-**Test**:
 ```bash
-# Multiboot2 (existing, should still work)
-make -C kernel run-bios-serial
+# Optional but recommended: build a fresh initramfs
+./scripts/make-distro.sh --initramfs
 
-# PVH direct boot (new)
-qemu-system-x86_64 -kernel kernel/build/kernel.elf \
-    -initrd release/monacc-dev-initramfs.cpio \
-    -serial stdio -display none -no-reboot \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04
+# Direct boot (PVH): kernel.elf + optional initramfs via -initrd
+make -C kernel run-pvh
+
+# Legacy boot (still supported): GRUB ISO
+make -C kernel run
 ```
 
-**Deliverables**:
-- `kernel/boot/pvh.S` — PVH entry point
-- Modified `kernel/boot/multiboot2.S` — shared 32->64 code
-- Modified `kernel/boot/mb2.c` — parse both Multiboot2 and PVH start_info
-- New Makefile target: `make run-pvh`
-
-**External tools still needed**: `as`, `ld`
+External tools still needed at this stage: `as`, `ld`.
 
 ---
 
@@ -145,14 +118,9 @@ make -C kernel AS=../bin/monacc
 
 **External tools still needed**: `ld`
 
----
-
-### Phase 3: Use monacc Internal Linker for Kernel
-
 **Goal**: Link the kernel ELF with monacc's internal linker.
 
 **Current limitation**: The internal linker (`--link-internal`) is designed for userland ELFs. Kernel linking has additional requirements:
-- Custom linker script (`link.ld`)
 - Specific section placement (`.multiboot2` must be early)
 - Entry point specification
 
@@ -167,12 +135,7 @@ make -C kernel AS=../bin/monacc
    - Reads multiple `.o` files
    - Applies hardcoded kernel memory layout
    - Outputs a single ELF
-   - Much simpler than full linker script support
-
-**Recommendation**: Start with `tools/klink.c` (dedicated kernel linker) rather than extending the compiler's general-purpose linker.
-
 **Test**:
-```bash
 make -C kernel LD=../bin/klink
 ```
 
@@ -191,7 +154,6 @@ make -C kernel LD=../bin/klink
 **Changes**:
 
 1. Add `tools/mkcpio.c`:
-   - Reads a list of files/directories
    - Outputs CPIO newc format
    - Supports stdin input for file list (like `find | mkcpio`)
 
@@ -203,7 +165,6 @@ make -C kernel LD=../bin/klink
 
 **Test**:
 ```bash
-./bin/mkcpio -o initramfs.cpio bin/init bin/sh bin/cat ...
 # or
 find bin -type f | ./bin/mkcpio -o initramfs.cpio -
 ```

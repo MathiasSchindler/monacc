@@ -59,6 +59,10 @@ make              # Build everything (compiler, then tools)
 make test         # Run the test suite
 ```
 
+### Developer helpers
+
+- `tests/repo/function-overlap.sh` builds and runs a syscall-only C helper to scan specified C files for identical or similar function bodies and name collisions (used in repo guardrail).
+
 ### What gets built
 
 After `make`, the `bin/` directory contains:

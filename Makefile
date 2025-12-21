@@ -171,6 +171,8 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 
 .PHONY: all all-split tools-ld tools-internal test clean debug selfhost
 .PHONY: matrix-tool matrix-mandelbrot
+.PHONY: darwin-tools
+.PHONY: darwin-smoke
 .PHONY: binsh-smoke
 .PHONY: binsh-tools-smoke
 .PHONY: binsh-tools-harness-smoke
@@ -555,7 +557,7 @@ test: all
 # === Cleanup ===
 
 clean:
-	rm -rf bin build
+	rm -rf bin build $(HOST_BIN)
 
 # === Debug build ===
 
@@ -581,3 +583,77 @@ matrix-tool: $(MONACC)
 
 matrix-mandelbrot:
 	@$(MAKE) matrix-tool TOOL=mandelbrot TCS="$(TCS)"
+
+# === Hosted macOS build (clang + libc) ===
+
+# Output directory for hosted tool builds (separate from syscall-only bin/).
+HOST_BIN ?= bin-host
+HOST_TOOLS_CC ?= clang
+HOST_TOOLS_CFLAGS ?= -Os -DNDEBUG -Wall -Wextra -Wpedantic \
+	-ffunction-sections -fdata-sections \
+	-fno-unwind-tables -fno-asynchronous-unwind-tables \
+	-Wno-macro-redefined \
+	-Wno-tautological-constant-out-of-range-compare
+HOST_TOOLS_CFLAGS += \
+	-Wno-unused-function \
+	-Wno-unused-parameter \
+	-Wno-unused-but-set-variable \
+	-Wno-sizeof-array-argument \
+	-Wno-for-loop-analysis \
+	-Wno-c23-extensions
+
+HOST_TOOLS_LDFLAGS ?= -Wl,-dead_strip
+
+# Core sources needed when building tools with a host toolchain.
+# Note: exclude Linux-only startup (`core/mc_start.c`).
+HOST_CORE_SRC := $(filter-out core/mc_libc_compat.c,$(CORE_COMMON_SRC))
+
+# Header dependencies for hosted tools.
+# The hosted build compiles tools in a single step (no .o files), so we must
+# explicitly list headers as prerequisites to ensure changes in core/*.h trigger
+# a rebuild.
+HOST_CORE_HDR := $(wildcard core/*.h)
+
+$(HOST_BIN):
+	mkdir -p $(HOST_BIN)
+
+HOST_TOOL_BINS := $(addprefix $(HOST_BIN)/,$(TOOL_NAMES))
+
+# Default rule for single-file tools.
+$(HOST_BIN)/%: tools/%.c $(HOST_CORE_SRC) $(HOST_CORE_HDR) | $(HOST_BIN)
+	@echo "  $*"
+	@$(HOST_TOOLS_CC) $(HOST_TOOLS_CFLAGS) $(HOST_TOOLS_LDFLAGS) -I core $< $(HOST_CORE_SRC) -o $@
+
+# Tools with extra translation units.
+$(HOST_BIN)/masto: $(MASTO_SRCS) $(HOST_CORE_SRC) $(HOST_CORE_HDR) | $(HOST_BIN)
+	@echo "  masto"
+	@$(HOST_TOOLS_CC) $(HOST_TOOLS_CFLAGS) $(HOST_TOOLS_LDFLAGS) -I core $(MASTO_SRCS) $(HOST_CORE_SRC) -o $@
+
+# Compatibility aliases expected by the repo.
+$(HOST_BIN)/realpath: $(HOST_BIN)/readlink | $(HOST_BIN)
+	@cp -f $< $@
+
+$(HOST_BIN)/[: $(HOST_BIN)/test | $(HOST_BIN)
+	@cp -f $< $@
+
+darwin-tools: $(HOST_TOOL_BINS) $(HOST_BIN)/realpath $(HOST_BIN)/[
+	@echo "Hosted build complete: $(HOST_BIN)/*"
+
+darwin-smoke: darwin-tools
+	@echo "==> Smoke: macOS hosted tools"
+	@test -x $(HOST_BIN)/true && $(HOST_BIN)/true
+	@test -x $(HOST_BIN)/pwd && $(HOST_BIN)/pwd >/dev/null
+	@if test -x $(HOST_BIN)/echo && test -x $(HOST_BIN)/cat; then \
+		$(HOST_BIN)/echo "smoke" | $(HOST_BIN)/cat >/dev/null; \
+	fi
+	@echo "Smoke complete"
+
+darwin-net-smoke: darwin-tools
+	@echo "==> Smoke: macOS hosted networking"
+	@test -x $(HOST_BIN)/tcp6
+	@$(HOST_BIN)/tcp6 -W 5000 2001:4860:4860::8888 53
+	@if test -x $(HOST_BIN)/wtf; then \
+		$(HOST_BIN)/wtf -W 5000 Google >/dev/null; \
+	fi
+	@echo "Net smoke complete"
+

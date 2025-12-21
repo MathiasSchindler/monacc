@@ -1,5 +1,6 @@
 # Build outputs
 /bin/
+/bin-host/
 /build/
 /release/
 

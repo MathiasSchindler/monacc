@@ -1,11 +1,24 @@
 #include "mc.h"
 
+#if MC_OS_DARWIN
+#include <dirent.h>
+#include <errno.h>
+#include <unistd.h>
+#endif
+
 MC_NORETURN void mc_exit(mc_i32 code) {
+	#if MC_OS_DARWIN
+	// Hosted macOS build: use libc-provided _exit.
+	// (Tools are not syscall-only on macOS.)
+	_exit((int)code);
+	__builtin_unreachable();
+	#else
 	(void)mc_syscall1(MC_SYS_exit_group, (mc_i64)code);
 	(void)mc_syscall1(MC_SYS_exit, (mc_i64)code);
 	for (;;) {
 		__asm__ volatile("hlt");
 	}
+	#endif
 }
 
 mc_i64 mc_write_all(mc_i32 fd, const void *buf, mc_usize len) {
@@ -78,6 +91,37 @@ mc_i64 mc_write_i64_dec(mc_i32 fd, mc_i64 v) {
 mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx) {
 	if (dirfd < 0 || !cb) return (mc_i64)-MC_EINVAL;
 
+	#if MC_OS_DARWIN
+	// Darwin has no getdents64; iterate via fdopendir/readdir.
+	// Preserve the Linux behavior of not consuming/closing the caller's fd.
+	int dupfd = dup(dirfd);
+	if (dupfd < 0) return (mc_i64)-(mc_i64)errno;
+	DIR *d = fdopendir(dupfd);
+	if (!d) {
+		int e = errno;
+		(void)close(dupfd);
+		return (mc_i64)-(mc_i64)e;
+	}
+	for (;;) {
+		errno = 0;
+		struct dirent *ent = readdir(d);
+		if (!ent) {
+			int e = errno;
+			(void)closedir(d);
+			if (e != 0) return (mc_i64)-(mc_i64)e;
+			return 0;
+		}
+		const char *name = ent->d_name;
+		if (!mc_is_dot_or_dotdot(name)) {
+			mc_u8 dt = (mc_u8)ent->d_type;
+			int rc = cb(ctx, name, dt);
+			if (rc != 0) {
+				(void)closedir(d);
+				return 0;
+			}
+		}
+	}
+	#else
 	mc_u8 buf[32768];
 	for (;;) {
 		mc_i64 nread = mc_sys_getdents64(dirfd, buf, (mc_u32)sizeof(buf));
@@ -96,7 +140,9 @@ mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx) {
 			bpos += d->d_reclen;
 		}
 	}
+	#endif
 }
+
 
 MC_NORETURN void mc_die_usage(const char *argv0, const char *usage) {
 	(void)mc_write_str(2, argv0);

@@ -69,7 +69,7 @@ OBJS := \
 	$(BUILD)/user/test_mmap.o \
 	$(BUILD)/user/echo_blob.o
 
-.PHONY: all clean iso run elf
+.PHONY: all clean elf iso run run-uefi run-debug logs iso-info
 
 all: iso
 
@@ -210,54 +210,40 @@ $(OVMF_VARS):
 	cp $(OVMF_VARS_TEMPLATE) $@
 
 
-.PHONY: run-gui run-serial run-bios-gui run-bios-serial run-uefi-gui run-uefi-serial
 
-# Default run targets boot with SeaBIOS (simplest for serial bring-up).
-run: run-bios-serial
-run-gui: run-bios-gui
-run-serial: run-bios-serial
+# === Run targets (kept intentionally small) ===
+#
+# Targets:
+#   make run                 # BIOS/SeaBIOS, serial on stdio (default, headless)
+#   make run GUI=1           # BIOS/SeaBIOS, GUI
+#   make run-uefi            # UEFI/OVMF, serial on stdio (headless)
+#   make run-uefi GUI=1      # UEFI/OVMF, GUI
+#   make run-debug           # UEFI/OVMF, debugcon log at build/debugcon.log
 
-# SeaBIOS-based runs.
-run-bios-gui: iso
-	qemu-system-x86_64 -cdrom $(BUILD)/kernel.iso -serial stdio \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 || [ $$? -eq 33 ]
+QEMU ?= qemu-system-x86_64
+GUI ?= 0
 
-run-bios-serial: iso
-	qemu-system-x86_64 -cdrom $(BUILD)/kernel.iso -display none \
-		-monitor none \
-		-serial stdio \
-		-no-reboot \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 || [ $$? -eq 33 ]
+QEMU_COMMON := -cdrom $(BUILD)/kernel.iso -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-.PHONY: run-bios-serial-log
+ifeq ($(GUI),0)
+QEMU_COMMON += -display none -monitor none -no-reboot
+else
+QEMU_COMMON += -no-reboot
+endif
 
-run-bios-serial-log: iso
-	rm -f $(BUILD)/qemu.log
-	qemu-system-x86_64 -cdrom $(BUILD)/kernel.iso -display none \
-		-monitor none \
-		-serial stdio \
-		-no-reboot \
-		-d int,cpu_reset,guest_errors -D $(BUILD)/qemu.log \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 || [ $$? -eq 33 ]
+.PHONY: run run-uefi
 
-# UEFI/OVMF runs (optional).
-run-uefi-gui: iso $(OVMF_VARS)
-	qemu-system-x86_64 \
+# Default run target: boot with SeaBIOS (simplest for serial bring-up).
+run: iso
+	$(QEMU) $(QEMU_COMMON) || [ $$? -eq 33 ]
+
+# UEFI/OVMF run (optional).
+run-uefi: iso $(OVMF_VARS)
+	$(QEMU) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
 		-vga $(VGA) \
-		-cdrom $(BUILD)/kernel.iso -serial stdio \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 || [ $$? -eq 33 ]
-
-run-uefi-serial: iso $(OVMF_VARS)
-	qemu-system-x86_64 \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-		-drive if=pflash,format=raw,file=$(OVMF_VARS) \
-		-vga $(VGA) \
-		-cdrom $(BUILD)/kernel.iso -display none \
-		-monitor none \
-		-serial stdio \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 || [ $$? -eq 33 ]
+		$(QEMU_COMMON) || [ $$? -eq 33 ]
 
 .PHONY: run-debug
 

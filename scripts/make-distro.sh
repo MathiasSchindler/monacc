@@ -44,6 +44,10 @@ OUT_TAR="$OUT_DIR/monacc-$VERSION.tar.gz"
 OUT_INITRAMFS_CPIO="$OUT_DIR/monacc-$VERSION-initramfs.cpio"
 OUT_INITRAMFS="$OUT_DIR/monacc-$VERSION-initramfs.cpio.gz"
 
+# Convenience outputs for the kernel dev flow (expected by kernel/Makefile by default).
+OUT_DEV_INITRAMFS_CPIO="$OUT_DIR/monacc-dev-initramfs.cpio"
+OUT_DEV_INITRAMFS="$OUT_DIR/monacc-dev-initramfs.cpio.gz"
+
 # Stage into a temporary directory.
 # Prefer mktemp -d; fall back to a predictable path if needed.
 if command -v mktemp >/dev/null 2>&1; then
@@ -103,11 +107,8 @@ fi
 cp -a "$ROOT_DIR/core"/*.c "$ROOT_DIR/core"/*.h "$STAGE_ROOT/core/"
 
 # tools/
-# Some repos may have only .c; tolerate missing .h.
-cp -a "$ROOT_DIR/tools"/*.c "$STAGE_ROOT/tools/"
-if ls "$ROOT_DIR/tools"/*.h >/dev/null 2>&1; then
-	cp -a "$ROOT_DIR/tools"/*.h "$STAGE_ROOT/tools/"
-fi
+# Copy tools/ recursively to keep any per-tool subdirectories (e.g. tools/masto/*).
+cp -a "$ROOT_DIR/tools" "$STAGE_ROOT/"
 
 # Write a minimal Makefile for the tarball.
 cat >"$STAGE_ROOT/Makefile" <<'EOF'
@@ -145,7 +146,8 @@ CORE_TLS_SRC := \
 	core/mc_tls_record.c \
 	core/mc_tls13.c \
 	core/mc_tls13_transcript.c \
-	core/mc_tls13_handshake.c
+	core/mc_tls13_handshake.c \
+	core/mc_tls13_client.c
 
 CORE_MATH_SRC := \
 	core/mc_mathf.c
@@ -178,6 +180,9 @@ TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_NAMES := $(basename $(notdir $(TOOL_SRCS)))
 TOOL_BINS := $(addprefix bin/,$(TOOL_NAMES))
 
+# masto is split into tools/masto.c + tools/masto/*.c
+MASTO_SRCS := tools/masto.c $(wildcard tools/masto/*.c)
+
 .PHONY: all clean
 
 all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
@@ -194,6 +199,10 @@ $(MONACC): $(COMPILER_SRC) | bin
 bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
 	@echo "  $*"
 	@$(MONACC) -I core $< $(CORE_TOOL_SRC) -o $@
+
+bin/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin
+	@echo "  masto"
+	@$(MONACC) -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
 
 # Convenience aliases (match the main repo behavior).
 bin/realpath: bin/readlink | bin
@@ -270,6 +279,11 @@ maybe_build_and_initramfs() {
 	rm -f "$TMP_CPIO"
 	echo "Wrote $OUT_INITRAMFS_CPIO" >&2
 	echo "Wrote $OUT_INITRAMFS" >&2
+	# Also refresh the stable dev initramfs names used by the kernel Makefile.
+	cp -a "$OUT_INITRAMFS_CPIO" "$OUT_DEV_INITRAMFS_CPIO"
+	cp -a "$OUT_INITRAMFS" "$OUT_DEV_INITRAMFS"
+	echo "Wrote $OUT_DEV_INITRAMFS_CPIO" >&2
+	echo "Wrote $OUT_DEV_INITRAMFS" >&2
 }
 
 # Create tar.gz. Ensure the tarball contains only the staged directory.

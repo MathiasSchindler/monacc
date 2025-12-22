@@ -480,7 +480,7 @@ test: all
 	fi; \
 	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
 		echo "==> Testing: bin/sh execution"; \
-		./bin/sh tests/tools/binsh-minimal.sh; binsh_rc=$$?; \
+		./bin/sh tests/tools/binsh-minimal.sh || binsh_rc=1; \
 		./bin/sh tests/tools/binsh-tools-smoke.sh || binsh_rc=1; \
 		SB_TEST_BIN="$$(pwd)/bin" SB_TEST_SHOW_SUITES=1 ./bin/sh tests/tools/run.sh smoke || binsh_rc=1; \
 		./bin/sh tests/closure/selfcontained-smoke.sh || binsh_rc=1; \

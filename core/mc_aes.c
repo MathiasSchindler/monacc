@@ -1,6 +1,10 @@
 #include "mc.h"
 #include "mc_aes.h"
 
+#ifdef MC_AES_TRACE
+void mc_aes_trace(mc_u32 tag, const mc_u8 st[16]);
+#endif
+
 static const mc_u8 *aes_sbox_ptr(void) {
 	return (const mc_u8 *)
 		"\x63\x7c\x77\x7b\xf2\x6b\x6f\xc5\x30\x01\x67\x2b\xfe\xd7\xab\x76"
@@ -157,19 +161,46 @@ static void inv_mix_columns(mc_u8 st[16]) {
 void mc_aes128_encrypt_block(const mc_aes128_ctx *ctx, const mc_u8 in[MC_AES128_BLOCK_SIZE], mc_u8 out[MC_AES128_BLOCK_SIZE]) {
 	mc_u8 st[16];
 	mc_memcpy(st, in, 16);
+	#ifdef MC_AES_TRACE
+	mc_aes_trace(0x0000u, st);
+	#endif
 
 	add_round_key(st, &ctx->rk[0]);
+	#ifdef MC_AES_TRACE
+	mc_aes_trace(0x0100u, st);
+	#endif
 
 	for (mc_u32 round = 1; round < MC_AES128_ROUNDS; round++) {
 		sub_bytes(st);
+		#ifdef MC_AES_TRACE
+		mc_aes_trace(0x0200u | round, st);
+		#endif
 		shift_rows(st);
+		#ifdef MC_AES_TRACE
+		mc_aes_trace(0x0300u | round, st);
+		#endif
 		mix_columns(st);
+		#ifdef MC_AES_TRACE
+		mc_aes_trace(0x0400u | round, st);
+		#endif
 		add_round_key(st, &ctx->rk[round * 4u]);
+		#ifdef MC_AES_TRACE
+		mc_aes_trace(0x0500u | round, st);
+		#endif
 	}
 
 	sub_bytes(st);
+	#ifdef MC_AES_TRACE
+	mc_aes_trace(0x0200u | MC_AES128_ROUNDS, st);
+	#endif
 	shift_rows(st);
+	#ifdef MC_AES_TRACE
+	mc_aes_trace(0x0300u | MC_AES128_ROUNDS, st);
+	#endif
 	add_round_key(st, &ctx->rk[MC_AES128_ROUNDS * 4u]);
+	#ifdef MC_AES_TRACE
+	mc_aes_trace(0x0500u | MC_AES128_ROUNDS, st);
+	#endif
 
 	mc_memcpy(out, st, 16);
 	mc_memset(st, 0, sizeof(st));

@@ -16,6 +16,38 @@ static void hex_encode(const mc_u8 *in, mc_usize in_len, char *out, mc_usize out
 	out[in_len * 2u] = 0;
 }
 
+#ifdef MC_AES_TRACE
+static void u16_hex(mc_u32 v, char out[5]) {
+	static const char hex[] = "0123456789abcdef";
+	v &= 0xffffu;
+	out[0] = hex[(v >> 12) & 0xfu];
+	out[1] = hex[(v >> 8) & 0xfu];
+	out[2] = hex[(v >> 4) & 0xfu];
+	out[3] = hex[(v >> 0) & 0xfu];
+	out[4] = 0;
+}
+
+// Tracing hook for core/mc_aes.c when compiled with -DMC_AES_TRACE.
+void mc_aes_trace(mc_u32 tag, const mc_u8 st[16]) {
+	char tag_hex[5];
+	u16_hex(tag, tag_hex);
+
+	char st_hex[33];
+	hex_encode(st, 16, st_hex, sizeof(st_hex));
+
+	char line[40];
+	line[0] = tag_hex[0];
+	line[1] = tag_hex[1];
+	line[2] = tag_hex[2];
+	line[3] = tag_hex[3];
+	line[4] = ' ';
+	for (mc_usize i = 0; i < 32; i++) line[5 + i] = st_hex[i];
+	line[37] = '\n';
+	line[38] = 0;
+	(void)mc_write_all(1, line, 38);
+}
+#endif
+
 __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	(void)envp;
 	const char *argv0 = (argc > 0 && argv && argv[0]) ? argv[0] : "aes128";

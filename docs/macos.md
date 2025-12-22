@@ -1,14 +1,25 @@
-# macOS (arm64) hosted build plan
+# macOS (arm64) status and plan
 
-Date: 2025-12-21
+Date: 2025-12-22
 
-This document describes a **hosted** port that allows the monacc userland tools (in `tools/`) to **compile and link on macOS arm64 using Apple clang**, without requiring `monacc`.
+This document tracks two related macOS efforts:
 
-Scope constraints:
+1) **Hosted tools (clang)**: compile/link `tools/*` on macOS arm64 into `bin-host/*` using Apple clang.
+2) **Native `aarch64-darwin` target (monacc)**: `bin-host/monacc --target aarch64-darwin` emits arm64 assembly and drives external `clang` to assemble/link Mach-O.
 
-- **In scope**: Build tools on macOS using the system toolchain (`clang` + system libc).
-- **Out of scope**: Running/bootstrapping with `monacc` on macOS, syscall-only/freestanding binaries on macOS.
-- **Goal**: No changes to `tools/` source if possible; concentrate changes in `core/`.
+Scope constraints (pragmatic, current):
+
+- **In scope**:
+   - Hosted tool builds on macOS using the system toolchain (`clang` + system libc).
+   - A bring-up `aarch64-darwin` backend in monacc sufficient to compile and run a growing tool subset.
+- **Out of scope (for now)**:
+   - syscall-only/freestanding binaries on macOS
+   - internal Mach-O object emission and internal Mach-O linking
+   - full macOS SDK header compatibility (we keep using small shims)
+
+Goal:
+
+- No changes to `tools/` source if possible; concentrate platform glue in `core/` and validate via `darwin-*-smoke` targets.
 
 ## Problem statement
 
@@ -40,6 +51,31 @@ This keeps the macOS port from affecting Linux, because:
 - macOS code lives in separate headers/files.
 - selection is done via `__APPLE__` / `__linux__` and arch macros.
 - the normal Linux build path stays identical.
+
+## Current status (2025-12-22)
+
+### Hosted tools (clang)
+
+- `make darwin-tools` builds hosted macOS binaries into `bin-host/`.
+- `make darwin-smoke` and `make darwin-net-smoke` provide quick runtime checks.
+
+### Native `aarch64-darwin` target (monacc)
+
+- `bin-host/monacc --target aarch64-darwin` produces native Mach-O arm64 binaries (via external `clang`).
+- Regression anchor: `make darwin-native-smoke`.
+
+Native tools currently covered by `darwin-native-smoke` (built by monacc):
+
+- `true-mc`, `false-mc`, `echo-mc`, `basename-mc`, `dirname-mc`
+- `whoami-mc`, `pwd-mc`, `hostname-mc`, `id-mc`, `uname-mc`
+- `yes-mc`, `seq-mc`, `time-mc`, `kill-mc`, `chown-mc`, `ln-mc`, `touch-mc`, `mkdir-mc`
+
+Notable recent bring-up increments:
+
+- Darwin monacc shim (`core/mc_syscall_darwin_monacc.h`) gained libc-backed wrappers/constants for `openat`/`close`/`utimensat`/`mkdirat`, `MC_O_*` flags, and `MC_EEXIST`.
+- `aarch64-darwin` backend grew:
+   - struct/aggregate copies via `EXPR_MEMCPY` (simple byte loop)
+   - calls with more than 6 arguments (x0..x7 + stack args)
 
 ## Implementation plan (incremental milestones)
 
@@ -199,7 +235,7 @@ Current repo status:
    - integer mul/div/mod: `* / %` (32-bit)
    - short-circuit boolean ops: `&&` / `||` (returns 0/1)
    - control flow: `if`, `while`, `break`, `continue`
-   - direct calls with up to 6 scalar args (ints in `wN`, pointers in `xN`)
+   - direct calls with up to 8 register args + stack args (ints in `wN`, pointers in `xN`)
    - string literals (emitted into `__TEXT,__const`)
    - global 1/2/4-byte loads and simple global emission for initialized scalars (plus basic global stores)
 
@@ -223,7 +259,7 @@ Medium-term
 
 - **Richer globals**: more init forms (init blobs, arrays/struct init), more reliable section placement.
 - **Function pointers**: `&fn`, calls through function pointers.
-- **Structs**: layout + member access + copies (likely in stages).
+- **Structs**: layout + member access + copies (still incremental; member access + basic copies are now supported in the bring-up backend).
 
 Longer-term / harder parts
 
@@ -284,7 +320,10 @@ This is a large chunk of work; using `clang` to assemble/link is the pragmatic e
 
 ### What has been done already (macOS work so far)
 
-The work completed to date is **not** the compiler port. It is a hosted macOS build path for the **tools**, using Apple clang.
+Both tracks are active:
+
+- A hosted macOS build path for tools (Apple clang).
+- A hosted macOS build of the compiler plus an `aarch64-darwin` target backend used by `darwin-native-smoke`.
 
 Completed changes (high level):
 

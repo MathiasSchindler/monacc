@@ -703,6 +703,7 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_postdec.c -o $(HOST_BIN)/ret42_postdec >/dev/null
 	@test -x $(HOST_BIN)/ret42_postdec
 	@rc=0; $(HOST_BIN)/ret42_postdec || rc=$$?; test $$rc -eq 42
+	@echo "  ... ret42 inc/dec OK"
 	@rm -f $(HOST_BIN)/ret42_inc_stmt
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_inc_stmt.c -o $(HOST_BIN)/ret42_inc_stmt >/dev/null
 	@test -x $(HOST_BIN)/ret42_inc_stmt
@@ -719,6 +720,7 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_while_dec.c -o $(HOST_BIN)/ret42_while_dec >/dev/null
 	@test -x $(HOST_BIN)/ret42_while_dec
 	@rc=0; $(HOST_BIN)/ret42_while_dec || rc=$$?; test $$rc -eq 42
+	@echo "  ... ret42 control flow OK"
 	@rm -f $(HOST_BIN)/ret42_call
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call.c -o $(HOST_BIN)/ret42_call >/dev/null
 	@test -x $(HOST_BIN)/ret42_call
@@ -731,6 +733,10 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call_args.c -o $(HOST_BIN)/ret42_call_args >/dev/null
 	@test -x $(HOST_BIN)/ret42_call_args
 	@rc=0; $(HOST_BIN)/ret42_call_args || rc=$$?; test $$rc -eq 42
+	@rm -f $(HOST_BIN)/ret42_call_args9
+	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_call_args9.c -o $(HOST_BIN)/ret42_call_args9 >/dev/null
+	@test -x $(HOST_BIN)/ret42_call_args9
+	@rc=0; $(HOST_BIN)/ret42_call_args9 || rc=$$?; test $$rc -eq 42
 	@rm -f $(HOST_BIN)/ret42_puts
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_puts.c -o $(HOST_BIN)/ret42_puts >/dev/null
 	@test -x $(HOST_BIN)/ret42_puts
@@ -747,6 +753,7 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_ptr_store.c -o $(HOST_BIN)/ret42_ptr_store >/dev/null
 	@test -x $(HOST_BIN)/ret42_ptr_store
 	@rc=0; $(HOST_BIN)/ret42_ptr_store || rc=$$?; test $$rc -eq 42
+	@echo "  ... ret42 globals/ptrs OK"
 	@rm -f $(HOST_BIN)/ret42_global_store
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_global_store.c -o $(HOST_BIN)/ret42_global_store >/dev/null
 	@test -x $(HOST_BIN)/ret42_global_store
@@ -759,6 +766,276 @@ darwin-native-smoke: darwin-monacc
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_cmp_eqne.c -o $(HOST_BIN)/ret42_cmp_eqne >/dev/null
 	@test -x $(HOST_BIN)/ret42_cmp_eqne
 	@rc=0; $(HOST_BIN)/ret42_cmp_eqne || rc=$$?; test $$rc -eq 42
+	@echo "==> Smoke: macOS native tools (aarch64-darwin)"
+	@rm -f \
+		$(HOST_BIN)/true-mc \
+		$(HOST_BIN)/false-mc \
+		$(HOST_BIN)/echo-mc \
+		$(HOST_BIN)/cat-mc \
+		$(HOST_BIN)/env-mc \
+		$(HOST_BIN)/which-mc \
+		$(HOST_BIN)/nproc-mc \
+		$(HOST_BIN)/readlink-mc \
+		$(HOST_BIN)/stat-mc \
+		$(HOST_BIN)/xargs-mc \
+		$(HOST_BIN)/cmp-mc \
+		$(HOST_BIN)/diff-mc \
+		$(HOST_BIN)/printf-mc \
+		$(HOST_BIN)/date-mc \
+		$(HOST_BIN)/expr-mc \
+		$(HOST_BIN)/grep-mc \
+		$(HOST_BIN)/sed-mc \
+		$(HOST_BIN)/basename-mc \
+		$(HOST_BIN)/dirname-mc \
+		$(HOST_BIN)/whoami-mc \
+		$(HOST_BIN)/pwd-mc \
+		$(HOST_BIN)/hostname-mc \
+		$(HOST_BIN)/id-mc \
+		$(HOST_BIN)/uname-mc \
+		$(HOST_BIN)/head-mc \
+		$(HOST_BIN)/tail-mc \
+		$(HOST_BIN)/wc-mc \
+		$(HOST_BIN)/tr-mc \
+		$(HOST_BIN)/cut-mc \
+		$(HOST_BIN)/uniq-mc \
+		$(HOST_BIN)/paste-mc \
+		$(HOST_BIN)/nl-mc \
+		$(HOST_BIN)/sort-mc \
+		$(HOST_BIN)/rev-mc \
+		$(HOST_BIN)/tee-mc \
+		$(HOST_BIN)/od-mc \
+		$(HOST_BIN)/xxd-mc \
+		$(HOST_BIN)/hexdump-mc \
+		$(HOST_BIN)/aes128-mc \
+		$(HOST_BIN)/yes-mc \
+		$(HOST_BIN)/seq-mc \
+		$(HOST_BIN)/sleep-mc \
+		$(HOST_BIN)/time-mc \
+		$(HOST_BIN)/kill-mc \
+		$(HOST_BIN)/chown-mc \
+		$(HOST_BIN)/ln-mc \
+		$(HOST_BIN)/ls-mc \
+		$(HOST_BIN)/touch-mc \
+		$(HOST_BIN)/mkdir-mc \
+		$(HOST_BIN)/rmdir-mc \
+		$(HOST_BIN)/mv-mc \
+		$(HOST_BIN)/rm-mc \
+		$(HOST_BIN)/cp-mc
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/true.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/true-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/false.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/false-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/echo.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/echo-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/cat.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/cat-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/env.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/env-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/which.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/which-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/nproc.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/nproc-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/readlink.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/readlink-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/stat.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/stat-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/xargs.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/xargs-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/cmp.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/cmp-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/diff.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/diff-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/printf.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/printf-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/date.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/date-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/expr.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/expr-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/grep.c core/mc_io.c core/mc_str.c core/mc_fmt.c core/mc_regex.c -o $(HOST_BIN)/grep-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/sed.c core/mc_io.c core/mc_str.c core/mc_fmt.c core/mc_regex.c -o $(HOST_BIN)/sed-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/basename.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/basename-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/dirname.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/dirname-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/whoami.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/whoami-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/pwd.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/pwd-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/hostname.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/hostname-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/id.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/id-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/uname.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/uname-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/head.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/head-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/tail.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/tail-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/wc.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/wc-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/tr.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/tr-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/cut.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/cut-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/uniq.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/uniq-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/paste.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/paste-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/nl.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/nl-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/sort.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/sort-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/rev.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/rev-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/tee.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/tee-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/od.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/od-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/xxd.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/xxd-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/hexdump.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/hexdump-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/aes128.c core/mc_io.c core/mc_str.c core/mc_aes.c -o $(HOST_BIN)/aes128-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/yes.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/yes-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/seq.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/seq-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/sleep.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/sleep-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/time.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/time-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/kill.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/kill-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/chown.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/chown-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/ln.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/ln-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/ls.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/ls-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/touch.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/touch-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/mkdir.c core/mc_io.c core/mc_str.c core/mc_fmt.c -o $(HOST_BIN)/mkdir-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/rmdir.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/rmdir-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/mv.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/mv-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/rm.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/rm-mc >/dev/null
+	@$(HOST_BIN)/monacc --target aarch64-darwin -I core tools/cp.c core/mc_io.c core/mc_str.c -o $(HOST_BIN)/cp-mc >/dev/null
+	@test -x $(HOST_BIN)/true-mc && $(HOST_BIN)/true-mc
+	@rc=0; $(HOST_BIN)/false-mc || rc=$$?; test $$rc -eq 1
+	@test "$$($(HOST_BIN)/echo-mc -n hello)" = "hello"
+	@tmpfile="$$(mktemp /tmp/monacc-cat.XXXXXX)"; \
+		echo hi > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/cat-mc "$$tmpfile")" = "hi"; \
+		rm -f "$$tmpfile"
+	@test "$$($(HOST_BIN)/env-mc -i FOO=bar | grep -E '^FOO=bar$$' | head -n 1)" = "FOO=bar"
+	@out="$$($(HOST_BIN)/which-mc sh | head -n 1)"; test -n "$$out"
+	@out="$$($(HOST_BIN)/nproc-mc)"; echo "$$out" | grep -Eq '^[0-9]+$$'; test "$$out" -ge 1
+	@tmpdir="$$(mktemp -d /tmp/monacc-readlinkstat.XXXXXX)"; \
+		echo hi > "$$tmpdir/f"; \
+		ln -s f "$$tmpdir/l"; \
+		test "$$($(HOST_BIN)/readlink-mc "$$tmpdir/l")" = "f"; \
+		out="$$($(HOST_BIN)/stat-mc "$$tmpdir/f" | head -n 1)"; \
+		echo "$$out" | grep -q "type=reg"; \
+		echo "$$out" | grep -q "size=3"; \
+		rm -rf "$$tmpdir"
+	@test "$$($(HOST_SH) -c 'printf "a\\nb\\n" | "'"$(HOST_BIN)/xargs-mc"'" -- /bin/echo')" = "a b"
+	@tmpdir="$$(mktemp -d /tmp/monacc-cmpdiff.XXXXXX)"; \
+		printf 'a\n' > "$$tmpdir/a"; \
+		printf 'a\n' > "$$tmpdir/b"; \
+		$(HOST_BIN)/cmp-mc -s "$$tmpdir/a" "$$tmpdir/b"; \
+		printf 'b\n' > "$$tmpdir/b"; \
+		rc=0; $(HOST_BIN)/cmp-mc -s "$$tmpdir/a" "$$tmpdir/b" >/dev/null 2>&1 || rc=$$?; test $$rc -eq 1; \
+		out="$$($(HOST_BIN)/diff-mc "$$tmpdir/a" "$$tmpdir/b" || true)"; \
+		echo "$$out" | grep -q "^diff: line 1"; \
+		rm -rf "$$tmpdir"
+	@test "$$($(HOST_BIN)/printf-mc '%05d' 7)" = "00007"
+	@test "$$($(HOST_BIN)/printf-mc 'hi\n')" = "hi"
+	@test "$$($(HOST_BIN)/expr-mc 1 + 2)" = "3"
+	@rc=0; $(HOST_BIN)/expr-mc 0 >/dev/null 2>&1 || rc=$$?; test $$rc -eq 1
+	@out="$$($(HOST_BIN)/date-mc +%Y)"; echo "$$out" | grep -Eq '^[0-9]{4}$$'
+	@tmpfile="$$(mktemp /tmp/monacc-grep.XXXXXX)"; \
+		printf 'a\nxb\nAx\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/grep-mc -n x "$$tmpfile" | head -n 1)" = "2:xb"; \
+		test "$$($(HOST_BIN)/grep-mc -i -n ax "$$tmpfile" | head -n 1)" = "3:Ax"; \
+		rm -f "$$tmpfile"
+	@tmpfile="$$(mktemp /tmp/monacc-sed.XXXXXX)"; \
+		printf 'foo\nbar\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/sed-mc -e 's/o/O/g' "$$tmpfile")" = "$$(printf 'fOO\nbar')"; \
+		rm -f "$$tmpfile"
+	@test "$$($(HOST_BIN)/basename-mc /usr/bin/ls)" = "ls"
+		@test "$$( $(HOST_BIN)/basename-mc /usr/bin/ls s)" = "l"
+	@test "$$($(HOST_BIN)/dirname-mc /usr/bin/ls)" = "/usr/bin"
+	@test "$$($(HOST_BIN)/dirname-mc a/b)" = "a"
+	@test "$$($(HOST_BIN)/whoami-mc)" = "$$($(HOST_SH) -c 'id -u')"
+	@test "$$($(HOST_BIN)/pwd-mc)" = "$$($(HOST_SH) -c 'pwd')"
+	@test "$$($(HOST_BIN)/hostname-mc)" = "$$($(HOST_SH) -c 'hostname')"
+	@test "$$($(HOST_BIN)/id-mc -u)" = "$$($(HOST_SH) -c 'id -u')"
+	@test "$$($(HOST_BIN)/id-mc -g)" = "$$($(HOST_SH) -c 'id -g')"
+	@test "$$($(HOST_BIN)/uname-mc -s)" = "$$($(HOST_SH) -c 'uname -s')"
+	@test "$$($(HOST_BIN)/uname-mc -m)" = "$$($(HOST_SH) -c 'uname -m')"
+	@tmpfile="$$(mktemp /tmp/monacc-headtailwc.XXXXXX)"; \
+		printf '1\n2\n3\n4\n5\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/head-mc -n 1 "$$tmpfile")" = "1"; \
+		test "$$($(HOST_BIN)/tail-mc -n 1 "$$tmpfile")" = "5"; \
+		test "$$($(HOST_BIN)/wc-mc -l "$$tmpfile" | cut -d' ' -f1)" = "5"; \
+		rm -f "$$tmpfile"
+	@tmpfile="$$(mktemp /tmp/monacc-trcutuniq.XXXXXX)"; \
+		printf 'aBc\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/tr-mc a-z A-Z < "$$tmpfile")" = "ABC"; \
+		printf 'abc,def,ghi\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/cut-mc -d, -f2 "$$tmpfile")" = "def"; \
+		printf 'a\na\nb\nb\n' > "$$tmpfile"; \
+		test "$$($(HOST_BIN)/uniq-mc "$$tmpfile")" = "$$(printf 'a\nb')"; \
+		rm -f "$$tmpfile"
+	@tmpdir="$$(mktemp -d /tmp/monacc-sortpasteln.XXXXXX)"; \
+		printf 'b\na\n' > "$$tmpdir/sort_in"; \
+		test "$$($(HOST_BIN)/sort-mc "$$tmpdir/sort_in")" = "$$(printf 'a\nb')"; \
+		printf 'a\nb\n' > "$$tmpdir/p1"; \
+		printf 'c\nd\n' > "$$tmpdir/p2"; \
+		test "$$($(HOST_BIN)/paste-mc "$$tmpdir/p1" "$$tmpdir/p2")" = "$$(printf 'a\tc\nb\td')"; \
+		printf 'x\ny\n' > "$$tmpdir/nl_in"; \
+		test "$$($(HOST_BIN)/nl-mc "$$tmpdir/nl_in")" = "$$(printf '     1\tx\n     2\ty')"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-revteeod.XXXXXX)"; \
+		printf 'abc\nxy\n' > "$$tmpdir/rev_in"; \
+		test "$$($(HOST_BIN)/rev-mc < "$$tmpdir/rev_in")" = "$$(printf 'cba\nyx')"; \
+		printf 'hello\n' | $(HOST_BIN)/tee-mc "$$tmpdir/tee_out" >/dev/null; \
+		test "$$($(HOST_SH) -c 'cat "'"$$tmpdir"'"/tee_out')" = "hello"; \
+		test "$$($(HOST_BIN)/od-mc -An < "$$tmpdir/tee_out" | head -n 1 | tr -s ' ')" = " 150 145 154 154 157 012"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-xxdhexdump.XXXXXX)"; \
+		printf 'ABC' > "$$tmpdir/in"; \
+		out="$$($(HOST_BIN)/xxd-mc "$$tmpdir/in")"; \
+		echo "$$out" | grep -q "^00000000:"; \
+		echo "$$out" | grep -q "41 42 43"; \
+		out="$$($(HOST_BIN)/hexdump-mc "$$tmpdir/in")"; \
+		echo "$$out" | grep -q "^0000000000000000"; \
+		echo "$$out" | grep -q "41 42 43"; \
+		echo "$$out" | grep -q "\\|ABC"; \
+		rm -rf "$$tmpdir"
+	@test "$$($(HOST_BIN)/aes128-mc --fips197 | head -n 1)" = "69c4e0d86a7b0430d8cdb78070b4c55a"
+	@$(HOST_BIN)/yes-mc | head -n 1 >/dev/null
+	@test "$$($(HOST_BIN)/seq-mc 3 | wc -l | tr -d ' ')" = "3"
+	@test "$$($(HOST_BIN)/seq-mc 3 | head -n 1)" = "1"
+	@test "$$($(HOST_BIN)/seq-mc 3 | tail -n 1)" = "3"
+	@$(HOST_BIN)/sleep-mc 0
+	@$(HOST_BIN)/time-mc -- $(HOST_BIN)/true-mc >/dev/null
+	@test "$$($(HOST_BIN)/kill-mc -l | head -n 1)" = "1"
+	@rc=0; $(HOST_BIN)/chown-mc 0:0 . >/dev/null 2>&1 || rc=$$?; test $$rc -ne 0
+	@tmpdir="$$(mktemp -d /tmp/monacc-ln.XXXXXX)"; \
+		echo hi > "$$tmpdir/src"; \
+		$(HOST_BIN)/ln-mc -f "$$tmpdir/src" "$$tmpdir/dst"; \
+		test -e "$$tmpdir/dst"; \
+		$(HOST_BIN)/ln-mc -sf "src" "$$tmpdir/sym"; \
+		test -L "$$tmpdir/sym"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-ls.XXXXXX)"; \
+		echo hi > "$$tmpdir/file"; \
+		mkdir "$$tmpdir/sub"; \
+		out="$$($(HOST_BIN)/ls-mc "$$tmpdir")"; \
+		echo "$$out" | grep -q "^file$$"; \
+		echo "$$out" | grep -q "^sub$$"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-touch.XXXXXX)"; \
+		$(HOST_BIN)/touch-mc "$$tmpdir/a"; \
+		test -f "$$tmpdir/a"; \
+		sleep 1; \
+		$(HOST_BIN)/touch-mc "$$tmpdir/a"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-mkdir.XXXXXX)"; \
+		$(HOST_BIN)/mkdir-mc -p "$$tmpdir/a/b/c"; \
+		test -d "$$tmpdir/a/b/c"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-rmdir.XXXXXX)"; \
+		mkdir -p "$$tmpdir/a/b/c"; \
+		$(HOST_BIN)/rmdir-mc "$$tmpdir/a/b/c"; \
+		test ! -e "$$tmpdir/a/b/c"; \
+		mkdir -p "$$tmpdir/x/y/z"; \
+		$(HOST_BIN)/rmdir-mc -p "$$tmpdir/x/y/z"; \
+		test ! -e "$$tmpdir/x"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-mv.XXXXXX)"; \
+		echo hi > "$$tmpdir/a"; \
+		$(HOST_BIN)/mv-mc "$$tmpdir/a" "$$tmpdir/b"; \
+		test -f "$$tmpdir/b"; \
+		mkdir -p "$$tmpdir/d1"; \
+		$(HOST_BIN)/mv-mc "$$tmpdir/d1" "$$tmpdir/d2"; \
+		test -d "$$tmpdir/d2"; \
+		rm -rf "$$tmpdir"
+	@if test "x$${DARWIN_NATIVE_MATRIX}" = "x1"; then \
+		echo "==> Matrix: compile all tools (aarch64-darwin)"; \
+		$(HOST_SH) -c './scripts/darwin-native-matrix.sh'; \
+		echo "Matrix report: bin-host/darwin-native-matrix.md"; \
+	fi
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-rm.XXXXXX)"; \
+		echo hi > "$$tmpdir/a"; \
+		$(HOST_BIN)/rm-mc "$$tmpdir/a"; \
+		test ! -e "$$tmpdir/a"; \
+		mkdir -p "$$tmpdir/d1/d2"; \
+		$(HOST_BIN)/rm-mc -r "$$tmpdir/d1"; \
+		test ! -e "$$tmpdir/d1"; \
+		rm -rf "$$tmpdir"
+	@tmpdir="$$(mktemp -d /tmp/monacc-cp.XXXXXX)"; \
+		echo hi > "$$tmpdir/a"; \
+		$(HOST_BIN)/cp-mc "$$tmpdir/a" "$$tmpdir/b"; \
+		test "$$($(HOST_SH) -c 'cat "'"$$tmpdir"'"/b')" = "hi"; \
+		rm -rf "$$tmpdir"
+	@echo "Native tools smoke complete"
 	@rm -f $(HOST_BIN)/ret42_mul
 	@$(HOST_BIN)/monacc --target aarch64-darwin examples/ret42_mul.c -o $(HOST_BIN)/ret42_mul >/dev/null
 	@test -x $(HOST_BIN)/ret42_mul

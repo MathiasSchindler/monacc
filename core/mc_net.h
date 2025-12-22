@@ -2,7 +2,7 @@
 
 #include "mc_types.h"
 
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -13,14 +13,14 @@
 // IPv6-only for the initial nettools set.
 
 // Address families
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_AF_INET6 AF_INET6
 #else
 #define MC_AF_INET6 10
 #endif
 
 // Socket types
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_SOCK_STREAM SOCK_STREAM
 #define MC_SOCK_DGRAM SOCK_DGRAM
 #define MC_SOCK_RAW SOCK_RAW
@@ -31,7 +31,7 @@
 #endif
 
 // Socket flags
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #if defined(SOCK_NONBLOCK)
 #define MC_SOCK_NONBLOCK SOCK_NONBLOCK
 #else
@@ -49,7 +49,7 @@
 #endif
 
 // Protocols
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_IPPROTO_TCP IPPROTO_TCP
 #define MC_IPPROTO_UDP IPPROTO_UDP
 #define MC_IPPROTO_ICMPV6 IPPROTO_ICMPV6
@@ -60,7 +60,7 @@
 #endif
 
 // setsockopt levels
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_SOL_SOCKET SOL_SOCKET
 #define MC_IPPROTO_IPV6 IPPROTO_IPV6
 #else
@@ -69,7 +69,7 @@
 #endif
 
 // SOL_SOCKET options (subset)
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_SO_REUSEADDR SO_REUSEADDR
 #define MC_SO_ERROR SO_ERROR
 #else
@@ -78,14 +78,14 @@
 #endif
 
 // IPv6 socket options (subset)
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_IPV6_UNICAST_HOPS IPV6_UNICAST_HOPS
 #else
 #define MC_IPV6_UNICAST_HOPS 16
 #endif
 
 // fcntl
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_F_GETFL F_GETFL
 #define MC_F_SETFL F_SETFL
 #else
@@ -94,7 +94,7 @@
 #endif
 
 // open(2) flags reused by fcntl(F_SETFL)
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_O_NONBLOCK O_NONBLOCK
 #else
 #define MC_O_NONBLOCK 00004000
@@ -112,7 +112,7 @@ struct mc_pollfd {
 	mc_i16 revents;
 };
 
-#if defined(__APPLE__) && defined(__MACH__)
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__MONACC__)
 #define MC_POLLIN POLLIN
 #define MC_POLLOUT POLLOUT
 #define MC_POLLERR POLLERR

@@ -8,6 +8,8 @@
 CC ?= cc
 MONACC := bin/monacc
 
+UNAME_S := $(shell uname -s 2>/dev/null || echo unknown)
+
 # Host shell executables used by Makefile-driven scripts.
 # Keep these as the host defaults for now; as Step 8 closure matures, we can
 # switch more callsites to HOST_SH=./bin/sh behind toggles.
@@ -37,6 +39,13 @@ endif
 DEBUG ?= 0
 LTO ?= 1
 MULTI ?= 0
+
+# macOS UX: by default, run the hosted+aarch64-darwin matrix when invoking the
+# top-level entrypoints (`make` / `make test`).
+ifeq ($(UNAME_S),Darwin)
+DARWIN_NATIVE_MATRIX ?= 1
+.DEFAULT_GOAL := darwin-native-smoke
+endif
 
 # Most distros default to PIE, which makes bin/monacc an ET_DYN + adds dynamic
 # linker metadata. monacc doesn't need it (no external libs), so default to a
@@ -428,7 +437,29 @@ bin/internal/realpath: bin/internal/readlink | bin/internal
 bin/internal/[: bin/internal/test | bin/internal
 	@cp $< $@
 
+
 # === Testing ===
+
+ifeq ($(UNAME_S),Darwin)
+
+# On macOS, the syscall-only Linux userland binaries are not runnable.
+# Use the hosted toolchain + native aarch64-darwin target smoke by default.
+test:
+	@echo ""
+	@echo "==> Testing (macOS)"
+	@$(MAKE) darwin-native-smoke
+	@if [ "$(MULTI)" = "1" ]; then \
+		echo ""; \
+		echo "==> MULTI=1: also building hosted tools with $(HOST_TOOLS_CC)"; \
+		$(MAKE) darwin-tools; \
+		echo ""; \
+		echo "Binaries:"; \
+		echo "  - hosted (clang/cc): $(HOST_BIN)/*"; \
+		echo "  - monacc native: $(HOST_BIN)/matrix-bin/*-mc"; \
+	fi
+	@echo "All tests passed (macOS native smoke OK)"
+
+else
 
 test: all
 	@echo ""
@@ -556,6 +587,8 @@ test: all
 		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, monaccbugs: exit $$monaccbugs_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
+
+endif
 
 # === Cleanup ===
 
@@ -1016,7 +1049,7 @@ darwin-native-smoke: darwin-monacc
 		$(HOST_BIN)/mv-mc "$$tmpdir/d1" "$$tmpdir/d2"; \
 		test -d "$$tmpdir/d2"; \
 		rm -rf "$$tmpdir"
-	@if test "x$${DARWIN_NATIVE_MATRIX}" = "x1"; then \
+	@if test "x$(DARWIN_NATIVE_MATRIX)" = "x1"; then \
 		echo "==> Matrix: compile all tools (aarch64-darwin)"; \
 		$(HOST_SH) -c './scripts/darwin-native-matrix.sh'; \
 		echo "Matrix report: bin-host/darwin-native-matrix.md"; \

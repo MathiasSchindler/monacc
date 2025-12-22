@@ -25,6 +25,8 @@
 #define MC_ESPIPE 29
 #define MC_EPERM 1
 #define MC_EEXIST 17
+#define MC_EINPROGRESS 36
+#define MC_EISCONN 56
 #define MC_ENOTEMPTY 66
 #define MC_ELOOP 62
 #define MC_EXDEV 18
@@ -98,6 +100,7 @@ extern int unlinkat(int, const char *, int);
 extern int linkat(int, const char *, int, const char *, int);
 extern int symlinkat(const char *, int, const char *);
 extern int openat(int, const char *, int, ...);
+extern int fcntl(int, int, ...);
 extern int close(int);
 extern long long lseek(int, long long, int);
 extern int utimensat(int, const char *, const void *, int);
@@ -117,9 +120,12 @@ extern int *__error(void);
 
 // Minimal socket/poll libc declarations for hosted networking tools.
 extern int socket(int, int, int);
-extern int connect(int, const void *, unsigned int);
-extern long sendto(int, const void *, unsigned long, int, const void *, unsigned int);
-extern long recvfrom(int, void *, unsigned long, int, void *, unsigned int *);
+extern int connect(int, const void *, mc_u32);
+extern int getsockname(int, void *, mc_u32 *);
+extern int setsockopt(int, int, int, const void *, mc_u32);
+extern int getsockopt(int, int, int, void *, mc_u32 *);
+extern long sendto(int, const void *, mc_usize, int, const void *, mc_u32);
+extern long recvfrom(int, void *, mc_usize, int, void *, mc_u32 *);
 extern int poll(void *, unsigned long, int);
 extern void arc4random_buf(void *, unsigned long);
 
@@ -323,29 +329,44 @@ static inline mc_i64 mc_sys_socket(mc_i32 domain, mc_i32 type, mc_i32 protocol) 
 static inline mc_i64 mc_sys_connect(mc_i32 sockfd, const void *addr, mc_u32 addrlen) {
     struct mc__host_sockaddr_in6 h6;
     if (mc__sockaddr_in6_to_host(addr, addrlen, &h6)) {
-        if (connect((int)sockfd, (const void *)&h6, (unsigned int)sizeof(h6)) < 0) return mc__neg_errno();
+        if (connect((int)sockfd, (const void *)&h6, (mc_u32)sizeof(h6)) < 0) return mc__neg_errno();
         return 0;
     }
-    if (connect((int)sockfd, addr, (unsigned int)addrlen) < 0) return mc__neg_errno();
+
+    if (connect((int)sockfd, addr, (mc_u32)addrlen) < 0) return mc__neg_errno();
+    return 0;
+}
+
+static inline mc_i64 mc_sys_getsockname(mc_i32 sockfd, void *addr, mc_u32 *addrlen_inout) {
+    struct mc__host_sockaddr_storage ss;
+    mc_u32 sl = (mc_u32)sizeof(ss);
+    if (getsockname((int)sockfd, addrlen_inout ? (void *)&ss : (void *)0, addrlen_inout ? &sl : (mc_u32 *)0) < 0) {
+        return mc__neg_errno();
+    }
+    if (addrlen_inout) {
+        mc_u32 outlen = *addrlen_inout;
+        if (!mc__sockaddr_from_host(addr, &outlen, &ss)) outlen = 0;
+        *addrlen_inout = outlen;
+    }
     return 0;
 }
 
 static inline mc_i64 mc_sys_sendto(mc_i32 sockfd, const void *buf, mc_usize len, mc_i32 flags, const void *dest_addr, mc_u32 addrlen) {
     struct mc__host_sockaddr_in6 h6;
     if (mc__sockaddr_in6_to_host(dest_addr, addrlen, &h6)) {
-        long n = sendto((int)sockfd, buf, (unsigned long)len, (int)flags, (const void *)&h6, (unsigned int)sizeof(h6));
+        long n = sendto((int)sockfd, buf, (mc_usize)len, (int)flags, (const void *)&h6, (mc_u32)sizeof(h6));
         if (n < 0) return mc__neg_errno();
         return (mc_i64)n;
     }
-    long n = sendto((int)sockfd, buf, (unsigned long)len, (int)flags, dest_addr, (unsigned int)addrlen);
+    long n = sendto((int)sockfd, buf, (mc_usize)len, (int)flags, dest_addr, (mc_u32)addrlen);
     if (n < 0) return mc__neg_errno();
     return (mc_i64)n;
 }
 
 static inline mc_i64 mc_sys_recvfrom(mc_i32 sockfd, void *buf, mc_usize len, mc_i32 flags, void *src_addr, mc_u32 *addrlen_inout) {
     struct mc__host_sockaddr_storage ss;
-    unsigned int sl = (unsigned int)sizeof(ss);
-    long n = recvfrom((int)sockfd, buf, (unsigned long)len, (int)flags, addrlen_inout ? (void *)&ss : (void *)0, addrlen_inout ? &sl : (unsigned int *)0);
+    mc_u32 sl = (mc_u32)sizeof(ss);
+    long n = recvfrom((int)sockfd, buf, (mc_usize)len, (int)flags, addrlen_inout ? (void *)&ss : (void *)0, addrlen_inout ? &sl : (mc_u32 *)0);
     if (n < 0) return mc__neg_errno();
     if (addrlen_inout) {
         mc_u32 outlen = *addrlen_inout;
@@ -353,6 +374,18 @@ static inline mc_i64 mc_sys_recvfrom(mc_i32 sockfd, void *buf, mc_usize len, mc_
         *addrlen_inout = outlen;
     }
     return (mc_i64)n;
+}
+
+static inline mc_i64 mc_sys_setsockopt(mc_i32 sockfd, mc_i32 level, mc_i32 optname, const void *optval, mc_u32 optlen) {
+    if (setsockopt((int)sockfd, (int)level, (int)optname, optval, (mc_u32)optlen) < 0) return mc__neg_errno();
+    return 0;
+}
+
+static inline mc_i64 mc_sys_getsockopt(mc_i32 sockfd, mc_i32 level, mc_i32 optname, void *optval, mc_u32 *optlen_inout) {
+    mc_u32 sl = optlen_inout ? *optlen_inout : 0;
+    if (getsockopt((int)sockfd, (int)level, (int)optname, optval, optlen_inout ? &sl : (mc_u32 *)0) < 0) return mc__neg_errno();
+    if (optlen_inout) *optlen_inout = sl;
+    return 0;
 }
 
 static inline mc_i64 mc_sys_poll(void *fds, mc_u64 nfds, mc_i32 timeout_ms) {
@@ -365,6 +398,39 @@ static inline mc_i64 mc_sys_getrandom(void *buf, mc_usize buflen, mc_u32 flags) 
     (void)flags;
     arc4random_buf(buf, (unsigned long)buflen);
     return (mc_i64)buflen;
+}
+
+static inline mc_i64 mc_sys_fcntl(mc_i32 fd, mc_i32 cmd, mc_i64 arg) {
+    // Darwin fcntl(2) command values (stable) without <fcntl.h>.
+    const int F_GETFL_D = 3;
+    const int F_SETFL_D = 4;
+    // Darwin O_NONBLOCK is 0x0004.
+    const long O_NONBLOCK_D = 0x0004;
+
+    // Our tool ABI uses Linux-shaped bits for MC_O_NONBLOCK. Translate just that bit.
+    if ((int)cmd == F_SETFL_D || (int)cmd == (int)MC_F_SETFL) {
+        long cur = fcntl((int)fd, F_GETFL_D, 0);
+        if (cur < 0) return mc__neg_errno();
+        long want = cur;
+        if ((arg & (mc_i64)MC_O_NONBLOCK) != 0) want |= O_NONBLOCK_D;
+        else want &= ~O_NONBLOCK_D;
+        long r = fcntl((int)fd, F_SETFL_D, want);
+        if (r < 0) return mc__neg_errno();
+        return (mc_i64)r;
+    }
+
+    if ((int)cmd == F_GETFL_D || (int)cmd == (int)MC_F_GETFL) {
+        long r = fcntl((int)fd, F_GETFL_D, 0);
+        if (r < 0) return mc__neg_errno();
+        mc_i64 out = (mc_i64)r;
+        // Normalize the nonblock bit back to our tool ABI.
+        if ((r & O_NONBLOCK_D) != 0) out |= (mc_i64)MC_O_NONBLOCK;
+        return out;
+    }
+
+    long r = fcntl((int)fd, (int)cmd, (long)arg);
+    if (r < 0) return mc__neg_errno();
+    return (mc_i64)r;
 }
 
 static inline mc_i64 mc_sys_nanosleep(const struct mc_timespec *req, struct mc_timespec *rem) {

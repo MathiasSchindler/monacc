@@ -1,0 +1,178 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "rebuild-hosted-x25519",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"bin-host/x25519"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "run-hosted-x25519-memtest",
+			"type": "shell",
+			"command": "./bin-host/x25519",
+			"args": [
+				"--memtest"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-x25519-mc-only",
+			"type": "shell",
+			"command": "./bin-host/monacc",
+			"args": [
+				"--target",
+				"aarch64-darwin",
+				"-I",
+				"core",
+				"tools/x25519.c",
+				"core/mc_io.c",
+				"core/mc_str.c",
+				"core/mc_fmt.c",
+				"core/mc_x25519.c",
+				"-o",
+				"bin-host/matrix-bin/x25519-mc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "run-x25519-mc-memtest",
+			"type": "shell",
+			"command": "./bin-host/matrix-bin/x25519-mc",
+			"args": [
+				"--memtest"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-hosted-x25519",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"bin-host/x25519"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "run-hosted-x25519-i64-index-test",
+			"type": "shell",
+			"command": "./bin-host/x25519",
+			"args": [
+				"--i64-index-test"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-x25519-mc-only",
+			"type": "shell",
+			"command": "./bin-host/monacc",
+			"args": [
+				"--target",
+				"aarch64-darwin",
+				"-I",
+				"core",
+				"tools/x25519.c",
+				"core/mc_io.c",
+				"core/mc_str.c",
+				"core/mc_fmt.c",
+				"core/mc_x25519.c",
+				"-o",
+				"bin-host/matrix-bin/x25519-mc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "run-x25519-mc-i64-index-test",
+			"type": "shell",
+			"command": "./bin-host/matrix-bin/x25519-mc",
+			"args": [
+				"--i64-index-test"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-bin-host-monacc",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"darwin-monacc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-bin-host-monacc",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"darwin-monacc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-bin-host-monacc",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"darwin-monacc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-x25519-mc-only",
+			"type": "shell",
+			"command": "./bin-host/monacc",
+			"args": [
+				"--target",
+				"aarch64-darwin",
+				"-I",
+				"core",
+				"tools/x25519.c",
+				"core/mc_io.c",
+				"core/mc_str.c",
+				"core/mc_fmt.c",
+				"core/mc_x25519.c",
+				"-o",
+				"bin-host/matrix-bin/x25519-mc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "run-x25519-mc-i64-index-test",
+			"type": "shell",
+			"command": "./bin-host/matrix-bin/x25519-mc",
+			"args": [
+				"--i64-index-test"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}

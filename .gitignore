@@ -1,5 +1,6 @@
 # Build outputs
 /bin/
+/bin-host/
 /build/
 /release/
 
@@ -12,3 +13,6 @@
 *.so
 *.elf
 *.iso
+
+# macOS
+.DS_Store

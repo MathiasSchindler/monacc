@@ -96,7 +96,7 @@ mc_i64 mc_write_i64_dec(mc_i32 fd, mc_i64 v) {
 mc_i64 mc_for_each_dirent(mc_i32 dirfd, mc_dirent_cb cb, void *ctx) {
 	if (dirfd < 0 || !cb) return (mc_i64)-MC_EINVAL;
 
-	#if defined(__MONACC__)
+	#if defined(__MONACC__) && MC_OS_DARWIN
 	// When compiling tools with monacc on Darwin, avoid pulling in macOS SDK
 	// headers (dirent/unistd/errno). Directory iteration isn't needed for the
 	// first batch of tools (true/echo), so stub it out for now.

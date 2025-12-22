@@ -77,15 +77,24 @@ HOST_PIE ?= 0
 
 # All tests are enabled by default as part of `make test`.
 # Advanced users can disable specific test groups by setting these to 0.
-SELFTEST_EMITOBJ ?= 1        # Object emission tests
-SELFTEST_ELFREAD ?= 1        # ELF reader tests
-SELFTEST_LINKINT ?= 1        # Internal linker tests
-SELFTEST_MATHF ?= 1          # Math function tests
-SELFTEST_STAGE2 ?= 1         # Stage-2 self-hosting tests
-SELFTEST_STAGE3 ?= 1         # Stage-3 self-hosting tests
-SELFTEST_MONACCBUGS ?= 1     # Regression tests (docs/monaccbugs.md)
-SELFTEST_BINSHELL ?= 1       # bin/sh execution tests
-SELFTEST_REPO_GUARDS ?= 1    # Repository guardrail checks
+# - SELFTEST_EMITOBJ: Object emission tests
+# - SELFTEST_ELFREAD: ELF reader tests
+# - SELFTEST_LINKINT: Internal linker tests
+# - SELFTEST_MATHF: Math function tests
+# - SELFTEST_STAGE2: Stage-2 self-hosting tests
+# - SELFTEST_STAGE3: Stage-3 self-hosting tests
+# - SELFTEST_MONACCBUGS: Regression tests (docs/monaccbugs.md)
+# - SELFTEST_BINSHELL: bin/sh execution tests
+# - SELFTEST_REPO_GUARDS: Repository guardrail checks
+SELFTEST_EMITOBJ ?= 1
+SELFTEST_ELFREAD ?= 1
+SELFTEST_LINKINT ?= 1
+SELFTEST_MATHF ?= 1
+SELFTEST_STAGE2 ?= 1
+SELFTEST_STAGE3 ?= 1
+SELFTEST_MONACCBUGS ?= 1
+SELFTEST_BINSHELL ?= 1
+SELFTEST_REPO_GUARDS ?= 1
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
 ifeq ($(DEBUG),1)
@@ -239,6 +248,12 @@ COMPILER_SELFHOST_SRC := \
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
 	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+
+# Internal targets for test scripts (not user-facing)
+.PHONY: selfhost selfhost2 selfhost3
+selfhost: $(MONACC_SELF)
+selfhost2: $(MONACC_SELF2)
+selfhost3: $(MONACC_SELF3)
 
 $(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
 	@echo "==> Building stage-2 self-hosted compiler"
@@ -441,6 +456,12 @@ test: all
 		echo "==> Testing: --emit-obj"; \
 		$(HOST_BASH) tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
 		echo ""; \
+	fi; \
+	if [ "$(SELFTEST_STAGE2)" = "1" ] || [ "$(SELFTEST_STAGE3)" = "1" ]; then \
+		if [ ! -f $(MONACC_SELF) ]; then \
+			echo "==> Building self-hosted compiler (stage-1)"; \
+			$(MAKE) $(MONACC_SELF); \
+		fi; \
 	fi; \
 	if [ "$(SELFTEST_STAGE2)" = "1" ]; then \
 		echo "==> Testing: stage-2 (monacc-self -> monacc-self2)"; \

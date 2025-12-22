@@ -16,3 +16,4 @@
 
 # macOS
 .DS_Store
+*.backup

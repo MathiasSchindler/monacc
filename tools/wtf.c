@@ -3,6 +3,7 @@
 #include "mc_sha256.h"
 #include "mc_hkdf.h"
 #include "mc_tls13.h"
+#include "mc_tls13_client.h"
 #include "mc_tls13_handshake.h"
 #include "mc_tls13_transcript.h"
 #include "mc_tls_record.h"
@@ -443,16 +444,6 @@ static void getrandom_or_die(const char *argv0, void *buf, mc_usize len) {
 	}
 }
 
-static const mc_u8 zeros32[32] = {
-	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-};
-
-static const mc_u8 sha256_empty[32] = {
-	0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
-	0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55,
-};
-
 static int hs_append(mc_u8 *buf, mc_usize cap, mc_usize *io_len, const mc_u8 *p, mc_usize n) {
 	if (!buf || !io_len) return -1;
 	if (!p && n) return -1;
@@ -552,7 +543,6 @@ static int json_parse_string(const char *p, char *out, mc_usize cap, const char 
 
 static int json_extract_string_value(const char *json, const char *key, char *out, mc_usize cap) {
 	if (!json || !key || !out || cap == 0) return 0;
-	mc_usize klen = mc_strlen(key);
 	const char *p = json;
 	while (*p) {
 		// find opening quote
@@ -561,12 +551,15 @@ static int json_extract_string_value(const char *json, const char *key, char *ou
 			continue;
 		}
 		p++;
-		// match key
-		mc_usize i = 0;
-		for (; i < klen && p[i] == key[i]; i++) {
+		// match key (pointer-walk; avoids p[i] indexing)
+		const char *q = p;
+		const char *k = key;
+		while (*k && *q && *q == *k) {
+			q++;
+			k++;
 		}
-		if (i == klen && p[i] == '"') {
-			p += i + 1;
+		if (*k == 0 && *q == '"') {
+			p = q + 1;
 			p = json_skip_ws(p);
 			if (*p != ':') continue;
 			p++;
@@ -748,6 +741,28 @@ static int parse_u32_dec(const char *s, mc_u32 *out) {
 	return 1;
 }
 
+static mc_usize fmt_u32_dec(mc_u32 v, char *out, mc_usize cap) {
+	if (!out || cap == 0) return 0;
+	char tmp[16];
+	mc_usize n = 0;
+	if (v == 0) {
+		out[0] = '0';
+		out[1 < cap ? 1 : 0] = 0;
+		return (cap >= 2) ? 1 : 0;
+	}
+	while (v && n < sizeof(tmp)) {
+		tmp[n++] = (char)('0' + (char)(v % 10u));
+		v /= 10u;
+	}
+	if (n + 1 > cap) {
+		out[cap - 1] = 0;
+		return 0;
+	}
+	for (mc_usize i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+	out[n] = 0;
+	return n;
+}
+
 static int wtf_smoke(void) {
 	char enc[128];
 	if (!url_encode("central nervous system", enc, sizeof(enc))) return 10;
@@ -783,7 +798,8 @@ static int wtf_smoke(void) {
 
 static MC_NORETURN void usage(const char *argv0) {
 	mc_die_usage(argv0,
-		"wtf [-l LANG] [-s] [-W TIMEOUT_MS] QUERY...\n"
+		"wtf [-v] [-l LANG] [-s] [-W TIMEOUT_MS] QUERY...\n"
+		"  -v: verbose (DNS/connect/TLS diagnostics)\n"
 		"  -l LANG: language code (default: en)\n"
 		"  -s: print first sentence only\n"
 		"  -W TIMEOUT_MS: timeout for DNS/TCP/TLS IO (default: 5000)\n"
@@ -793,6 +809,7 @@ static MC_NORETURN void usage(const char *argv0) {
 struct wtf_opts {
 	const char *lang;
 	int short_mode;
+	int verbose;
 	mc_u32 timeout_ms;
 	char query[256];
 };
@@ -801,6 +818,7 @@ static int parse_args(int argc, char **argv, struct wtf_opts *opts, int *out_qst
 	if (!opts || !out_qstart) return 0;
 	opts->lang = "en";
 	opts->short_mode = 0;
+	opts->verbose = 0;
 	opts->timeout_ms = 5000;
 	int i = 1;
 	for (; i < argc; i++) {
@@ -813,6 +831,10 @@ static int parse_args(int argc, char **argv, struct wtf_opts *opts, int *out_qst
 		}
 		if (mc_streq(a, "-s")) {
 			opts->short_mode = 1;
+			continue;
+		}
+		if (mc_streq(a, "-v") || mc_streq(a, "--verbose") || mc_streq(a, "--debug")) {
+			opts->verbose = 1;
 			continue;
 		}
 		if (mc_streq(a, "-l")) {
@@ -845,7 +867,7 @@ static void join_query(int argc, char **argv, int start, char *out, mc_usize cap
 }
 
 // Performs a TLS 1.3 handshake and returns the decrypted HTTP response bytes.
-static int https_get_raw(const char *argv0, const char *host, const char *path, mc_u32 timeout_ms,
+static int https_get_raw(const char *argv0, const char *host, const char *path, mc_u32 timeout_ms, int verbose,
 	char *out, mc_usize out_cap, mc_usize *out_len) {
 	if (!argv0 || !host || !path || !out || !out_len) return 0;
 	*out_len = 0;
@@ -865,6 +887,9 @@ static int https_get_raw(const char *argv0, const char *host, const char *path, 
 			mc_u8 dns2[16];
 			(void)parse_ipv6_literal("2001:4860:4860::8844", dns2);
 			if (!dns6_resolve_first_aaaa(argv0, dns2, 53, host, timeout_ms, dst_ip)) {
+				if (verbose) {
+					(void)mc_write_str(2, "wtf: resolve failed\n");
+				}
 				return 0;
 			}
 		}
@@ -877,301 +902,26 @@ static int https_get_raw(const char *argv0, const char *host, const char *path, 
 	for (int k = 0; k < 16; k++) dst.sin6_addr.s6_addr[k] = dst_ip[k];
 
 	mc_i64 fd = mc_sys_socket(MC_AF_INET6, MC_SOCK_STREAM | MC_SOCK_CLOEXEC, MC_IPPROTO_TCP);
-	if (fd < 0) return 0;
+	if (fd < 0) {
+		if (verbose) (void)mc_write_str(2, "wtf: socket failed\n");
+		return 0;
+	}
 	if (!connect_with_timeout((mc_i32)fd, &dst, (mc_u32)sizeof(dst), timeout_ms)) {
+		if (verbose) (void)mc_write_str(2, "wtf: connect failed\n");
 		(void)mc_sys_close((mc_i32)fd);
 		return 0;
 	}
+	if (verbose) (void)mc_write_str(2, "wtf: connect ok\n");
 
-	// Build ClientHello
-	mc_u8 ch_random[32];
-	mc_u8 ch_sid[32];
-	mc_u8 x25519_priv[32];
-	mc_u8 x25519_pub[32];
-	getrandom_or_die(argv0, ch_random, sizeof(ch_random));
-	getrandom_or_die(argv0, ch_sid, sizeof(ch_sid));
-	getrandom_or_die(argv0, x25519_priv, sizeof(x25519_priv));
-	mc_x25519_public(x25519_pub, x25519_priv);
-
-	mc_u8 ch[2048];
-	mc_usize ch_len = 0;
-	if (mc_tls13_build_client_hello(host, host_len, ch_random, ch_sid, sizeof(ch_sid), x25519_pub, ch, sizeof(ch), &ch_len) != 0) {
+	struct mc_tls13_client c;
+	mc_tls13_client_init(&c, (mc_i32)fd, timeout_ms);
+	c.debug = verbose;
+	if (mc_tls13_client_handshake(&c, host, host_len) != 0) {
+		if (verbose) (void)mc_write_str(2, "wtf: tls handshake failed\n");
 		(void)mc_sys_close((mc_i32)fd);
 		return 0;
 	}
-
-	mc_u8 rec[5 + 2048];
-	rec[0] = 22;
-	rec[1] = 0x03;
-	rec[2] = 0x01;
-	rec[3] = (mc_u8)((ch_len >> 8) & 0xFFu);
-	rec[4] = (mc_u8)(ch_len & 0xFFu);
-	mc_memcpy(rec + 5, ch, ch_len);
-	mc_i64 wr = mc_write_all((mc_i32)fd, rec, 5 + ch_len);
-	if (wr < 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	// Read records until ServerHello.
-	mc_u8 rhdr[5];
-	mc_u8 payload[65536];
-	mc_u8 sh_msg[2048];
-	mc_usize sh_len = 0;
-	int got_sh = 0;
-
-	for (int iter = 0; iter < 32; iter++) {
-		if (!read_exact_timeout((mc_i32)fd, rhdr, 5, timeout_ms)) break;
-		mc_u8 rtype = rhdr[0];
-		mc_u16 rlen = (mc_u16)(((mc_u16)rhdr[3] << 8) | (mc_u16)rhdr[4]);
-		if (rlen > sizeof(payload)) break;
-		if (!read_exact_timeout((mc_i32)fd, payload, (mc_usize)rlen, timeout_ms)) break;
-		if (rtype != 22) continue;
-		mc_usize off = 0;
-		while (off + 4 <= (mc_usize)rlen) {
-			mc_u8 ht = payload[off + 0];
-			mc_u32 hl = ((mc_u32)payload[off + 1] << 16) | ((mc_u32)payload[off + 2] << 8) | (mc_u32)payload[off + 3];
-			mc_usize htot = 4u + (mc_usize)hl;
-			if (off + htot > (mc_usize)rlen) break;
-			if (ht == MC_TLS13_HANDSHAKE_SERVER_HELLO) {
-				if (htot > sizeof(sh_msg)) break;
-				mc_memcpy(sh_msg, payload + off, htot);
-				sh_len = htot;
-				got_sh = 1;
-				break;
-			}
-			off += htot;
-		}
-		if (got_sh) break;
-	}
-	if (!got_sh) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	struct mc_tls13_server_hello sh;
-	if (mc_tls13_parse_server_hello(sh_msg, sh_len, &sh) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	struct mc_tls13_transcript t;
-	mc_tls13_transcript_init(&t);
-	mc_tls13_transcript_update(&t, ch, ch_len);
-	mc_tls13_transcript_update(&t, sh_msg, sh_len);
-	mc_u8 chsh_hash[32];
-	mc_tls13_transcript_final(&t, chsh_hash);
-
-	if (sh.key_share_group != MC_TLS13_GROUP_X25519 || sh.key_share_len != 32) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (sh.selected_version != 0x0304) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u8 ecdhe[32];
-	if (mc_x25519_shared(ecdhe, x25519_priv, sh.key_share) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u8 early[32];
-	mc_hkdf_extract(zeros32, sizeof(zeros32), zeros32, sizeof(zeros32), early);
-	mc_u8 derived[32];
-	if (mc_tls13_derive_secret(early, "derived", sha256_empty, derived) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	mc_u8 handshake_secret[32];
-	mc_hkdf_extract(derived, sizeof(derived), ecdhe, sizeof(ecdhe), handshake_secret);
-
-	mc_u8 c_hs[32];
-	mc_u8 s_hs[32];
-	if (mc_tls13_derive_secret(handshake_secret, "c hs traffic", chsh_hash, c_hs) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_derive_secret(handshake_secret, "s hs traffic", chsh_hash, s_hs) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u8 c_key[16];
-	mc_u8 c_iv[12];
-	mc_u8 s_key[16];
-	mc_u8 s_iv[12];
-	if (mc_tls13_hkdf_expand_label(c_hs, "key", MC_NULL, 0, c_key, sizeof(c_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(c_hs, "iv", MC_NULL, 0, c_iv, sizeof(c_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(s_hs, "key", MC_NULL, 0, s_key, sizeof(s_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(s_hs, "iv", MC_NULL, 0, s_iv, sizeof(s_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u64 s_hs_seq = 0;
-	mc_u64 c_hs_seq = 0;
-	int verified_server_finished = 0;
-
-	mc_u8 hs_buf[131072];
-	mc_usize hs_buf_len = 0;
-
-	// Parse encrypted handshake, verify server Finished, then send client Finished.
-	mc_u8 th_post_server_finished[32];
-	int have_th_post_sf = 0;
-	mc_u8 master_secret[32];
-	int have_master = 0;
-
-	for (int iter = 0; iter < 2048; iter++) {
-		mc_usize rlen = 0;
-		if (!record_read((mc_i32)fd, timeout_ms, rhdr, payload, sizeof(payload), &rlen)) break;
-		mc_u8 rtype = rhdr[0];
-		if (rtype == MC_TLS_CONTENT_CHANGE_CIPHER_SPEC) continue;
-		if (rtype == MC_TLS_CONTENT_ALERT) break;
-		if (rtype != MC_TLS_CONTENT_APPLICATION_DATA) continue;
-
-		mc_u8 record[5 + 65536];
-		mc_usize record_len = 5u + rlen;
-		if (record_len > sizeof(record)) break;
-		mc_memcpy(record, rhdr, 5);
-		mc_memcpy(record + 5, payload, rlen);
-
-		mc_u8 inner_type = 0;
-		mc_u8 pt[65536];
-		mc_usize pt_len = 0;
-		if (mc_tls_record_decrypt(s_key, s_iv, s_hs_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) break;
-		s_hs_seq++;
-		if (inner_type != MC_TLS_CONTENT_HANDSHAKE) continue;
-		if (hs_append(hs_buf, sizeof(hs_buf), &hs_buf_len, pt, pt_len) != 0) break;
-
-		for (;;) {
-			mc_u8 msg_type = 0;
-			mc_u32 msg_body_len = 0;
-			mc_u8 msg[65536];
-			mc_usize msg_len = 0;
-			int cr = hs_consume_one(hs_buf, &hs_buf_len, &msg_type, &msg_body_len, msg, sizeof(msg), &msg_len);
-			if (cr == 1) break;
-			if (cr != 0) return 0;
-
-			if (msg_type == 20) {
-				// Server Finished: verify_data uses transcript hash up to (but not including) Finished.
-				mc_u8 th_pre[32];
-				mc_tls13_transcript_final(&t, th_pre);
-
-				mc_u8 s_finished_key[32];
-				if (mc_tls13_finished_key(s_hs, s_finished_key) != 0) return 0;
-				mc_u8 expected_verify[32];
-				mc_tls13_finished_verify_data(s_finished_key, th_pre, expected_verify);
-				mc_memset(s_finished_key, 0, sizeof(s_finished_key));
-
-				if (msg_body_len != 32 || msg_len != 36) return 0;
-				if (mc_memcmp(msg + 4, expected_verify, 32) != 0) return 0;
-
-				verified_server_finished = 1;
-				// Now include ServerFinished in transcript.
-				mc_tls13_transcript_update(&t, msg, msg_len);
-				mc_tls13_transcript_final(&t, th_post_server_finished);
-				have_th_post_sf = 1;
-
-				// Derive master secret now.
-				mc_u8 derived2[32];
-				if (mc_tls13_derive_secret(handshake_secret, "derived", sha256_empty, derived2) != 0) return 0;
-				mc_hkdf_extract(derived2, sizeof(derived2), zeros32, sizeof(zeros32), master_secret);
-				have_master = 1;
-
-				break;
-			}
-
-			mc_tls13_transcript_update(&t, msg, msg_len);
-		}
-
-		if (verified_server_finished) break;
-	}
-
-	if (!verified_server_finished || !have_master || !have_th_post_sf) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	// Send client Finished: verify_data uses transcript hash including ServerFinished.
-	mc_u8 c_finished_key[32];
-	if (mc_tls13_finished_key(c_hs, c_finished_key) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	mc_u8 client_verify[32];
-	mc_tls13_finished_verify_data(c_finished_key, th_post_server_finished, client_verify);
-	mc_memset(c_finished_key, 0, sizeof(c_finished_key));
-
-	mc_u8 fin_msg[4 + 32];
-	fin_msg[0] = 20;
-	fin_msg[1] = 0;
-	fin_msg[2] = 0;
-	fin_msg[3] = 32;
-	mc_memcpy(fin_msg + 4, client_verify, 32);
-
-	mc_u8 enc_fin[5 + 256];
-	mc_usize enc_fin_len = 0;
-	if (mc_tls_record_encrypt(c_key, c_iv, c_hs_seq, MC_TLS_CONTENT_HANDSHAKE, fin_msg, sizeof(fin_msg), enc_fin, sizeof(enc_fin), &enc_fin_len) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	c_hs_seq++;
-	wr = mc_write_all((mc_i32)fd, enc_fin, enc_fin_len);
-	if (wr < 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	// Derive application traffic keys.
-	// In practice (and per our working tls13 hs), application traffic secrets are
-	// derived from the transcript hash after ServerFinished.
-	mc_tls13_transcript_update(&t, fin_msg, sizeof(fin_msg));
-
-	mc_u8 c_ap_traffic[32];
-	mc_u8 s_ap_traffic[32];
-	if (mc_tls13_derive_secret(master_secret, "c ap traffic", th_post_server_finished, c_ap_traffic) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_derive_secret(master_secret, "s ap traffic", th_post_server_finished, s_ap_traffic) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u8 c_ap_key[16];
-	mc_u8 c_ap_iv[12];
-	mc_u8 s_ap_key[16];
-	mc_u8 s_ap_iv[12];
-	if (mc_tls13_hkdf_expand_label(c_ap_traffic, "key", MC_NULL, 0, c_ap_key, sizeof(c_ap_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(c_ap_traffic, "iv", MC_NULL, 0, c_ap_iv, sizeof(c_ap_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(s_ap_traffic, "key", MC_NULL, 0, s_ap_key, sizeof(s_ap_key)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-	if (mc_tls13_hkdf_expand_label(s_ap_traffic, "iv", MC_NULL, 0, s_ap_iv, sizeof(s_ap_iv)) != 0) {
-		(void)mc_sys_close((mc_i32)fd);
-		return 0;
-	}
-
-	mc_u64 c_ap_seq = 0;
-	mc_u64 s_ap_seq = 0;
+	if (verbose) (void)mc_write_str(2, "wtf: tls handshake ok\n");
 
 	// Send HTTP/1.1 request.
 	char req[4096];
@@ -1200,52 +950,30 @@ static int https_get_raw(const char *argv0, const char *host, const char *path, 
 		req_len += l2;
 	}
 
-	mc_u8 req_record[5 + 4096 + 64];
-	mc_usize req_record_len = 0;
-	if (mc_tls_record_encrypt(c_ap_key, c_ap_iv, c_ap_seq, MC_TLS_CONTENT_APPLICATION_DATA, (const mc_u8 *)req, req_len, req_record,
-		sizeof(req_record), &req_record_len) != 0) {
+	if (mc_tls13_client_write_app(&c, (const mc_u8 *)req, req_len) < 0) {
+		if (verbose) (void)mc_write_str(2, "wtf: tls write_app failed\n");
 		(void)mc_sys_close((mc_i32)fd);
 		return 0;
 	}
-	c_ap_seq++;
-	wr = mc_write_all((mc_i32)fd, req_record, req_record_len);
-	if (wr < 0) {
+	if (verbose) (void)mc_write_str(2, "wtf: sent http request\n");
+
+	for (;;) {
+		mc_u8 buf[8192];
+		mc_i64 rn = mc_tls13_client_read_app(&c, buf, sizeof(buf));
+		if (rn > 0) {
+			mc_usize n = (mc_usize)rn;
+			if (*out_len + n > out_cap) {
+				(void)mc_sys_close((mc_i32)fd);
+				return 0;
+			}
+			mc_memcpy(out + *out_len, buf, n);
+			*out_len += n;
+			continue;
+		}
+		if (rn == 0) break;
+		if (verbose) (void)mc_write_str(2, "wtf: tls read_app failed\n");
 		(void)mc_sys_close((mc_i32)fd);
 		return 0;
-	}
-
-	// Read application data until close.
-	for (int iter = 0; iter < 8192; iter++) {
-		mc_usize rlen = 0;
-		if (!record_read((mc_i32)fd, timeout_ms, rhdr, payload, sizeof(payload), &rlen)) {
-			break;
-		}
-		mc_u8 rtype = rhdr[0];
-		if (rtype == MC_TLS_CONTENT_CHANGE_CIPHER_SPEC) continue;
-		if (rtype == MC_TLS_CONTENT_ALERT) break;
-		if (rtype != MC_TLS_CONTENT_APPLICATION_DATA) continue;
-
-		mc_u8 record[5 + 65536];
-		mc_usize record_len = 5u + rlen;
-		if (record_len > sizeof(record)) break;
-		mc_memcpy(record, rhdr, 5);
-		mc_memcpy(record + 5, payload, rlen);
-
-		mc_u8 inner_type = 0;
-		mc_u8 pt[65536];
-		mc_usize pt_len = 0;
-		if (mc_tls_record_decrypt(s_ap_key, s_ap_iv, s_ap_seq, record, record_len, &inner_type, pt, sizeof(pt), &pt_len) != 0) {
-			break;
-		}
-		s_ap_seq++;
-		if (inner_type != MC_TLS_CONTENT_APPLICATION_DATA) continue;
-
-		if (*out_len + pt_len > out_cap) {
-			(void)mc_sys_close((mc_i32)fd);
-			return 0;
-		}
-		mc_memcpy(out + *out_len, pt, pt_len);
-		*out_len += pt_len;
 	}
 
 	(void)mc_sys_close((mc_i32)fd);
@@ -1253,7 +981,7 @@ static int https_get_raw(const char *argv0, const char *host, const char *path, 
 	return 1;
 }
 
-static int wiki_get_summary(const char *argv0, const char *lang, const char *title, mc_u32 timeout_ms, char *out, mc_usize cap, int *out_status) {
+static int wiki_get_summary(const char *argv0, const char *lang, const char *title, mc_u32 timeout_ms, int verbose, char *out, mc_usize cap, int *out_status) {
 	char host[64];
 	if (!cstr_cat2(host, sizeof(host), lang, ".wikipedia.org")) return -1;
 	char enc_title[256];
@@ -1263,7 +991,7 @@ static int wiki_get_summary(const char *argv0, const char *lang, const char *tit
 
 	static char resp[262144];
 	mc_usize rn = 0;
-	if (!https_get_raw(argv0, host, path, timeout_ms, resp, sizeof(resp) - 1u, &rn)) return -1;
+	if (!https_get_raw(argv0, host, path, timeout_ms, verbose, resp, sizeof(resp) - 1u, &rn)) return -1;
 
 	// Split headers/body
 	mc_usize hdr_end = 0;
@@ -1306,7 +1034,7 @@ static int wiki_get_summary(const char *argv0, const char *lang, const char *tit
 	return 1;
 }
 
-static int wiki_search(const char *argv0, const char *lang, const char *query, mc_u32 timeout_ms, char *out_title, mc_usize cap) {
+static int wiki_search(const char *argv0, const char *lang, const char *query, mc_u32 timeout_ms, int verbose, char *out_title, mc_usize cap) {
 	char host[64];
 	if (!cstr_cat2(host, sizeof(host), lang, ".wikipedia.org")) return 0;
 	char enc_q[256];
@@ -1316,7 +1044,7 @@ static int wiki_search(const char *argv0, const char *lang, const char *query, m
 
 	static char resp[262144];
 	mc_usize rn = 0;
-	if (!https_get_raw(argv0, host, path, timeout_ms, resp, sizeof(resp) - 1u, &rn)) return 0;
+	if (!https_get_raw(argv0, host, path, timeout_ms, verbose, resp, sizeof(resp) - 1u, &rn)) return 0;
 
 	mc_usize hdr_end = 0;
 	for (mc_usize i = 0; i + 3 < rn; i++) {
@@ -1363,16 +1091,28 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 
 	char extract[32768];
 	int status = 0;
-	int rc = wiki_get_summary(argv0, opts.lang, opts.query, opts.timeout_ms, extract, sizeof(extract), &status);
+	int rc = wiki_get_summary(argv0, opts.lang, opts.query, opts.timeout_ms, opts.verbose, extract, sizeof(extract), &status);
 	if (rc == 0) {
 		char found[256];
-		if (wiki_search(argv0, opts.lang, opts.query, opts.timeout_ms, found, sizeof(found))) {
-			rc = wiki_get_summary(argv0, opts.lang, found, opts.timeout_ms, extract, sizeof(extract), &status);
+		if (wiki_search(argv0, opts.lang, opts.query, opts.timeout_ms, opts.verbose, found, sizeof(found))) {
+			rc = wiki_get_summary(argv0, opts.lang, found, opts.timeout_ms, opts.verbose, extract, sizeof(extract), &status);
 		}
 	}
 
 	if (rc <= 0) {
 		(void)mc_write_str(2, argv0);
+		if (rc < 0) {
+			(void)mc_write_str(2, ": request failed");
+			if (status != 0) {
+				(void)mc_write_str(2, " (http ");
+				char sbuf[16];
+				mc_usize n = fmt_u32_dec((mc_u32)status, sbuf, sizeof(sbuf));
+				if (n) (void)mc_sys_write(2, sbuf, n);
+				(void)mc_write_str(2, ")");
+			}
+			(void)mc_write_str(2, "\n");
+			return 2;
+		}
 		(void)mc_write_str(2, ": not found\n");
 		return 1;
 	}

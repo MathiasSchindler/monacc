@@ -11,10 +11,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	mc_i64 n = mc_sys_getcwd(buf, (mc_usize)sizeof(buf));
 	if (n < 0) {
 		// Keep behavior simple: nonzero exit on failure.
-		(void)mc_syscall1(MC_SYS_exit_group, 1);
-		for (;;) {
-			__asm__ volatile("hlt");
-		}
+		mc_exit(1);
 	}
 
 	// Linux getcwd returns the number of bytes written, including the NUL.
@@ -26,10 +23,7 @@ __attribute__((used)) int main(int argc, char **argv, char **envp) {
 	while (off < len) {
 		mc_i64 w = mc_sys_write(1, p + off, len - off);
 		if (w <= 0) {
-			(void)mc_syscall1(MC_SYS_exit_group, 1);
-			for (;;) {
-				__asm__ volatile("hlt");
-			}
+			mc_exit(1);
 		}
 		off += (mc_usize)w;
 	}

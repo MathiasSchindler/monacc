@@ -10,8 +10,10 @@
 
 // Minimal sys/types subset (avoid pulling in <sys/types.h>).
 // Prefer mc_usize/mc_isize directly in the compiler.
+#if !MC_OS_DARWIN
 typedef int pid_t;
 typedef unsigned int mode_t;
+#endif
 
 // Minimal stdint subset (avoid pulling in <stdint.h>).
 // monacc targets Linux x86_64 (LP64).

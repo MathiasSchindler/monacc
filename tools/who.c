@@ -27,7 +27,7 @@ struct who_utmp {
 	mc_i32 ut_session;
 	struct who_timeval ut_tv;
 	mc_i32 ut_addr_v6[4];
-	char __unused[20];
+	char mc__unused[20];
 };
 
 static mc_usize who_cstrnlen(const char *s, mc_usize max) {

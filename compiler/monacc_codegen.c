@@ -4760,3 +4760,2952 @@ void emit_x86_64_sysv_freestanding(const Program *prg, Str *out) {
     emit_x86_64_sysv_freestanding_with_start(prg, out, 1);
 }
 
+// ===== AArch64 Darwin hosted (bring-up) =====
+
+static int a64_expr_contains_call(const Expr *e) {
+    if (!e) return 0;
+    if (e->kind == EXPR_CALL) return 1;
+    if (a64_expr_contains_call(e->lhs)) return 1;
+    if (a64_expr_contains_call(e->rhs)) return 1;
+    if (a64_expr_contains_call(e->third)) return 1;
+    for (int i = 0; i < e->nargs; i++) {
+        if (a64_expr_contains_call(e->args[i])) return 1;
+    }
+    for (int i = 0; i < e->ninits; i++) {
+        if (e->inits && a64_expr_contains_call(e->inits[i].value)) return 1;
+    }
+    return 0;
+}
+
+static void a64_mov_w_imm(Str *out, const char *wreg, long long v) {
+    // Materialize a 32-bit value into a named W register (w0..w31).
+    mc_u32 u = (mc_u32)(mc_u64)v;
+    mc_u32 lo = u & 0xffffu;
+    mc_u32 hi = (u >> 16) & 0xffffu;
+
+    str_appendf(out, "  movz ");
+    str_appendf_s(out, "%s", wreg);
+    str_appendf(out, ", #");
+    str_appendf_i64(out, "%d", (long long)lo);
+    str_appendf(out, "\n");
+    if (hi) {
+        str_appendf(out, "  movk ");
+        str_appendf_s(out, "%s", wreg);
+        str_appendf(out, ", #");
+        str_appendf_i64(out, "%d", (long long)hi);
+        str_appendf(out, ", lsl #16\n");
+    }
+}
+
+static void a64_mov_x_imm(Str *out, const char *xreg, long long v) {
+    // Materialize a 64-bit value into a named X register (x0..x31).
+    mc_u64 u = (mc_u64)v;
+    mc_u64 w0 = u & 0xffffULL;
+    mc_u64 w1 = (u >> 16) & 0xffffULL;
+    mc_u64 w2 = (u >> 32) & 0xffffULL;
+    mc_u64 w3 = (u >> 48) & 0xffffULL;
+
+    str_appendf(out, "  movz ");
+    str_appendf_s(out, "%s", xreg);
+    str_appendf(out, ", #");
+    str_appendf_i64(out, "%d", (long long)w0);
+    str_appendf(out, "\n");
+
+    if (w1) {
+        str_appendf(out, "  movk ");
+        str_appendf_s(out, "%s", xreg);
+        str_appendf(out, ", #");
+        str_appendf_i64(out, "%d", (long long)w1);
+        str_appendf(out, ", lsl #16\n");
+    }
+    if (w2) {
+        str_appendf(out, "  movk ");
+        str_appendf_s(out, "%s", xreg);
+        str_appendf(out, ", #");
+        str_appendf_i64(out, "%d", (long long)w2);
+        str_appendf(out, ", lsl #32\n");
+    }
+    if (w3) {
+        str_appendf(out, "  movk ");
+        str_appendf_s(out, "%s", xreg);
+        str_appendf(out, ", #");
+        str_appendf_i64(out, "%d", (long long)w3);
+        str_appendf(out, ", lsl #48\n");
+    }
+}
+
+static void a64_addr_of_local_off(Str *out, const char *dst_x, int off);
+
+static void a64_stur_w_off(Str *out, const char *wreg, int off) {
+    // Use unscaled signed 9-bit offset addressing for simplicity.
+    if (off < -256 || off > 255) {
+        a64_addr_of_local_off(out, "x10", off);
+        str_appendf(out, "  str ");
+        str_appendf_s(out, "%s", wreg);
+        str_appendf(out, ", [x10]\n");
+        return;
+    }
+    str_appendf(out, "  stur ");
+    str_appendf_s(out, "%s", wreg);
+    str_appendf(out, ", [x29, #");
+    str_appendf_i64(out, "%d", (long long)off);
+    str_appendf(out, "]\n");
+}
+
+static void a64_ldur_w_off(Str *out, const char *wreg, int off) {
+    if (off < -256 || off > 255) {
+        a64_addr_of_local_off(out, "x10", off);
+        str_appendf(out, "  ldr ");
+        str_appendf_s(out, "%s", wreg);
+        str_appendf(out, ", [x10]\n");
+        return;
+    }
+    str_appendf(out, "  ldur ");
+    str_appendf_s(out, "%s", wreg);
+    str_appendf(out, ", [x29, #");
+    str_appendf_i64(out, "%d", (long long)off);
+    str_appendf(out, "]\n");
+}
+
+static void a64_stur_x_off(Str *out, const char *xreg, int off) {
+    if (off < -256 || off > 255) {
+        a64_addr_of_local_off(out, "x10", off);
+        str_appendf(out, "  str ");
+        str_appendf_s(out, "%s", xreg);
+        str_appendf(out, ", [x10]\n");
+        return;
+    }
+    str_appendf(out, "  stur ");
+    str_appendf_s(out, "%s", xreg);
+    str_appendf(out, ", [x29, #");
+    str_appendf_i64(out, "%d", (long long)off);
+    str_appendf(out, "]\n");
+}
+
+static void a64_ldur_x_off(Str *out, const char *xreg, int off) {
+    if (off < -256 || off > 255) {
+        a64_addr_of_local_off(out, "x10", off);
+        str_appendf(out, "  ldr ");
+        str_appendf_s(out, "%s", xreg);
+        str_appendf(out, ", [x10]\n");
+        return;
+    }
+    str_appendf(out, "  ldur ");
+    str_appendf_s(out, "%s", xreg);
+    str_appendf(out, ", [x29, #");
+    str_appendf_i64(out, "%d", (long long)off);
+    str_appendf(out, "]\n");
+}
+
+static void a64_addr_of_sym(Str *out, const char *dst_x, const char *sym_with_underscore) {
+    // Mach-O: use @PAGE/@PAGEOFF relocations.
+    str_appendf(out, "  adrp ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", sym_with_underscore);
+    str_appendf(out, "@PAGE\n");
+    str_appendf(out, "  add ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", sym_with_underscore);
+    str_appendf(out, "@PAGEOFF\n");
+}
+
+static void a64_addr_of_str_id(Str *out, const char *dst_x, int str_id) {
+    // Mach-O: use @PAGE/@PAGEOFF relocations (works with Apple as).
+    str_appendf(out, "  adrp ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", .Ldar_str");
+    str_appendf_i64(out, "%d", (long long)str_id);
+    str_appendf(out, "@PAGE\n");
+    str_appendf(out, "  add ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", dst_x);
+    str_appendf(out, ", .Ldar_str");
+    str_appendf_i64(out, "%d", (long long)str_id);
+    str_appendf(out, "@PAGEOFF\n");
+}
+
+static void a64_addr_of_local_off(Str *out, const char *dst_x, int off) {
+    if (off == 0) die("aarch64-darwin: local offset 0 unexpected");
+    // Compute dst_x = x29 + off. `add/sub` immediates are 12-bit unsigned.
+    int a = off < 0 ? -off : off;
+    if (a > 4095) {
+        a64_mov_x_imm(out, "x11", a);
+        str_appendf(out, "  ");
+        str_appendf_s(out, "%s", off > 0 ? "add" : "sub");
+        str_appendf(out, " ");
+        str_appendf_s(out, "%s", dst_x);
+        str_appendf(out, ", x29, x11\n");
+        return;
+    }
+    if (off > 0) {
+        str_appendf(out, "  add ");
+        str_appendf_s(out, "%s", dst_x);
+        str_appendf(out, ", x29, #");
+        str_appendf_i64(out, "%d", (long long)off);
+        str_appendf(out, "\n");
+    } else {
+        str_appendf(out, "  sub ");
+        str_appendf_s(out, "%s", dst_x);
+        str_appendf(out, ", x29, #");
+        str_appendf_i64(out, "%d", (long long)(-off));
+        str_appendf(out, "\n");
+    }
+}
+
+static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x);
+static void a64_eval_expr_as_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x);
+static const char *a64_pick_x_scratch3(const char *preferred, const char *avoid1, const char *avoid2, const char *avoid3);
+static const char *a64_xreg_to_wreg(const char *xreg);
+
+static int a64_expr_is_64bit(const Expr *e);
+static const char *a64_pick_x_scratch3(const char *preferred, const char *avoid1, const char *avoid2, const char *avoid3);
+
+// Expression labels are defined later; forward declare so a64_eval_expr_x can use them.
+static int a64_new_elabel(void);
+static void a64_elabel_def(Str *out, int id);
+static void a64_eb_label(Str *out, int id);
+static void a64_cbz_elabel(Str *out, const char *wreg, int id);
+static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_w, const char *tmp_w);
+
+static void a64_lval_addr_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x) {
+    (void)fn;
+    if (!e) die("aarch64-darwin: lvalue addr missing expr");
+    switch (e->kind) {
+        case EXPR_VAR:
+            a64_addr_of_local_off(out, dst_x, e->var_offset);
+            return;
+        case EXPR_COMPOUND:
+            // Compound literals/temporaries are stored in stack slots like locals,
+            // but unlike plain locals they may require runtime initialization.
+            // The x86 backend initializes EXPR_COMPOUND here; mirror that behavior
+            // so patterns like `struct S s = (struct S){0};` work correctly.
+            a64_addr_of_local_off(out, dst_x, e->var_offset);
+
+            if (e->lval_size <= 0) die("aarch64-darwin: compound lval_size missing");
+
+            // Zero-init the object if requested.
+            if (e->init_zero) {
+                const char *ptr_x = tmp_x;
+                if (mc_strcmp(ptr_x, dst_x) == 0) ptr_x = "x15";
+
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", ptr_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, "\n");
+
+                a64_mov_w_imm(out, "w14", e->lval_size);
+                int l_loop = a64_new_elabel();
+                int l_done = a64_new_elabel();
+                a64_elabel_def(out, l_loop);
+                a64_cbz_elabel(out, "w14", l_done);
+                str_appendf(out, "  strb wzr, [");
+                str_appendf_s(out, "%s", ptr_x);
+                str_appendf(out, "], #1\n");
+                str_appendf(out, "  sub w14, w14, #1\n");
+                a64_eb_label(out, l_loop);
+                a64_elabel_def(out, l_done);
+            }
+
+            // Apply sparse initializers.
+            for (int i = 0; i < e->ninits; i++) {
+                const InitEnt *in = &e->inits[i];
+                if (in->store_size != 1 && in->store_size != 4 && in->store_size != 8) {
+                    die("aarch64-darwin: compound init store_size unsupported");
+                }
+                if (!in->value) die("aarch64-darwin: compound init missing value");
+
+                // Evaluate value first (may clobber caller-saved registers).
+                if (in->store_size == 8 || in->value->ptr != 0 || in->value->lval_size == 8) {
+                    a64_eval_expr_x(out, prg, fn, in->value, "x9", "x10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, in->value, "w9", "w10");
+                }
+
+                // Recompute base address and store at (base + off).
+                a64_addr_of_local_off(out, dst_x, e->var_offset);
+                if (in->off) {
+                    if (in->off > 0 && in->off < 4096) {
+                        str_appendf(out, "  add ");
+                        str_appendf_s(out, "%s", dst_x);
+                        str_appendf(out, ", ");
+                        str_appendf_s(out, "%s", dst_x);
+                        str_appendf(out, ", #");
+                        str_appendf_i64(out, "%d", (long long)in->off);
+                        str_appendf(out, "\n");
+                    } else {
+                        a64_mov_x_imm(out, tmp_x, in->off);
+                        str_appendf(out, "  add ");
+                        str_appendf_s(out, "%s", dst_x);
+                        str_appendf(out, ", ");
+                        str_appendf_s(out, "%s", dst_x);
+                        str_appendf(out, ", ");
+                        str_appendf_s(out, "%s", tmp_x);
+                        str_appendf(out, "\n");
+                    }
+                }
+
+                if (in->store_size == 1) {
+                    str_appendf(out, "  strb w9, [");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, "]\n");
+                } else if (in->store_size == 4) {
+                    str_appendf(out, "  str w9, [");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, "]\n");
+                } else {
+                    str_appendf(out, "  str x9, [");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, "]\n");
+                }
+            }
+
+            // Return base address.
+            a64_addr_of_local_off(out, dst_x, e->var_offset);
+            return;
+        case EXPR_GLOBAL: {
+            if (!prg) die("internal: aarch64-darwin: global addr needs program");
+            if (e->global_id < 0 || e->global_id >= prg->nglobals) die("aarch64-darwin: bad global id");
+            const GlobalVar *gv = &prg->globals[e->global_id];
+            char sym[160];
+            sym[0] = '_';
+            mc_usize n = mc_strlen(gv->name);
+            if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
+            mc_memcpy(sym + 1, gv->name, n + 1);
+            a64_addr_of_sym(out, dst_x, sym);
+            return;
+        }
+        case EXPR_INDEX: {
+            // Address of base[index]. Base must be a pointer value.
+            if (!e->lhs || !e->rhs) die("aarch64-darwin: index missing operand");
+            if (e->ptr_scale <= 0) die("aarch64-darwin: index missing ptr_scale");
+
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+
+            // Preserve the base pointer across index evaluation.
+            // The RHS can contain indexed loads/stores, and the 32-bit evaluator
+            // uses x12/x13 as scratch for address computation (clobbering many
+            // caller-provided dst_x choices).
+            str_appendf(out, "  sub sp, sp, #16\n");
+            str_appendf(out, "  str ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", [sp]\n");
+
+            // Choose a scratch register for the scaled index that doesn't alias dst_x.
+            // This is important when the caller asks for the address in x9 (common
+            // for call argument evaluation) because using x9 as a scratch would
+            // clobber the base address.
+            const char *idx_x = "x14";
+            const char *idx_w = "w14";
+            if (mc_strcmp(dst_x, "x14") == 0 || mc_strcmp(tmp_x, "x14") == 0) {
+                idx_x = "x15";
+                idx_w = "w15";
+            }
+            if (mc_strcmp(dst_x, idx_x) == 0 || mc_strcmp(tmp_x, idx_x) == 0) {
+                idx_x = "x11";
+                idx_w = "w11";
+            }
+
+            // Evaluate index and extend to 64-bit.
+            // Important: do not use a tmp W register that aliases dst_x.
+            // Example: if dst_x==x10 and tmp_w==w10, any tmp_w write will clobber dst_x.
+            const char *tmp_w = "w10";
+            if (mc_strcmp(dst_x, "x10") == 0) tmp_w = "w11";
+            else if (mc_strcmp(dst_x, "x11") == 0) tmp_w = "w10";
+            a64_eval_expr_w(out, prg, fn, e->rhs, idx_w, tmp_w);
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", e->rhs->is_unsigned ? "uxtw" : "sxtw");
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", idx_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", idx_w);
+            str_appendf(out, "\n");
+
+            // Reload base pointer.
+            str_appendf(out, "  ldr ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", [sp]\n");
+            str_appendf(out, "  add sp, sp, #16\n");
+
+            int scale = e->ptr_scale;
+            if (scale < 0) scale = -scale;
+            if (scale == 0) scale = 1;
+            if (scale == 1) {
+                // no-op
+            } else if (scale == 2) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #1\n");
+            } else if (scale == 4) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #2\n");
+            } else if (scale == 8) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #3\n");
+            } else {
+                a64_mov_x_imm(out, tmp_x, scale);
+                str_appendf(out, "  mul ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_x);
+                str_appendf(out, "\n");
+            }
+
+            str_appendf(out, "  add ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", idx_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_DEREF:
+            // Address of *p is just p.
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            return;
+        case EXPR_MEMBER: {
+            if (!e->lhs) die("aarch64-darwin: member missing base");
+            if (e->member_is_arrow) {
+                // base->field: base is a pointer value.
+                a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            } else {
+                // base.field: base is a struct lvalue.
+                a64_lval_addr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            }
+
+            int off = e->member_off;
+            if (off == 0) return;
+            if (off > 0 && off < 4096) {
+                str_appendf(out, "  add ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", #");
+                str_appendf_i64(out, "%d", (long long)off);
+                str_appendf(out, "\n");
+                return;
+            }
+            a64_mov_x_imm(out, tmp_x, off);
+            str_appendf(out, "  add ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", tmp_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        default:
+            die("aarch64-darwin: unsupported lvalue kind for address computation");
+    }
+}
+
+static void a64_binop_rrr(Str *out, const char *op, const char *dst, const char *lhs, const char *rhs) {
+    // Emit: op dst, lhs, rhs
+    str_appendf(out, "  ");
+    str_appendf_s(out, "%s", op);
+    str_appendf(out, " ");
+    str_appendf_s(out, "%s", dst);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", lhs);
+    str_appendf(out, ", ");
+    str_appendf_s(out, "%s", rhs);
+    str_appendf(out, "\n");
+}
+
+static void a64_load_scalar_w_from_addr(Str *out, const char *dst_w, const char *addr_x, int sz, int is_unsigned) {
+    // Load a scalar of size 1/2/4 from [addr_x] into dst_w.
+    // For 1/2 bytes, sign/zero extend to 32-bit.
+    if (sz == 1) {
+        str_appendf(out, "  ");
+        str_appendf_s(out, "%s", is_unsigned ? "ldrb" : "ldrsb");
+        str_appendf(out, " ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 2) {
+        str_appendf(out, "  ");
+        str_appendf_s(out, "%s", is_unsigned ? "ldrh" : "ldrsh");
+        str_appendf(out, " ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 4) {
+        str_appendf(out, "  ldr ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    die("aarch64-darwin: scalar load size not supported yet");
+}
+
+static void a64_store_scalar_w_to_addr(Str *out, const char *src_w, const char *addr_x, int sz) {
+    // Store low bits of src_w into [addr_x] with size 1/2/4.
+    if (sz == 1) {
+        str_appendf(out, "  strb ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 2) {
+        str_appendf(out, "  strh ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    if (sz == 4) {
+        str_appendf(out, "  str ");
+        str_appendf_s(out, "%s", src_w);
+        str_appendf(out, ", [");
+        str_appendf_s(out, "%s", addr_x);
+        str_appendf(out, "]\n");
+        return;
+    }
+    die("aarch64-darwin: scalar store size not supported yet");
+}
+
+static void a64_normalize_small_int_w(Str *out, const char *wreg, int sz, int is_unsigned) {
+    // Normalize a value to behave like it was stored as a sz-byte integer and reloaded.
+    if (sz == 1) {
+        if (is_unsigned) {
+            str_appendf(out, "  and ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", #0xff\n");
+        } else {
+            str_appendf(out, "  sxtb ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, "\n");
+        }
+        return;
+    }
+    if (sz == 2) {
+        if (is_unsigned) {
+            str_appendf(out, "  and ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", #0xffff\n");
+        } else {
+            str_appendf(out, "  sxth ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", wreg);
+            str_appendf(out, "\n");
+        }
+        return;
+    }
+    if (sz == 4) {
+        return;
+    }
+    die("aarch64-darwin: normalize size not supported yet");
+}
+
+static void a64_eval_expr_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x) {
+    (void)fn;
+    (void)tmp_x;
+    if (!e) {
+        a64_mov_x_imm(out, dst_x, 0);
+        return;
+    }
+    switch (e->kind) {
+        case EXPR_MEMCPY: {
+            // Struct/aggregate copy: memcpy-like side effect.
+            int sz = e->lval_size;
+            if (sz <= 0) die("aarch64-darwin: memcpy size %d", sz);
+            if (!e->lhs || !e->rhs) die("aarch64-darwin: memcpy missing operands");
+
+            // dst in x12, src in x13, count in w14, byte in w15.
+            a64_lval_addr_x(out, prg, fn, e->lhs, "x12", tmp_x);
+            a64_lval_addr_x(out, prg, fn, e->rhs, "x13", tmp_x);
+            a64_mov_w_imm(out, "w14", sz);
+            int l_loop = a64_new_elabel();
+            int l_done = a64_new_elabel();
+            a64_elabel_def(out, l_loop);
+            a64_cbz_elabel(out, "w14", l_done);
+            str_appendf(out, "  ldrb w15, [x13], #1\n");
+            str_appendf(out, "  strb w15, [x12], #1\n");
+            str_appendf(out, "  sub w14, w14, #1\n");
+            a64_eb_label(out, l_loop);
+            a64_elabel_def(out, l_done);
+            a64_mov_x_imm(out, dst_x, 0);
+            return;
+        }
+        case EXPR_CAST: {
+            const Expr *op = e->lhs ? e->lhs : e->rhs;
+            if (!op) die("aarch64-darwin: cast missing operand");
+
+            if (e->base == BT_VOID && e->ptr == 0) {
+                // Evaluate for side effects, discard.
+                if (a64_expr_is_64bit(op)) {
+                    a64_eval_expr_x(out, prg, fn, op, "x9", "x10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, op, "w9", "w10");
+                }
+                a64_mov_x_imm(out, dst_x, 0);
+                return;
+            }
+
+            if (a64_expr_is_64bit(e)) {
+                a64_eval_expr_x(out, prg, fn, op, dst_x, tmp_x);
+                return;
+            }
+
+            // Cast to 32-bit in an x-context: extend according to signedness.
+            a64_eval_expr_w(out, prg, fn, op, "w9", "w10");
+            if (e->is_unsigned) {
+                str_appendf(out, "  uxtw ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", w9\n");
+            } else {
+                str_appendf(out, "  sxtw ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", w9\n");
+            }
+            return;
+        }
+        case EXPR_POS:
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            return;
+        case EXPR_NEG:
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            str_appendf(out, "  neg ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, "\n");
+            return;
+        case EXPR_NOT:
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            // Logical not: dst = (dst == 0) ? 1 : 0
+            str_appendf(out, "  cmp ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", #0\n");
+            str_appendf(out, "  cset ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", eq\n");
+            return;
+        case EXPR_BNOT:
+            a64_eval_expr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            str_appendf(out, "  mvn ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, "\n");
+            return;
+        case EXPR_CALL: {
+            // Direct calls with scalar args.
+            if (!e->callee[0]) die("aarch64-darwin: call with empty callee");
+            if (e->nargs < 0) die("aarch64-darwin: call nargs negative");
+            // IMPORTANT: monacc's front-end currently binds parameters using a SysV-like
+            // convention with up to 6 integer/pointer registers. Keep the aarch64-darwin
+            // backend consistent: use x0..x5, spill remaining args to the stack.
+            // This ensures functions with >6 parameters (e.g. tools/ls.c: ls_dir) receive
+            // their stack arguments at +16(fp), matching parser-assigned offsets.
+            if (e->nargs > 32) die("aarch64-darwin: calls with >32 args not supported yet");
+            static const char *areg_x[6] = {"x0", "x1", "x2", "x3", "x4", "x5"};
+
+            int nreg = e->nargs;
+            if (nreg > 6) nreg = 6;
+            int nstack = e->nargs - nreg;
+
+            int spill = e->nargs * 8;
+            spill = (spill + 15) & ~15;
+            if (spill) {
+                str_appendf(out, "  sub sp, sp, #");
+                str_appendf_i64(out, "%d", (long long)spill);
+                str_appendf(out, "\n");
+            }
+
+            for (int i = 0; i < e->nargs; i++) {
+                if (!e->args || !e->args[i]) {
+                    die("aarch64-darwin: call arg missing");
+                }
+                if (e->args[i]->ptr != 0 || e->args[i]->lval_size == 8) {
+                    a64_eval_expr_x(out, prg, fn, e->args[i], "x9", "x10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->args[i], "w9", "w10");
+                    str_appendf(out, "  ");
+                    str_appendf_s(out, "%s", e->args[i]->is_unsigned ? "uxtw" : "sxtw");
+                    str_appendf(out, " x9, w9\n");
+                }
+                // Layout:
+                // - stack args (arg6+) at [sp + 0 .. (nstack-1)*8]
+                // - reg args (arg0..arg5) at [sp + nstack*8 ..]
+                int off = (i < nreg) ? ((nstack + i) * 8) : ((i - nreg) * 8);
+                str_appendf(out, "  str x9, [sp, #");
+                str_appendf_i64(out, "%d", (long long)off);
+                str_appendf(out, "]\n");
+            }
+
+            for (int i = 0; i < nreg; i++) {
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", areg_x[i]);
+                str_appendf(out, ", [sp, #");
+                str_appendf_i64(out, "%d", (long long)((nstack + i) * 8));
+                str_appendf(out, "]\n");
+            }
+
+            str_appendf(out, "  bl _");
+            str_appendf_s(out, "%s", e->callee);
+            str_appendf(out, "\n");
+
+            if (spill) {
+                str_appendf(out, "  add sp, sp, #");
+                str_appendf_i64(out, "%d", (long long)spill);
+                str_appendf(out, "\n");
+            }
+
+            if (mc_strcmp(dst_x, "x0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", x0\n");
+            }
+            return;
+        }
+        case EXPR_PREINC:
+        case EXPR_PREDEC:
+        case EXPR_POSTINC:
+        case EXPR_POSTDEC: {
+            if (!e->lhs) die("aarch64-darwin: ++/-- missing lhs");
+            int sz = e->lval_size ? e->lval_size : e->lhs->lval_size;
+            if (sz != 8) {
+                die("aarch64-darwin: 64-bit ++/-- only supported for 8-byte lvalues");
+            }
+
+            a64_lval_addr_x(out, prg, fn, e->lhs, "x10", tmp_x);
+            str_appendf(out, "  ldr x0, [x10]\n");
+
+            long long delta = (long long)(e->post_delta > 0 ? e->post_delta : 1);
+            if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+            if (delta >= -4095 && delta <= 4095) {
+                if (delta >= 0) {
+                    str_appendf(out, "  add x9, x0, #");
+                    str_appendf_i64(out, "%d", delta);
+                    str_appendf(out, "\n");
+                } else {
+                    str_appendf(out, "  sub x9, x0, #");
+                    str_appendf_i64(out, "%d", -delta);
+                    str_appendf(out, "\n");
+                }
+            } else {
+                a64_mov_x_imm(out, "x9", delta);
+                str_appendf(out, "  add x9, x0, x9\n");
+            }
+
+            str_appendf(out, "  str x9, [x10]\n");
+
+            if (e->kind == EXPR_PREINC || e->kind == EXPR_PREDEC) {
+                if (mc_strcmp(dst_x, "x9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, ", x9\n");
+                }
+                return;
+            }
+
+            if (mc_strcmp(dst_x, "x0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", x0\n");
+            }
+            return;
+        }
+        case EXPR_ADD:
+        case EXPR_SUB: {
+            // Pointer arithmetic bring-up: pointer +/- int (parser provides ptr_scale + ptr_index_side).
+            // Also support plain 64-bit integer add/sub (needed for size_t math).
+            if (e->ptr_scale <= 0 || e->ptr <= 0) {
+                int lhs_call = a64_expr_contains_call(e->lhs);
+                int rhs_call = a64_expr_contains_call(e->rhs);
+                if (lhs_call && rhs_call) {
+                    die("aarch64-darwin: 64-bit binop with calls on both sides not supported yet");
+                }
+                const char *rhs_x = tmp_x;
+                if (mc_strcmp(rhs_x, dst_x) == 0) {
+                    rhs_x = a64_pick_x_scratch3("x11", dst_x, tmp_x, NULL);
+                }
+
+                const char *lhs_scratch_x = a64_pick_x_scratch3("x10", dst_x, rhs_x, NULL);
+                const char *rhs_scratch_x = a64_pick_x_scratch3("x11", dst_x, rhs_x, lhs_scratch_x);
+
+                if (!lhs_call && rhs_call) {
+                    a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+                    a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+                } else {
+                    a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+                    a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+                }
+
+                str_appendf(out, "  ");
+                str_appendf_s(out, "%s", (e->kind == EXPR_ADD) ? "add" : "sub");
+                str_appendf(out, " ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", rhs_x);
+                str_appendf(out, "\n");
+                return;
+            }
+            const Expr *ptr_side = NULL;
+            const Expr *idx_side = NULL;
+            if (e->ptr_index_side == 1) {
+                ptr_side = e->lhs;
+                idx_side = e->rhs;
+            } else if (e->ptr_index_side == 2) {
+                if (e->kind != EXPR_ADD) {
+                    die("aarch64-darwin: int - pointer not supported");
+                }
+                ptr_side = e->rhs;
+                idx_side = e->lhs;
+            } else {
+                die("aarch64-darwin: pointer +/- int missing ptr_index_side");
+            }
+            if (!ptr_side || !idx_side) die("aarch64-darwin: pointer arithmetic missing operand");
+
+            // Evaluate pointer value into dst_x.
+            a64_eval_expr_x(out, prg, fn, ptr_side, dst_x, tmp_x);
+
+            // Evaluate index into a register that doesn't clobber dst_x.
+            const char *idx_x = tmp_x;
+            const char *mul_x = "x11";
+            if (mc_strcmp(idx_x, dst_x) == 0) idx_x = "x11";
+            if (mc_strcmp(mul_x, idx_x) == 0) mul_x = "x10";
+            if (mc_strcmp(mul_x, dst_x) == 0) mul_x = "x9";
+            a64_eval_expr_as_x(out, prg, fn, idx_side, idx_x, mul_x);
+
+            // Apply scaling.
+            int scale = e->ptr_scale;
+            if (scale < 0) scale = -scale;
+            if (scale == 0) scale = 1;
+            if (scale == 1) {
+                // no-op
+            } else if (scale == 2) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #1\n");
+            } else if (scale == 4) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #2\n");
+            } else if (scale == 8) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", #3\n");
+            } else {
+                a64_mov_x_imm(out, mul_x, scale);
+                str_appendf(out, "  mul ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", idx_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", mul_x);
+                str_appendf(out, "\n");
+            }
+
+            // Apply +/-.
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", (e->kind == EXPR_ADD) ? "add" : "sub");
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", idx_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_BAND:
+        case EXPR_BXOR:
+        case EXPR_BOR: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                die("aarch64-darwin: 64-bit bitop with calls on both sides not supported yet");
+            }
+
+            // Ensure the RHS temp register does not alias dst_x.
+            const char *rhs_x = tmp_x;
+            if (mc_strcmp(rhs_x, dst_x) == 0) {
+                rhs_x = a64_pick_x_scratch3("x11", dst_x, tmp_x, NULL);
+            }
+
+            const char *lhs_scratch_x = a64_pick_x_scratch3("x10", dst_x, rhs_x, NULL);
+            const char *rhs_scratch_x = a64_pick_x_scratch3("x11", dst_x, rhs_x, lhs_scratch_x);
+
+            if (!lhs_call && rhs_call) {
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+            } else {
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+            }
+
+            const char *op = NULL;
+            if (e->kind == EXPR_BAND) op = "and";
+            else if (e->kind == EXPR_BXOR) op = "eor";
+            else if (e->kind == EXPR_BOR) op = "orr";
+            if (!op) die("aarch64-darwin: internal: missing 64-bit bitop");
+
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", op);
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+			str_appendf_s(out, "%s", rhs_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_SHL:
+        case EXPR_SHR: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                die("aarch64-darwin: 64-bit shift with calls on both sides not supported yet");
+            }
+
+            const char *rhs_x = tmp_x;
+            if (mc_strcmp(rhs_x, dst_x) == 0) {
+                rhs_x = a64_pick_x_scratch3("x11", dst_x, tmp_x, NULL);
+            }
+
+            const char *lhs_scratch_x = a64_pick_x_scratch3("x10", dst_x, rhs_x, NULL);
+            const char *rhs_scratch_x = a64_pick_x_scratch3("x11", dst_x, rhs_x, lhs_scratch_x);
+
+            if (!lhs_call && rhs_call) {
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+            } else {
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+            }
+
+            if (e->kind == EXPR_SHL) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+				str_appendf_s(out, "%s", rhs_x);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->lhs && e->lhs->kind == EXPR_DEREF && e->lhs->lhs && e->lhs->lhs->is_unsigned) use_unsigned = 1;
+            if (e->is_unsigned) use_unsigned = 1;
+
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", use_unsigned ? "lsr" : "asr");
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+			str_appendf_s(out, "%s", rhs_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_MUL:
+        case EXPR_DIV:
+        case EXPR_MOD: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                die("aarch64-darwin: 64-bit arith with calls on both sides not supported yet");
+            }
+
+            const char *rhs_x = tmp_x;
+            if (mc_strcmp(rhs_x, dst_x) == 0) {
+                rhs_x = a64_pick_x_scratch3("x11", dst_x, tmp_x, NULL);
+            }
+
+            const char *lhs_scratch_x = a64_pick_x_scratch3("x10", dst_x, rhs_x, NULL);
+            const char *rhs_scratch_x = a64_pick_x_scratch3("x11", dst_x, rhs_x, lhs_scratch_x);
+
+            if (!lhs_call && rhs_call) {
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+            } else {
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, lhs_scratch_x);
+			a64_eval_expr_as_x(out, prg, fn, e->rhs, rhs_x, rhs_scratch_x);
+            }
+
+            if (e->kind == EXPR_MUL) {
+                str_appendf(out, "  mul ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+				str_appendf_s(out, "%s", rhs_x);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+            if (e->is_unsigned) use_unsigned = 1;
+
+            if (e->kind == EXPR_DIV) {
+                str_appendf(out, "  ");
+                str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+                str_appendf(out, " ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+				str_appendf_s(out, "%s", rhs_x);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            // MOD: rem = lhs - (lhs/ rhs)*rhs
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+            str_appendf(out, " x11, ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+			str_appendf_s(out, "%s", rhs_x);
+            str_appendf(out, "\n");
+
+            str_appendf(out, "  msub ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", x11, ");
+			str_appendf_s(out, "%s", rhs_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                die("aarch64-darwin: 64-bit compare with calls on both sides not supported yet");
+            }
+            if (!lhs_call && rhs_call) {
+                a64_eval_expr_as_x(out, prg, fn, e->rhs, tmp_x, "x11");
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, "x10");
+            } else {
+                a64_eval_expr_as_x(out, prg, fn, e->lhs, dst_x, "x10");
+                a64_eval_expr_as_x(out, prg, fn, e->rhs, tmp_x, "x11");
+            }
+
+            str_appendf(out, "  cmp ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", tmp_x);
+            str_appendf(out, "\n");
+
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+            if (e->is_unsigned) use_unsigned = 1;
+
+            const char *cc = NULL;
+            if (e->kind == EXPR_EQ) cc = "eq";
+            else if (e->kind == EXPR_NE) cc = "ne";
+            else if (e->kind == EXPR_LT) cc = use_unsigned ? "lo" : "lt";
+            else if (e->kind == EXPR_LE) cc = use_unsigned ? "ls" : "le";
+            else if (e->kind == EXPR_GT) cc = use_unsigned ? "hi" : "gt";
+            else if (e->kind == EXPR_GE) cc = use_unsigned ? "hs" : "ge";
+            if (!cc) die("aarch64-darwin: internal: missing 64-bit cc");
+
+            str_appendf(out, "  cset w9, ");
+            str_appendf_s(out, "%s", cc);
+            str_appendf(out, "\n");
+
+            str_appendf(out, "  uxtw ");
+            str_appendf_s(out, "%s", dst_x);
+            str_appendf(out, ", w9\n");
+            return;
+        }
+        case EXPR_COND: {
+            // Ternary: cond ? then : else
+            int l_else = a64_new_elabel();
+            int l_end = a64_new_elabel();
+            if (e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) {
+                a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                a64_cbz_elabel(out, "x9", l_else);
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, "w9", "w10");
+                a64_cbz_elabel(out, "w9", l_else);
+            }
+            a64_eval_expr_x(out, prg, fn, e->rhs, dst_x, tmp_x);
+            a64_eb_label(out, l_end);
+            a64_elabel_def(out, l_else);
+            a64_eval_expr_x(out, prg, fn, e->third, dst_x, tmp_x);
+            a64_elabel_def(out, l_end);
+            return;
+        }
+        case EXPR_STR:
+            a64_addr_of_str_id(out, dst_x, e->str_id);
+            return;
+        case EXPR_ADDR:
+            a64_lval_addr_x(out, prg, fn, e->lhs, dst_x, tmp_x);
+            return;
+        case EXPR_DEREF: {
+            if (e->lval_size == 0 || e->lval_size > 8) {
+                die("aarch64-darwin: deref load size not supported yet");
+            }
+            a64_eval_expr_x(out, prg, fn, e->lhs, "x12", tmp_x);
+            if (e->lval_size == 8) {
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", [x12]\n");
+                return;
+            }
+            // Smaller scalar load into the destination w-reg.
+            // Avoid w9 here: it aliases x9, which is frequently live in surrounding codegen.
+            const char *dst_w = a64_xreg_to_wreg(dst_x);
+            a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+            if (!e->is_unsigned) {
+                str_appendf(out, "  sxtw ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, "\n");
+            }
+            return;
+        }
+        case EXPR_INDEX: {
+            // Load base[index] in an x-context.
+            if (e->lval_size == 0) {
+                // Array element is itself an aggregate (or array). In an x-context
+                // this decays to the element address.
+                a64_lval_addr_x(out, prg, fn, e, dst_x, tmp_x);
+                return;
+            }
+            if (e->lval_size > 8) {
+                die("aarch64-darwin: index load size not supported yet");
+            }
+            a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+            if (e->lval_size == 8) {
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", [x12]\n");
+                return;
+            }
+
+            // Load smaller scalars into the destination w-reg.
+            const char *dst_w = a64_xreg_to_wreg(dst_x);
+            a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+            if (!e->is_unsigned) {
+                str_appendf(out, "  sxtw ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, "\n");
+            }
+            return;
+        }
+        case EXPR_MEMBER: {
+            // Evaluate base.field or base->field in an x-context.
+            if (e->lval_size == 0) {
+                // Arrays decay to address.
+                a64_lval_addr_x(out, prg, fn, e, dst_x, tmp_x);
+                return;
+            }
+            if (e->lval_size == 8) {
+                a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", [x12]\n");
+                return;
+            }
+            if (e->lval_size == 1 || e->lval_size == 2 || e->lval_size == 4) {
+                a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+                const char *dst_w = a64_xreg_to_wreg(dst_x);
+                a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+                if (!e->is_unsigned) {
+                    str_appendf(out, "  sxtw ");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, "\n");
+                }
+                return;
+            }
+            die("aarch64-darwin: member load size not supported yet");
+        }
+        case EXPR_NUM:
+            a64_mov_x_imm(out, dst_x, e->num);
+            return;
+        case EXPR_VAR: {
+            if (e->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+            // Arrays decay to address.
+            if (e->lval_size == 0) {
+                a64_addr_of_local_off(out, dst_x, e->var_offset);
+                return;
+            }
+            if (e->lval_size == 8 || e->var_alloc_size == 8) {
+                a64_ldur_x_off(out, dst_x, e->var_offset);
+                return;
+            }
+            // Load 32-bit into the destination w-reg; sign-extend for signed types.
+            const char *dst_w = a64_xreg_to_wreg(dst_x);
+            a64_ldur_w_off(out, dst_w, e->var_offset);
+            if (!e->is_unsigned) {
+                str_appendf(out, "  sxtw ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, "\n");
+            }
+            return;
+        }
+        case EXPR_GLOBAL: {
+            if (!prg) die("internal: aarch64-darwin: global eval needs program");
+            if (e->global_id < 0 || e->global_id >= prg->nglobals) die("aarch64-darwin: bad global id");
+            const GlobalVar *gv = &prg->globals[e->global_id];
+            char sym[160];
+            sym[0] = '_';
+            mc_usize n = mc_strlen(gv->name);
+            if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
+            mc_memcpy(sym + 1, gv->name, n + 1);
+
+            // Arrays decay to address.
+            if (e->lval_size == 0) {
+                a64_addr_of_sym(out, dst_x, sym);
+                return;
+            }
+
+            a64_addr_of_sym(out, "x10", sym);
+            if (gv->elem_size == 8) {
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", dst_x);
+                str_appendf(out, ", [x10]\n");
+                return;
+            }
+            if (gv->elem_size == 4) {
+                const char *dst_w = a64_xreg_to_wreg(dst_x);
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", [x10]\n");
+                if (!e->is_unsigned) {
+                    str_appendf(out, "  sxtw ");
+                    str_appendf_s(out, "%s", dst_x);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, "\n");
+                }
+                return;
+            }
+            die("aarch64-darwin: global load size not supported yet");
+        }
+        default:
+            die("aarch64-darwin: unsupported expression kind %d for 64-bit value", e->kind);
+    }
+}
+
+static int a64_expr_label_id;
+
+static int a64_new_elabel(void) {
+    return a64_expr_label_id++;
+}
+
+static void a64_elabel_def(Str *out, int id) {
+    str_appendf_i64(out, ".LdarE%d:\n", (long long)id);
+}
+
+static void a64_eb_label(Str *out, int id) {
+    str_appendf_i64(out, "  b .LdarE%d\n", (long long)id);
+}
+
+static void a64_cbz_elabel(Str *out, const char *wreg, int id) {
+    str_appendf(out, "  cbz ");
+    str_appendf_s(out, "%s", wreg);
+    str_appendf(out, ", .LdarE");
+    str_appendf_i64(out, "%d", (long long)id);
+    str_appendf(out, "\n");
+}
+
+static void a64_cbnz_elabel(Str *out, const char *wreg, int id) {
+    str_appendf(out, "  cbnz ");
+    str_appendf_s(out, "%s", wreg);
+    str_appendf(out, ", .LdarE");
+    str_appendf_i64(out, "%d", (long long)id);
+    str_appendf(out, "\n");
+}
+
+static void a64_eval_expr_w(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_w, const char *tmp_w) {
+    // fn is used for diagnostics
+    if (!e) {
+        a64_mov_w_imm(out, dst_w, 0);
+        return;
+    }
+    switch (e->kind) {
+        case EXPR_MEMCPY: {
+            // Struct/aggregate copy in a w-context (value is ignored/truncated).
+            a64_eval_expr_x(out, prg, fn, e, "x9", "x10");
+            a64_mov_w_imm(out, dst_w, 0);
+            return;
+        }
+        case EXPR_MEMBER: {
+            // Evaluate scalar struct member in a w-context.
+            if (e->lval_size == 0) {
+                // Array member in a w-context: treat as pointer value and truncate.
+                a64_eval_expr_x(out, prg, fn, e, "x9", "x10");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size == 8) {
+                a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+                str_appendf(out, "  ldr x9, [x12]\n");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size == 1 || e->lval_size == 2 || e->lval_size == 4) {
+                a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+                a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+                return;
+            }
+            die("aarch64-darwin: member eval size not supported yet");
+        }
+        case EXPR_CAST: {
+            const Expr *op = e->lhs ? e->lhs : e->rhs;
+            if (!op) die("aarch64-darwin: cast missing operand");
+
+            // (void)expr: evaluate for side effects, discard value.
+            if (e->base == BT_VOID && e->ptr == 0) {
+                if (op->ptr != 0 || op->lval_size == 8) {
+                    a64_eval_expr_x(out, prg, fn, op, "x9", "x10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, op, "w9", "w10");
+                }
+                a64_mov_w_imm(out, dst_w, 0);
+                return;
+            }
+
+            // Cast result is a 32-bit value in this evaluator, but the operand may be 64-bit.
+            if (e->ptr != 0 || e->lval_size == 8 || op->ptr != 0 || op->lval_size == 8) {
+                // Evaluate operand as 64-bit and truncate to 32.
+                // Avoid x9 here: x9 aliases w9, which is often holding a live value
+                // in the 32-bit evaluator (e.g. LHS of a binop while evaluating RHS).
+                // Also avoid x12: it's used as an address scratch for indexed loads/stores.
+                a64_eval_expr_x(out, prg, fn, op, "x14", "x15");
+                if (mc_strcmp(dst_w, "w14") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w14\n");
+                }
+            } else {
+                a64_eval_expr_w(out, prg, fn, op, dst_w, tmp_w);
+            }
+
+            // If the cast target is a small integer type, apply sign/zero extension.
+            if (e->lval_size == 1 || e->lval_size == 2) {
+                a64_normalize_small_int_w(out, dst_w, e->lval_size, e->is_unsigned);
+            }
+            return;
+        }
+        case EXPR_PREINC:
+        case EXPR_PREDEC:
+        case EXPR_POSTINC:
+        case EXPR_POSTDEC: {
+            if (!e->lhs) die("aarch64-darwin: ++/-- missing lhs");
+            int sz = e->lval_size ? e->lval_size : e->lhs->lval_size;
+            if (sz == 8) {
+                // Perform update in 64-bit, return low 32 bits.
+                a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+                str_appendf(out, "  ldr x0, [x10]\n");
+
+                long long delta = (e->post_delta > 0 ? e->post_delta : 1);
+                if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+                if (delta >= -4095 && delta <= 4095) {
+                    if (delta >= 0) {
+                        str_appendf(out, "  add x9, x0, #");
+                        str_appendf_i64(out, "%d", delta);
+                        str_appendf(out, "\n");
+                    } else {
+                        str_appendf(out, "  sub x9, x0, #");
+                        str_appendf_i64(out, "%d", -delta);
+                        str_appendf(out, "\n");
+                    }
+                } else {
+                    a64_mov_x_imm(out, "x11", delta);
+                    str_appendf(out, "  add x9, x0, x11\n");
+                }
+
+                str_appendf(out, "  str x9, [x10]\n");
+
+                if (e->kind == EXPR_PREINC || e->kind == EXPR_PREDEC) {
+                    if (mc_strcmp(dst_w, "w9") != 0) {
+                        str_appendf(out, "  mov ");
+                        str_appendf_s(out, "%s", dst_w);
+                        str_appendf(out, ", w9\n");
+                    }
+                    return;
+                }
+
+                if (mc_strcmp(dst_w, "w0") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w0\n");
+                }
+                return;
+            }
+            if (sz != 1 && sz != 2 && sz != 4) {
+                die("aarch64-darwin: ++/-- only supported for 1/2/4/8-byte lvalues in 32-bit eval");
+            }
+
+            a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+            a64_load_scalar_w_from_addr(out, "w0", "x10", sz, e->is_unsigned);
+
+            int delta = (e->post_delta > 0 ? e->post_delta : 1);
+            if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+            if (delta >= -4095 && delta <= 4095) {
+                if (delta >= 0) {
+                    str_appendf(out, "  add w9, w0, #");
+                    str_appendf_i64(out, "%d", (long long)delta);
+                    str_appendf(out, "\n");
+                } else {
+                    str_appendf(out, "  sub w9, w0, #");
+                    str_appendf_i64(out, "%d", (long long)(-delta));
+                    str_appendf(out, "\n");
+                }
+            } else {
+                a64_mov_w_imm(out, tmp_w, delta);
+                str_appendf(out, "  add w9, w0, ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+            }
+
+            a64_normalize_small_int_w(out, "w9", sz, e->is_unsigned);
+            a64_store_scalar_w_to_addr(out, "w9", "x10", sz);
+
+            if (e->kind == EXPR_PREINC || e->kind == EXPR_PREDEC) {
+                if (mc_strcmp(dst_w, "w9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w9\n");
+                }
+                return;
+            }
+
+            if (mc_strcmp(dst_w, "w0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w0\n");
+            }
+            return;
+        }
+        case EXPR_POS:
+            a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+            return;
+        case EXPR_NEG:
+            a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+            str_appendf(out, "  neg ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, "\n");
+            return;
+        case EXPR_INDEX: {
+            // Load base[index] as scalar.
+            if (e->lval_size == 0) {
+                // Treat address value as scalar by truncating.
+                a64_lval_addr_x(out, prg, fn, e, "x9", "x10");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size == 8) {
+                a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+                str_appendf(out, "  ldr x9, [x12]\n");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size != 1 && e->lval_size != 2 && e->lval_size != 4) {
+                die("aarch64-darwin: index load size not supported yet");
+            }
+            // Do NOT use x10 here: w10 is a common temp in this backend, and it
+            // aliases x10. That can corrupt the computed address.
+            a64_lval_addr_x(out, prg, fn, e, "x12", "x13");
+            a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+            return;
+        }
+        case EXPR_COND: {
+            // Ternary: cond ? then : else
+            int l_else = a64_new_elabel();
+            int l_end = a64_new_elabel();
+            // Condition may involve pointers/64-bit values (e.g. argv && argv[0]).
+            if (e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) {
+                a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                a64_cbz_elabel(out, "x9", l_else);
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                a64_cbz_elabel(out, dst_w, l_else);
+            }
+            a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+            a64_eb_label(out, l_end);
+            a64_elabel_def(out, l_else);
+            a64_eval_expr_w(out, prg, fn, e->third, dst_w, tmp_w);
+            a64_elabel_def(out, l_end);
+            return;
+        }
+        case EXPR_NUM:
+            a64_mov_w_imm(out, dst_w, e->num);
+            return;
+        case EXPR_DEREF:
+            if (e->lval_size == 0) {
+                // Aggregate/array deref in a w-context: treat as address value.
+                a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size == 8) {
+                // Load 64-bit value then truncate.
+                a64_eval_expr_x(out, prg, fn, e->lhs, "x12", "x13");
+                str_appendf(out, "  ldr x9, [x12]\n");
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w9\n");
+                return;
+            }
+            if (e->lval_size != 1 && e->lval_size != 2 && e->lval_size != 4) {
+                die("aarch64-darwin: deref load size not supported yet");
+            }
+            a64_eval_expr_x(out, prg, fn, e->lhs, "x12", "x13");
+            a64_load_scalar_w_from_addr(out, dst_w, "x12", e->lval_size, e->is_unsigned);
+            return;
+        case EXPR_VAR:
+            // Locals/params are addressed via the function's stack slots.
+            // For this minimal subset we only expect locals (negative offsets).
+            if (e->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+            if (e->lval_size == 1 || e->lval_size == 2) {
+                a64_addr_of_local_off(out, "x10", e->var_offset);
+                a64_load_scalar_w_from_addr(out, dst_w, "x10", e->lval_size, e->is_unsigned);
+                return;
+            }
+            if (e->lval_size == 8) {
+                // Truncate 64-bit local to 32-bit.
+                // Avoid x9 here: x9 aliases w9, which is frequently a live dst in
+                // the 32-bit evaluator. Also avoid x12 which is used as an address scratch.
+                a64_ldur_x_off(out, "x14", e->var_offset);
+                if (mc_strcmp(dst_w, "w14") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w14\n");
+                }
+                return;
+            }
+            if (e->lval_size != 4) {
+                die("aarch64-darwin: local load size not supported yet (fn=%s off=%d lval_size=%d alloc=%d base=%d ptr=%d unsigned=%d)",
+                    fn ? fn->name : "?", e->var_offset, e->lval_size, e->var_alloc_size, e->base, e->ptr, e->is_unsigned);
+            }
+            a64_ldur_w_off(out, dst_w, e->var_offset);
+            return;
+        case EXPR_CALL: {
+            // Minimal bring-up: direct calls with scalar args.
+            // See EXPR_CALL in the 64-bit evaluator: keep a SysV-like 6 GPR arg ABI.
+            if (!e->callee[0]) die("aarch64-darwin: call with empty callee");
+            if (e->nargs < 0) die("aarch64-darwin: call nargs negative");
+            if (e->nargs > 32) die("aarch64-darwin: calls with >32 args not supported yet");
+            static const char *areg_x[6] = {"x0", "x1", "x2", "x3", "x4", "x5"};
+
+            int nreg = e->nargs;
+            if (nreg > 6) nreg = 6;
+            int nstack = e->nargs - nreg;
+
+            // Evaluate args, allowing nested calls by spilling each arg to a
+            // temporary stack area first.
+            int spill = e->nargs * 8;
+            spill = (spill + 15) & ~15;
+            if (spill) {
+                str_appendf(out, "  sub sp, sp, #");
+                str_appendf_i64(out, "%d", (long long)spill);
+                str_appendf(out, "\n");
+            }
+
+            for (int i = 0; i < e->nargs; i++) {
+                if (!e->args || !e->args[i]) {
+                    die("aarch64-darwin: call arg missing");
+                }
+                if (e->args[i]->ptr != 0 || e->args[i]->lval_size == 8) {
+                    a64_eval_expr_x(out, prg, fn, e->args[i], "x9", "x10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->args[i], "w9", "w10");
+                    str_appendf(out, "  ");
+                    str_appendf_s(out, "%s", e->args[i]->is_unsigned ? "uxtw" : "sxtw");
+                    str_appendf(out, " x9, w9\n");
+                }
+
+                int off = (i < nreg) ? ((nstack + i) * 8) : ((i - nreg) * 8);
+                str_appendf(out, "  str x9, [sp, #");
+                str_appendf_i64(out, "%d", (long long)off);
+                str_appendf(out, "]\n");
+            }
+
+            for (int i = 0; i < nreg; i++) {
+                str_appendf(out, "  ldr ");
+                str_appendf_s(out, "%s", areg_x[i]);
+                str_appendf(out, ", [sp, #");
+                str_appendf_i64(out, "%d", (long long)((nstack + i) * 8));
+                str_appendf(out, "]\n");
+            }
+
+            str_appendf(out, "  bl _");
+            str_appendf_s(out, "%s", e->callee);
+            str_appendf(out, "\n");
+
+            if (spill) {
+                str_appendf(out, "  add sp, sp, #");
+                str_appendf_i64(out, "%d", (long long)spill);
+                str_appendf(out, "\n");
+            }
+
+            if (mc_strcmp(dst_w, "w0") != 0) {
+                str_appendf(out, "  mov ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", w0\n");
+            }
+            return;
+        }
+        case EXPR_ASSIGN: {
+            // Minimal bring-up: assignment to local var, global, or *ptr (4/8-byte).
+            if (!e->lhs) die("aarch64-darwin: assign missing lhs");
+            int sz = e->lval_size;
+            if (sz == 0) {
+                if (e->lhs->lval_size) sz = e->lhs->lval_size;
+                else sz = 4;
+            }
+            if (sz != 1 && sz != 2 && sz != 4 && sz != 8) {
+                die("aarch64-darwin: assignment size not supported yet");
+            }
+
+            if (sz == 1 || sz == 2) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+                // Truncate like the store does.
+                if (sz == 1) {
+                    str_appendf(out, "  and ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", #0xff\n");
+                } else {
+                    str_appendf(out, "  and ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", #0xffff\n");
+                }
+
+                if (e->lhs->kind == EXPR_VAR) {
+                    if (e->lhs->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+                    a64_addr_of_local_off(out, "x10", e->lhs->var_offset);
+                    a64_store_scalar_w_to_addr(out, dst_w, "x10", sz);
+                    return;
+                }
+                if (e->lhs->kind == EXPR_INDEX) {
+                    // For indexed stores, preserve the RHS across lvalue address
+                    // computation: the index expression may be postinc/-- and will
+                    // clobber scratch regs (including w0/w9 etc).
+                    str_appendf(out, "  sub sp, sp, #16\n");
+                    str_appendf(out, "  str ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [sp]\n");
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                    str_appendf(out, "  ldr ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [sp]\n");
+                    str_appendf(out, "  add sp, sp, #16\n");
+                    a64_store_scalar_w_to_addr(out, dst_w, "x12", sz);
+                    return;
+                }
+                if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF) {
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+                    a64_store_scalar_w_to_addr(out, dst_w, "x10", sz);
+                    return;
+                }
+                if (e->lhs->kind == EXPR_MEMBER) {
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                    a64_store_scalar_w_to_addr(out, dst_w, "x12", sz);
+                    return;
+                }
+                die("aarch64-darwin: assignment lhs kind not supported yet");
+            }
+
+            if (sz == 4) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+                if (e->lhs->kind == EXPR_VAR) {
+                    if (e->lhs->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+                    a64_stur_w_off(out, dst_w, e->lhs->var_offset);
+                    return;
+                }
+                if (e->lhs->kind == EXPR_INDEX) {
+                    str_appendf(out, "  sub sp, sp, #16\n");
+                    str_appendf(out, "  str ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [sp]\n");
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                    str_appendf(out, "  ldr ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [sp]\n");
+                    str_appendf(out, "  add sp, sp, #16\n");
+                    str_appendf(out, "  str ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [x12]\n");
+                    return;
+                }
+                if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF) {
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+                    str_appendf(out, "  str ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [x10]\n");
+                    return;
+                }
+                if (e->lhs->kind == EXPR_MEMBER) {
+                    a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                    str_appendf(out, "  str ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", [x12]\n");
+                    return;
+                }
+                die("aarch64-darwin: assignment lhs kind not supported yet");
+            }
+
+            // 8-byte store: evaluate rhs as X and store. Result is not currently representable as w; return 0.
+            a64_eval_expr_x(out, prg, fn, e->rhs, "x9", "x11");
+            if (e->lhs->kind == EXPR_VAR) {
+                if (e->lhs->var_offset == 0) die("aarch64-darwin: var_offset=0 unexpected");
+                a64_stur_x_off(out, "x9", e->lhs->var_offset);
+                a64_mov_w_imm(out, dst_w, 0);
+                return;
+            }
+            if (e->lhs->kind == EXPR_INDEX) {
+                str_appendf(out, "  sub sp, sp, #16\n");
+                str_appendf(out, "  str x9, [sp]\n");
+                a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                str_appendf(out, "  ldr x9, [sp]\n");
+                str_appendf(out, "  add sp, sp, #16\n");
+                str_appendf(out, "  str x9, [x12]\n");
+                a64_mov_w_imm(out, dst_w, 0);
+                return;
+            }
+            if (e->lhs->kind == EXPR_GLOBAL || e->lhs->kind == EXPR_DEREF) {
+                a64_lval_addr_x(out, prg, fn, e->lhs, "x10", "x11");
+                str_appendf(out, "  str x9, [x10]\n");
+                a64_mov_w_imm(out, dst_w, 0);
+                return;
+            }
+            if (e->lhs->kind == EXPR_MEMBER) {
+                a64_lval_addr_x(out, prg, fn, e->lhs, "x12", "x13");
+                str_appendf(out, "  str x9, [x12]\n");
+                a64_mov_w_imm(out, dst_w, 0);
+                return;
+            }
+            die("aarch64-darwin: assignment lhs kind not supported yet");
+            return;
+        }
+        case EXPR_ADD:
+        case EXPR_SUB:
+            // dst = lhs (+|-) rhs
+            // IMPORTANT: even in a w-context, pointer/size_t arithmetic must be
+            // computed in 64-bit and truncated at the end. Otherwise the low 32
+            // bits of addresses can wrap (ASLR), causing wild max_write values.
+            if ((e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) ||
+                (e->rhs && (e->rhs->ptr != 0 || e->rhs->lval_size == 8)) ||
+                (e->ptr != 0) || (e->ptr_scale > 0)) {
+                a64_eval_expr_x(out, prg, fn, e, "x14", "x15");
+                if (mc_strcmp(dst_w, "w14") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w14\n");
+                }
+                return;
+            }
+
+            // Keep this conservative around calls: only allow at most one call
+            // in the expression tree.
+            {
+                int lhs_call = a64_expr_contains_call(e->lhs);
+                int rhs_call = a64_expr_contains_call(e->rhs);
+                if (lhs_call && rhs_call) {
+                    // Spill both sides to avoid call-clobber issues AND avoid
+                    // choosing fragile temp registers (w10 is used heavily as scratch).
+                    // Evaluate lhs => w0; store; evaluate rhs => w0; store; reload and compute.
+                    str_appendf(out, "  sub sp, sp, #16\n");
+                    a64_eval_expr_w(out, prg, fn, e->lhs, "w0", "w9");
+                    str_appendf(out, "  str w0, [sp, #0]\n");
+                    a64_eval_expr_w(out, prg, fn, e->rhs, "w0", "w9");
+                    str_appendf(out, "  str w0, [sp, #8]\n");
+                    str_appendf(out, "  ldr w9, [sp, #0]\n");
+                    str_appendf(out, "  ldr w10, [sp, #8]\n");
+                    str_appendf(out, "  add sp, sp, #16\n");
+                    a64_binop_rrr(out, (e->kind == EXPR_ADD) ? "add" : "sub", "w9", "w9", "w10");
+                    if (mc_strcmp(dst_w, "w9") != 0) {
+                        str_appendf(out, "  mov ");
+                        str_appendf_s(out, "%s", dst_w);
+                        str_appendf(out, ", w9\n");
+                    }
+                    return;
+                }
+                if (!lhs_call && rhs_call) {
+                    // Evaluate rhs first so call clobbers don't destroy lhs.
+                    a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, dst_w);
+                    a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, "w10");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                    a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, "w10");
+                }
+            }
+            a64_binop_rrr(out, (e->kind == EXPR_ADD) ? "add" : "sub", dst_w, dst_w, tmp_w);
+            return;
+        case EXPR_MUL:
+        case EXPR_DIV:
+        case EXPR_MOD: {
+            // 32-bit integer ops.
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                // Spill both sides via w0 to avoid call clobbers and fragile temp regs.
+                str_appendf(out, "  sub sp, sp, #16\n");
+                a64_eval_expr_w(out, prg, fn, e->lhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #0]\n");
+                a64_eval_expr_w(out, prg, fn, e->rhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #8]\n");
+                str_appendf(out, "  ldr w9, [sp, #0]\n");
+                str_appendf(out, "  ldr w10, [sp, #8]\n");
+                str_appendf(out, "  add sp, sp, #16\n");
+
+                if (e->kind == EXPR_MUL) {
+                    str_appendf(out, "  mul w9, w9, w10\n");
+                    if (mc_strcmp(dst_w, "w9") != 0) {
+                        str_appendf(out, "  mov ");
+                        str_appendf_s(out, "%s", dst_w);
+                        str_appendf(out, ", w9\n");
+                    }
+                    return;
+                }
+
+                int use_unsigned = 0;
+                if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+                if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+                if (e->is_unsigned) use_unsigned = 1;
+
+                if (e->kind == EXPR_DIV) {
+                    str_appendf(out, "  ");
+                    str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+                    str_appendf(out, " w9, w9, w10\n");
+                    if (mc_strcmp(dst_w, "w9") != 0) {
+                        str_appendf(out, "  mov ");
+                        str_appendf_s(out, "%s", dst_w);
+                        str_appendf(out, ", w9\n");
+                    }
+                    return;
+                }
+
+                // MOD: rem = lhs - (lhs/ rhs)*rhs
+                str_appendf(out, "  ");
+                str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+                str_appendf(out, " w11, w9, w10\n");
+                str_appendf(out, "  msub w9, w11, w10, w9\n");
+                if (mc_strcmp(dst_w, "w9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w9\n");
+                }
+                return;
+            }
+            if (!lhs_call && rhs_call) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, dst_w);
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, "w10");
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, "w10");
+            }
+
+            if (e->kind == EXPR_MUL) {
+                str_appendf(out, "  mul ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+            if (e->is_unsigned) use_unsigned = 1;
+
+            if (e->kind == EXPR_DIV) {
+                str_appendf(out, "  ");
+                str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+                str_appendf(out, " ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            // MOD: rem = lhs - (lhs/ rhs)*rhs
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", use_unsigned ? "udiv" : "sdiv");
+            str_appendf(out, " w11, ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", tmp_w);
+            str_appendf(out, "\n");
+
+            str_appendf(out, "  msub ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", w11, ");
+            str_appendf_s(out, "%s", tmp_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_LAND:
+        case EXPR_LOR: {
+            // Short-circuit logical AND/OR. Result is 0/1.
+            int l_true = a64_new_elabel();
+            int l_false = a64_new_elabel();
+            int l_end = a64_new_elabel();
+
+            if (e->kind == EXPR_LAND) {
+                if (e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) {
+                    a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                    a64_cbz_elabel(out, "x9", l_false);
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                    a64_cbz_elabel(out, dst_w, l_false);
+                }
+                if (e->rhs && (e->rhs->ptr != 0 || e->rhs->lval_size == 8)) {
+                    a64_eval_expr_x(out, prg, fn, e->rhs, "x9", "x10");
+                    a64_cbz_elabel(out, "x9", l_false);
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+                    a64_cbz_elabel(out, dst_w, l_false);
+                }
+                a64_eb_label(out, l_true);
+            } else {
+                if (e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) {
+                    a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                    a64_cbnz_elabel(out, "x9", l_true);
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                    a64_cbnz_elabel(out, dst_w, l_true);
+                }
+                if (e->rhs && (e->rhs->ptr != 0 || e->rhs->lval_size == 8)) {
+                    a64_eval_expr_x(out, prg, fn, e->rhs, "x9", "x10");
+                    a64_cbnz_elabel(out, "x9", l_true);
+                } else {
+                    a64_eval_expr_w(out, prg, fn, e->rhs, dst_w, tmp_w);
+                    a64_cbnz_elabel(out, dst_w, l_true);
+                }
+                a64_eb_label(out, l_false);
+            }
+
+            a64_elabel_def(out, l_true);
+            a64_mov_w_imm(out, dst_w, 1);
+            a64_eb_label(out, l_end);
+
+            a64_elabel_def(out, l_false);
+            a64_mov_w_imm(out, dst_w, 0);
+
+            a64_elabel_def(out, l_end);
+            return;
+        }
+        case EXPR_BAND:
+        case EXPR_BXOR:
+        case EXPR_BOR: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                // Spill both sides via w0 to avoid call clobbers and fragile temps.
+                str_appendf(out, "  sub sp, sp, #16\n");
+                a64_eval_expr_w(out, prg, fn, e->lhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #0]\n");
+                a64_eval_expr_w(out, prg, fn, e->rhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #8]\n");
+                str_appendf(out, "  ldr w9, [sp, #0]\n");
+                str_appendf(out, "  ldr w10, [sp, #8]\n");
+                str_appendf(out, "  add sp, sp, #16\n");
+
+                const char *op2 = NULL;
+                if (e->kind == EXPR_BAND) op2 = "and";
+                else if (e->kind == EXPR_BXOR) op2 = "eor";
+                else if (e->kind == EXPR_BOR) op2 = "orr";
+                if (!op2) die("aarch64-darwin: internal: missing bitop");
+                a64_binop_rrr(out, op2, "w9", "w9", "w10");
+                if (mc_strcmp(dst_w, "w9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w9\n");
+                }
+                return;
+            }
+            if (!lhs_call && rhs_call) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, dst_w);
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, "w10");
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, "w10");
+            }
+
+            const char *op = NULL;
+            if (e->kind == EXPR_BAND) op = "and";
+            else if (e->kind == EXPR_BXOR) op = "eor";
+            else if (e->kind == EXPR_BOR) op = "orr";
+            if (!op) die("aarch64-darwin: internal: missing bitop");
+            a64_binop_rrr(out, op, dst_w, dst_w, tmp_w);
+            return;
+        }
+        case EXPR_SHL:
+        case EXPR_SHR: {
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                // Spill both sides via w0 to avoid call clobbers and fragile temps.
+                str_appendf(out, "  sub sp, sp, #16\n");
+                a64_eval_expr_w(out, prg, fn, e->lhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #0]\n");
+                a64_eval_expr_w(out, prg, fn, e->rhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #8]\n");
+                str_appendf(out, "  ldr w9, [sp, #0]\n");
+                str_appendf(out, "  ldr w10, [sp, #8]\n");
+                str_appendf(out, "  add sp, sp, #16\n");
+
+                if (e->kind == EXPR_SHL) {
+                    str_appendf(out, "  lsl w9, w9, w10\n");
+                    if (mc_strcmp(dst_w, "w9") != 0) {
+                        str_appendf(out, "  mov ");
+                        str_appendf_s(out, "%s", dst_w);
+                        str_appendf(out, ", w9\n");
+                    }
+                    return;
+                }
+
+                int use_unsigned = 0;
+                if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+                if (e->is_unsigned) use_unsigned = 1;
+                str_appendf(out, "  ");
+                str_appendf_s(out, "%s", use_unsigned ? "lsr" : "asr");
+                str_appendf(out, " w9, w9, w10\n");
+                if (mc_strcmp(dst_w, "w9") != 0) {
+                    str_appendf(out, "  mov ");
+                    str_appendf_s(out, "%s", dst_w);
+                    str_appendf(out, ", w9\n");
+                }
+                return;
+            }
+            if (!lhs_call && rhs_call) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, dst_w);
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, "w10");
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, "w10");
+            }
+
+            if (e->kind == EXPR_SHL) {
+                str_appendf(out, "  lsl ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+                return;
+            }
+
+            // SHR: choose arithmetic vs logical shift.
+            int use_unsigned = 0;
+            if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+            if (e->lhs && e->lhs->kind == EXPR_DEREF && e->lhs->lhs && e->lhs->lhs->is_unsigned) use_unsigned = 1;
+            if (e->is_unsigned) use_unsigned = 1;
+
+            str_appendf(out, "  ");
+            str_appendf_s(out, "%s", use_unsigned ? "lsr" : "asr");
+            str_appendf(out, " ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", tmp_w);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_NOT: {
+            // Logical not: result is 0/1.
+            if (e->lhs && (e->lhs->ptr != 0 || e->lhs->lval_size == 8)) {
+                a64_eval_expr_x(out, prg, fn, e->lhs, "x9", "x10");
+                str_appendf(out, "  cmp x9, #0\n");
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                str_appendf(out, "  cmp ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", #0\n");
+            }
+            str_appendf(out, "  cset ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", eq\n");
+            return;
+        }
+        case EXPR_BNOT: {
+            // Bitwise not.
+            a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+            str_appendf(out, "  mvn ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE: {
+            // Result is 0/1.
+            // Conservative call handling: allow at most one call in the tree.
+            int lhs_call = a64_expr_contains_call(e->lhs);
+            int rhs_call = a64_expr_contains_call(e->rhs);
+            if (lhs_call && rhs_call) {
+                // Spill both sides via w0 to avoid call clobbers and fragile temps.
+                str_appendf(out, "  sub sp, sp, #16\n");
+                a64_eval_expr_w(out, prg, fn, e->lhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #0]\n");
+                a64_eval_expr_w(out, prg, fn, e->rhs, "w0", "w9");
+                str_appendf(out, "  str w0, [sp, #8]\n");
+                str_appendf(out, "  ldr w9, [sp, #0]\n");
+                str_appendf(out, "  ldr w10, [sp, #8]\n");
+                str_appendf(out, "  add sp, sp, #16\n");
+                str_appendf(out, "  cmp w9, w10\n");
+                goto a64_cmp_emit_cset;
+            }
+            if (!lhs_call && rhs_call) {
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, dst_w);
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, "w10");
+                // cmp lhs, rhs => cmp dst_w, tmp_w
+                str_appendf(out, "  cmp ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+            } else {
+                a64_eval_expr_w(out, prg, fn, e->lhs, dst_w, tmp_w);
+                a64_eval_expr_w(out, prg, fn, e->rhs, tmp_w, "w10");
+                str_appendf(out, "  cmp ");
+                str_appendf_s(out, "%s", dst_w);
+                str_appendf(out, ", ");
+                str_appendf_s(out, "%s", tmp_w);
+                str_appendf(out, "\n");
+            }
+
+a64_cmp_emit_cset:
+            const char *cc = NULL;
+            if (e->kind == EXPR_EQ) cc = "eq";
+            else if (e->kind == EXPR_NE) cc = "ne";
+            else {
+                int use_unsigned = 0;
+                if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+                if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+                if (e->is_unsigned) use_unsigned = 1;
+
+                if (!use_unsigned) {
+                    if (e->kind == EXPR_LT) cc = "lt";
+                    else if (e->kind == EXPR_LE) cc = "le";
+                    else if (e->kind == EXPR_GT) cc = "gt";
+                    else if (e->kind == EXPR_GE) cc = "ge";
+                } else {
+                    if (e->kind == EXPR_LT) cc = "lo";
+                    else if (e->kind == EXPR_LE) cc = "ls";
+                    else if (e->kind == EXPR_GT) cc = "hi";
+                    else if (e->kind == EXPR_GE) cc = "hs";
+                }
+            }
+            if (!cc) die("aarch64-darwin: internal: missing comparison cc");
+
+            // cset writes 0/1 into a W register.
+            str_appendf(out, "  cset ");
+            str_appendf_s(out, "%s", dst_w);
+            str_appendf(out, ", ");
+            str_appendf_s(out, "%s", cc);
+            str_appendf(out, "\n");
+            return;
+        }
+        case EXPR_GLOBAL: {
+            if (!prg) die("internal: aarch64-darwin: global eval needs program");
+            if (e->global_id < 0 || e->global_id >= prg->nglobals) die("aarch64-darwin: bad global id");
+            const GlobalVar *gv = &prg->globals[e->global_id];
+            if (gv->elem_size != 1 && gv->elem_size != 2 && gv->elem_size != 4) {
+                die("aarch64-darwin: global load size not supported yet");
+            }
+            char sym[160];
+            sym[0] = '_';
+            mc_usize n = mc_strlen(gv->name);
+            if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
+            mc_memcpy(sym + 1, gv->name, n + 1);
+            a64_addr_of_sym(out, "x10", sym);
+            a64_load_scalar_w_from_addr(out, dst_w, "x10", gv->elem_size, e->is_unsigned);
+            return;
+        }
+        default:
+            die("aarch64-darwin: unsupported expression kind %d (need more backend bring-up)", e->kind);
+    }
+}
+
+static int a64_new_label(int *label_id) {
+    if (!label_id) die("internal: a64_new_label null");
+    return (*label_id)++;
+}
+
+static void a64_label_def(Str *out, int id) {
+    str_appendf_i64(out, ".Ldar%d:\n", (long long)id);
+}
+
+static void a64_b_label(Str *out, int id) {
+    str_appendf_i64(out, "  b .Ldar%d\n", (long long)id);
+}
+
+static void a64_b_cond_label(Str *out, const char *cc, int id) {
+    str_appendf(out, "  b.");
+    str_appendf_s(out, "%s", cc);
+    str_appendf(out, " .Ldar");
+    str_appendf_i64(out, "%d", (long long)id);
+    str_appendf(out, "\n");
+}
+
+typedef struct {
+    int break_label[64];
+    int cont_label[64];
+    int depth;
+} A64LoopStack;
+
+static void a64_emit_stmt_list(Str *out, const Program *prg, const Function *fn, const Stmt *first, int ret_label, int *label_id, A64LoopStack *ls);
+
+static int a64_stmt_contains_return(const Stmt *s);
+
+static int a64_stmt_list_contains_return(const Stmt *first) {
+    for (const Stmt *it = first; it; it = it->next) {
+        if (a64_stmt_contains_return(it)) return 1;
+    }
+    return 0;
+}
+
+static int a64_stmt_contains_return(const Stmt *s) {
+    if (!s) return 0;
+    switch (s->kind) {
+        case STMT_RETURN:
+            return 1;
+        case STMT_BLOCK:
+            return a64_stmt_list_contains_return(s->block_first);
+        case STMT_IF:
+            return a64_stmt_contains_return(s->if_then) || a64_stmt_contains_return(s->if_else);
+        case STMT_WHILE:
+            return a64_stmt_contains_return(s->while_body);
+        default:
+            return 0;
+    }
+}
+
+static int a64_expr_is_64bit(const Expr *e) {
+    if (!e) return 0;
+    // Pointers are always 64-bit on aarch64-darwin.
+    if (e->ptr != 0) return 1;
+    // long/long long and typedefs like mc_i64/mc_u64 use BT_LONG.
+    if (e->base == BT_LONG) return 1;
+    // Lvalues can also imply width (e.g. local/global loads).
+    if (e->lval_size == 8) return 1;
+    return 0;
+}
+
+static const char *a64_pick_x_scratch3(const char *preferred, const char *avoid1, const char *avoid2, const char *avoid3) {
+    if (preferred &&
+        (!avoid1 || mc_strcmp(preferred, avoid1) != 0) &&
+        (!avoid2 || mc_strcmp(preferred, avoid2) != 0) &&
+        (!avoid3 || mc_strcmp(preferred, avoid3) != 0)) {
+        return preferred;
+    }
+    static const char *alts[] = {"x10", "x11", "x12", "x13", "x14", "x15"};
+    for (mc_usize i = 0; i < (mc_usize)(sizeof(alts) / sizeof(alts[0])); i++) {
+        const char *r = alts[i];
+        if (avoid1 && mc_strcmp(r, avoid1) == 0) continue;
+        if (avoid2 && mc_strcmp(r, avoid2) == 0) continue;
+        if (avoid3 && mc_strcmp(r, avoid3) == 0) continue;
+        return r;
+    }
+    return "x12";
+}
+
+static const char *a64_xreg_to_wreg(const char *xreg) {
+    if (!xreg) return "w0";
+    if (mc_strcmp(xreg, "xzr") == 0) return "wzr";
+    if (xreg[0] != 'x') return "w0";
+    int n = 0;
+    for (int i = 1; xreg[i]; i++) {
+        char c = xreg[i];
+        if (c < '0' || c > '9') return "w0";
+        n = n * 10 + (c - '0');
+        if (n > 30) return "w0";
+    }
+    static const char *wregs[] = {
+        "w0","w1","w2","w3","w4","w5","w6","w7",
+        "w8","w9","w10","w11","w12","w13","w14","w15",
+        "w16","w17","w18","w19","w20","w21","w22","w23",
+        "w24","w25","w26","w27","w28","w29","w30",
+    };
+    return wregs[n];
+}
+
+static void a64_eval_expr_as_x(Str *out, const Program *prg, const Function *fn, const Expr *e, const char *dst_x, const char *tmp_x) {
+    if (!e) {
+        a64_mov_x_imm(out, dst_x, 0);
+        return;
+    }
+    if (a64_expr_is_64bit(e)) {
+        a64_eval_expr_x(out, prg, fn, e, dst_x, tmp_x);
+        return;
+    }
+    // Evaluate 32-bit expression into the w-register corresponding to dst_x.
+    // Important: do NOT hardcode w10/w11 here, because those alias x10/x11 and
+    // can clobber live 64-bit values held in those registers by surrounding code.
+    const char *dst_w = a64_xreg_to_wreg(dst_x);
+    const char *tmp_w = a64_xreg_to_wreg(tmp_x);
+    if (mc_strcmp(dst_w, tmp_w) == 0) {
+        const char *alt_x = a64_pick_x_scratch3("x11", dst_x, tmp_x, NULL);
+        tmp_w = a64_xreg_to_wreg(alt_x);
+    }
+    a64_eval_expr_w(out, prg, fn, e, dst_w, tmp_w);
+    if (!e->is_unsigned) {
+        str_appendf(out, "  sxtw ");
+        str_appendf_s(out, "%s", dst_x);
+        str_appendf(out, ", ");
+        str_appendf_s(out, "%s", dst_w);
+        str_appendf(out, "\n");
+    }
+}
+
+static void a64_emit_cond_branch_true(Str *out, const Program *prg, const Function *fn, const Expr *cond, int true_label, int *label_id);
+
+// Emit a branch to false_label if condition is false.
+static void a64_emit_cond_branch_false(Str *out, const Program *prg, const Function *fn, const Expr *cond, int false_label, int *label_id) {
+    if (!cond) {
+        // if (0) ...
+        a64_b_label(out, false_label);
+        return;
+    }
+
+    // Short-circuit boolean operators in statement conditions.
+    if (cond->kind == EXPR_LAND) {
+        a64_emit_cond_branch_false(out, prg, fn, cond->lhs, false_label, label_id);
+        a64_emit_cond_branch_false(out, prg, fn, cond->rhs, false_label, label_id);
+        return;
+    }
+    if (cond->kind == EXPR_LOR) {
+        if (!label_id) die("internal: aarch64-darwin label_id null");
+        int l_true = a64_new_label(label_id);
+        a64_emit_cond_branch_true(out, prg, fn, cond->lhs, l_true, label_id);
+        a64_emit_cond_branch_false(out, prg, fn, cond->rhs, false_label, label_id);
+        a64_label_def(out, l_true);
+        return;
+    }
+    if (cond->kind == EXPR_NOT) {
+        // if (!x) is false when x is true.
+        a64_emit_cond_branch_true(out, prg, fn, cond->lhs, false_label, label_id);
+        return;
+    }
+
+    switch (cond->kind) {
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE: {
+            int wide = a64_expr_is_64bit(cond->lhs) || a64_expr_is_64bit(cond->rhs);
+            int use_unsigned = 0;
+            if ((cond->lhs && (cond->lhs->ptr > 0 || cond->lhs->is_unsigned)) || (cond->rhs && (cond->rhs->ptr > 0 || cond->rhs->is_unsigned))) {
+                use_unsigned = 1;
+            }
+            if (cond->is_unsigned) use_unsigned = 1;
+
+            if (wide) {
+                a64_eval_expr_as_x(out, prg, fn, cond->lhs, "x0", "x11");
+                a64_eval_expr_as_x(out, prg, fn, cond->rhs, "x9", "x10");
+                str_appendf(out, "  cmp x0, x9\n");
+            } else {
+                a64_eval_expr_w(out, prg, fn, cond->lhs, "w0", "w9");
+                a64_eval_expr_w(out, prg, fn, cond->rhs, "w9", "w10");
+                str_appendf(out, "  cmp w0, w9\n");
+            }
+
+            // Branch when condition is false (invert the sense).
+            const char *cc = NULL;
+            if (cond->kind == EXPR_EQ) cc = "ne";
+            else if (cond->kind == EXPR_NE) cc = "eq";
+            else if (cond->kind == EXPR_LT) cc = use_unsigned ? "hs" : "ge";
+            else if (cond->kind == EXPR_LE) cc = use_unsigned ? "hi" : "gt";
+            else if (cond->kind == EXPR_GT) cc = use_unsigned ? "ls" : "le";
+            else if (cond->kind == EXPR_GE) cc = use_unsigned ? "lo" : "lt";
+            if (!cc) die("aarch64-darwin: internal: missing cc");
+            a64_b_cond_label(out, cc, false_label);
+            return;
+        }
+        default:
+            break;
+    }
+
+    // Fallback: treat as scalar, branch if zero.
+    if (a64_expr_is_64bit(cond)) {
+        a64_eval_expr_x(out, prg, fn, cond, "x0", "x9");
+        str_appendf(out, "  cbz x0, .Ldar");
+    } else {
+        a64_eval_expr_w(out, prg, fn, cond, "w0", "w9");
+        str_appendf(out, "  cbz w0, .Ldar");
+    }
+    str_appendf_i64(out, "%d", (long long)false_label);
+    str_appendf(out, "\n");
+}
+
+static void a64_emit_user_label_def(Str *out, const Function *fn, const char *label) {
+    if (!out || !fn || !label) die("internal: a64_emit_user_label_def null");
+    str_appendf(out, ".Llbl_");
+    str_appendf_s(out, "%s", fn->name);
+    str_appendf(out, "_");
+    str_appendf_s(out, "%s", label);
+    str_appendf(out, ":\n");
+}
+
+static void a64_emit_user_goto(Str *out, const Function *fn, const char *label) {
+    if (!out || !fn || !label) die("internal: a64_emit_user_goto null");
+    str_appendf(out, "  b .Llbl_");
+    str_appendf_s(out, "%s", fn->name);
+    str_appendf(out, "_");
+    str_appendf_s(out, "%s", label);
+    str_appendf(out, "\n");
+}
+
+static void a64_emit_cond_branch_true(Str *out, const Program *prg, const Function *fn, const Expr *cond, int true_label, int *label_id) {
+    if (!cond) {
+        // if (0) ...
+        return;
+    }
+
+    if (cond->kind == EXPR_LOR) {
+        a64_emit_cond_branch_true(out, prg, fn, cond->lhs, true_label, label_id);
+        a64_emit_cond_branch_true(out, prg, fn, cond->rhs, true_label, label_id);
+        return;
+    }
+    if (cond->kind == EXPR_LAND) {
+        if (!label_id) die("internal: aarch64-darwin label_id null");
+        int l_false = a64_new_label(label_id);
+        a64_emit_cond_branch_false(out, prg, fn, cond->lhs, l_false, label_id);
+        a64_emit_cond_branch_true(out, prg, fn, cond->rhs, true_label, label_id);
+        a64_label_def(out, l_false);
+        return;
+    }
+    if (cond->kind == EXPR_NOT) {
+        // !x is true when x is false.
+        a64_emit_cond_branch_false(out, prg, fn, cond->lhs, true_label, label_id);
+        return;
+    }
+
+    switch (cond->kind) {
+        case EXPR_EQ:
+        case EXPR_NE:
+        case EXPR_LT:
+        case EXPR_LE:
+        case EXPR_GT:
+        case EXPR_GE: {
+            int wide = a64_expr_is_64bit(cond->lhs) || a64_expr_is_64bit(cond->rhs);
+            int use_unsigned = 0;
+            if ((cond->lhs && (cond->lhs->ptr > 0 || cond->lhs->is_unsigned)) || (cond->rhs && (cond->rhs->ptr > 0 || cond->rhs->is_unsigned))) {
+                use_unsigned = 1;
+            }
+            if (cond->is_unsigned) use_unsigned = 1;
+
+            if (wide) {
+                a64_eval_expr_as_x(out, prg, fn, cond->lhs, "x0", "x11");
+                a64_eval_expr_as_x(out, prg, fn, cond->rhs, "x9", "x10");
+                str_appendf(out, "  cmp x0, x9\n");
+            } else {
+                a64_eval_expr_w(out, prg, fn, cond->lhs, "w0", "w9");
+                a64_eval_expr_w(out, prg, fn, cond->rhs, "w9", "w10");
+                str_appendf(out, "  cmp w0, w9\n");
+            }
+
+            const char *cc = NULL;
+            if (cond->kind == EXPR_EQ) cc = "eq";
+            else if (cond->kind == EXPR_NE) cc = "ne";
+            else if (cond->kind == EXPR_LT) cc = use_unsigned ? "lo" : "lt";
+            else if (cond->kind == EXPR_LE) cc = use_unsigned ? "ls" : "le";
+            else if (cond->kind == EXPR_GT) cc = use_unsigned ? "hi" : "gt";
+            else if (cond->kind == EXPR_GE) cc = use_unsigned ? "hs" : "ge";
+            if (!cc) die("aarch64-darwin: internal: missing cc");
+            a64_b_cond_label(out, cc, true_label);
+            return;
+        }
+        default:
+            break;
+    }
+
+    // Fallback: treat as scalar, branch if non-zero.
+    if (a64_expr_is_64bit(cond)) {
+        a64_eval_expr_x(out, prg, fn, cond, "x0", "x9");
+        str_appendf(out, "  cbnz x0, .Ldar");
+    } else {
+        a64_eval_expr_w(out, prg, fn, cond, "w0", "w9");
+        str_appendf(out, "  cbnz w0, .Ldar");
+    }
+    str_appendf_i64(out, "%d", (long long)true_label);
+    str_appendf(out, "\n");
+}
+
+static void a64_emit_stmt(Str *out, const Program *prg, const Function *fn, const Stmt *s, int ret_label, int *label_id, A64LoopStack *ls) {
+    if (!s) return;
+    switch (s->kind) {
+        case STMT_BLOCK:
+            a64_emit_stmt_list(out, prg, fn, s->block_first, ret_label, label_id, ls);
+            return;
+        case STMT_LABEL:
+            if (!fn) die("aarch64-darwin: label outside function");
+            a64_emit_user_label_def(out, fn, s->label);
+            a64_emit_stmt(out, prg, fn, s->label_stmt, ret_label, label_id, ls);
+            return;
+        case STMT_GOTO:
+            if (!fn) die("aarch64-darwin: goto outside function");
+            a64_emit_user_goto(out, fn, s->label);
+            return;
+        case STMT_DECL:
+            // Uninitialized locals (including arrays/structs) only affect stack layout.
+            // No codegen needed unless there is an initializer.
+            if (!s->decl_init) return;
+            if (s->decl_store_size == 1 || s->decl_store_size == 2) {
+                a64_eval_expr_w(out, prg, fn, s->decl_init, "w0", "w9");
+                // Truncate like a store.
+                if (s->decl_store_size == 1) {
+                    str_appendf(out, "  and w0, w0, #0xff\n");
+                } else {
+                    str_appendf(out, "  and w0, w0, #0xffff\n");
+                }
+                a64_addr_of_local_off(out, "x10", s->decl_offset);
+                a64_store_scalar_w_to_addr(out, "w0", "x10", s->decl_store_size);
+                return;
+            }
+            if (s->decl_store_size == 4) {
+                a64_eval_expr_w(out, prg, fn, s->decl_init, "w0", "w9");
+                a64_stur_w_off(out, "w0", s->decl_offset);
+                return;
+            }
+            if (s->decl_store_size == 8) {
+                a64_eval_expr_x(out, prg, fn, s->decl_init, "x0", "x9");
+                a64_stur_x_off(out, "x0", s->decl_offset);
+                return;
+            }
+            die("aarch64-darwin: local decl size not supported yet (fn=%s sz=%d)", fn ? fn->name : "?", s->decl_store_size);
+            return;
+        case STMT_EXPR:
+            if (stmt_is_void_cast_discard(s)) return;
+            if (!s->expr) return;
+            // Minimal subset: allow assignment and direct call expressions.
+            if (s->expr->kind != EXPR_ASSIGN && s->expr->kind != EXPR_CALL && s->expr->kind != EXPR_CAST &&
+                s->expr->kind != EXPR_PREINC && s->expr->kind != EXPR_PREDEC &&
+                s->expr->kind != EXPR_POSTINC && s->expr->kind != EXPR_POSTDEC &&
+                s->expr->kind != EXPR_MEMCPY) {
+                die("aarch64-darwin: unsupported expression statement kind %d", s->expr->kind);
+            }
+            // For assignments, we only care about side effects. The 32-bit
+            // evaluator already supports 8-byte stores (it evaluates rhs in x
+            // and stores), so keep using it here.
+            if (s->expr->kind == EXPR_ASSIGN) {
+                a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");
+                return;
+            }
+
+            if (s->expr->ptr != 0 || s->expr->lval_size == 8) {
+                a64_eval_expr_x(out, prg, fn, s->expr, "x0", "x9");
+            } else {
+                a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");
+            }
+            return;
+        case STMT_RETURN:
+            // Return value ABI: integers/pointers in x0 (w0 for 32-bit int).
+            if (fn && (fn->ret_ptr != 0 || fn->ret_base == BT_LONG)) {
+                a64_eval_expr_x(out, prg, fn, s->expr, "x0", "x9");
+            } else {
+                a64_eval_expr_w(out, prg, fn, s->expr, "w0", "w9");
+            }
+            a64_b_label(out, ret_label);
+            return;
+        case STMT_IF: {
+            int else_label = a64_new_label(label_id);
+            int end_label = a64_new_label(label_id);
+            a64_emit_cond_branch_false(out, prg, fn, s->if_cond, else_label, label_id);
+            a64_emit_stmt(out, prg, fn, s->if_then, ret_label, label_id, ls);
+            // Always jump to end; dead code after returns is ok in this bring-up backend.
+            a64_b_label(out, end_label);
+            a64_label_def(out, else_label);
+            if (s->if_else) {
+                a64_emit_stmt(out, prg, fn, s->if_else, ret_label, label_id, ls);
+            }
+            a64_label_def(out, end_label);
+            return;
+        }
+        case STMT_WHILE: {
+            if (!s->while_body) die("aarch64-darwin: while missing body");
+            int start_label = a64_new_label(label_id);
+            int end_label = a64_new_label(label_id);
+
+            if (!ls) die("internal: aarch64-darwin loop stack null");
+            if (ls->depth >= (int)(sizeof(ls->break_label) / sizeof(ls->break_label[0]))) {
+                die("aarch64-darwin: too many nested loops");
+            }
+            ls->break_label[ls->depth] = end_label;
+            ls->cont_label[ls->depth] = start_label;
+            ls->depth++;
+
+            a64_label_def(out, start_label);
+            a64_emit_cond_branch_false(out, prg, fn, s->while_cond, end_label, label_id);
+            a64_emit_stmt(out, prg, fn, s->while_body, ret_label, label_id, ls);
+            a64_b_label(out, start_label);
+            a64_label_def(out, end_label);
+
+            ls->depth--;
+            return;
+        }
+        case STMT_FOR: {
+            if (!s->for_body) die("aarch64-darwin: for missing body");
+
+            // init
+            if (s->for_init) {
+                a64_emit_stmt(out, prg, fn, s->for_init, ret_label, label_id, ls);
+            }
+
+            int start_label = a64_new_label(label_id);
+            int inc_label = a64_new_label(label_id);
+            int end_label = a64_new_label(label_id);
+
+            if (!ls) die("internal: aarch64-darwin loop stack null");
+            if (ls->depth >= (int)(sizeof(ls->break_label) / sizeof(ls->break_label[0]))) {
+                die("aarch64-darwin: too many nested loops");
+            }
+            ls->break_label[ls->depth] = end_label;
+            ls->cont_label[ls->depth] = inc_label;
+            ls->depth++;
+
+            a64_label_def(out, start_label);
+            if (s->for_cond) {
+                a64_emit_cond_branch_false(out, prg, fn, s->for_cond, end_label, label_id);
+            }
+
+            a64_emit_stmt(out, prg, fn, s->for_body, ret_label, label_id, ls);
+
+            a64_label_def(out, inc_label);
+            if (s->for_inc) {
+                if (s->for_inc->ptr != 0 || s->for_inc->lval_size == 8) {
+                    a64_eval_expr_x(out, prg, fn, s->for_inc, "x0", "x9");
+                } else {
+                    a64_eval_expr_w(out, prg, fn, s->for_inc, "w0", "w9");
+                }
+            }
+            a64_b_label(out, start_label);
+            a64_label_def(out, end_label);
+
+            ls->depth--;
+            return;
+        }
+        case STMT_BREAK: {
+            if (!ls || ls->depth <= 0) die("aarch64-darwin: break outside loop");
+            int bl = ls->break_label[ls->depth - 1];
+            a64_b_label(out, bl);
+            return;
+        }
+        case STMT_CONTINUE: {
+            if (!ls || ls->depth <= 0) die("aarch64-darwin: continue outside loop");
+            int cl = ls->cont_label[ls->depth - 1];
+            a64_b_label(out, cl);
+            return;
+        }
+        default:
+            die("aarch64-darwin: unsupported statement kind %d (need more backend bring-up)", s ? s->kind : -1);
+    }
+}
+
+static void a64_emit_stmt_list(Str *out, const Program *prg, const Function *fn, const Stmt *first, int ret_label, int *label_id, A64LoopStack *ls) {
+    for (const Stmt *s = first; s; s = s->next) {
+        a64_emit_stmt(out, prg, fn, s, ret_label, label_id, ls);
+    }
+}
+
+static int a64_p2align_pow2(int a) {
+    if (a <= 1) return 0;
+    if (a == 2) return 1;
+    if (a == 4) return 2;
+    if (a == 8) return 3;
+    if (a == 16) return 4;
+    if (a == 32) return 5;
+    return 3;
+}
+
+static void a64_emit_fn(Str *out, const Program *prg, const Function *fn, int *label_id) {
+    if (!out || !fn || !label_id) die("internal: a64_emit_fn null");
+
+    // Body must be a block.
+    if (!fn->body || fn->body->kind != STMT_BLOCK) {
+        die("aarch64-darwin: function body must be a block");
+    }
+    str_appendf(out, ".p2align 2\n");
+    if (!fn->is_static) {
+        str_appendf(out, ".globl _");
+        str_appendf_s(out, "%s", fn->name);
+        str_appendf(out, "\n");
+    }
+    str_appendf(out, "_");
+    str_appendf_s(out, "%s", fn->name);
+    str_appendf(out, ":\n");
+
+    // Prologue: frame pointer + link register.
+    str_appendf(out, "  stp x29, x30, [sp, #-16]!\n");
+    str_appendf(out, "  mov x29, sp\n");
+
+    // Allocate locals.
+    int stack_size = fn->stack_size;
+    if (stack_size < 0) die("aarch64-darwin: negative stack_size");
+    int aligned = (stack_size + 15) & ~15;
+    if (aligned) {
+        if (aligned > 4095) {
+            a64_mov_x_imm(out, "x9", aligned);
+            str_appendf(out, "  sub sp, sp, x9\n");
+        } else {
+            str_appendf_i64(out, "  sub sp, sp, #%d\n", (long long)aligned);
+        }
+    }
+
+    // Spill incoming integer args to their stack slots (bound params).
+    static const char *areg_w[6] = {"w0", "w1", "w2", "w3", "w4", "w5"};
+    static const char *areg_x[6] = {"x0", "x1", "x2", "x3", "x4", "x5"};
+    for (int pi = 0; pi < 6; pi++) {
+        int off = fn->param_offsets[pi];
+        if (off == 0) continue;
+        if (stmt_count_var_uses(fn->body, off) == 0) continue;
+        int sz = fn->param_sizes[pi];
+        if (sz == 0) {
+            // Front-end uses size=0 for some pointer-like params; treat as 8-byte.
+            sz = 8;
+        }
+        if (sz == 1 || sz == 2) {
+            a64_addr_of_local_off(out, "x10", off);
+            a64_store_scalar_w_to_addr(out, areg_w[pi], "x10", sz);
+            continue;
+        }
+        if (sz == 4) {
+            a64_stur_w_off(out, areg_w[pi], off);
+            continue;
+        }
+        if (sz == 8) {
+            a64_stur_x_off(out, areg_x[pi], off);
+            continue;
+        }
+        die("aarch64-darwin: only 4/8-byte params supported yet");
+    }
+
+    int ret_label = a64_new_label(label_id);
+    A64LoopStack ls;
+    mc_memset(&ls, 0, sizeof(ls));
+    a64_emit_stmt_list(out, prg, fn, fn->body->block_first, ret_label, label_id, &ls);
+    a64_mov_w_imm(out, "w0", 0);
+    a64_label_def(out, ret_label);
+    str_appendf(out, "  mov sp, x29\n");
+    str_appendf(out, "  ldp x29, x30, [sp], #16\n");
+    str_appendf(out, "  ret\n\n");
+}
+
+void emit_aarch64_darwin_hosted(const Program *prg, Str *out) {
+    if (!prg || !out) die("internal: emit_aarch64_darwin_hosted null");
+
+    a64_expr_label_id = 0;
+
+    // Minimal bring-up backend:
+    // - hosted (CRT + libc), so we emit `_main` and no custom `_start`.
+    // - supports a small subset of statements/expressions.
+    // - emits all function bodies in the translation unit.
+    int n_bodies = 0;
+    for (int i = 0; i < prg->nfns; i++) {
+        if (prg->fns[i].has_body) {
+            n_bodies++;
+        }
+    }
+    // NOTE: We intentionally do not require a main() here.
+    // The driver compiles each input file to an object and links them all at the end;
+    // only the final linked executable must have an entrypoint.
+    (void)n_bodies;
+
+    // Minimal bring-up backend (slightly expanded):
+    // - still only supports a single function body (main)
+    // - supports a simple block with:
+    //     - (void)param; discards
+    //     - int local declarations with constant initializer (or no init => 0)
+    //     - return of a simple integer expression: num, var, add/sub
+    // Unsupported constructs fail fast with a clear error.
+
+    // Emit globals (minimal): scalars/arrays initialized via init blobs, and pointer-to-string init.
+    if (prg->nglobals > 0) {
+        for (int i = 0; i < prg->nglobals; i++) {
+            const GlobalVar *gv = &prg->globals[i];
+            if (gv->is_extern) continue;
+
+            int align = (gv->elem_size >= 8) ? 8 : (gv->elem_size >= 4) ? 4 : (gv->elem_size >= 2) ? 2 : 1;
+            int p2 = a64_p2align_pow2(align);
+
+            char sym[160];
+            sym[0] = '_';
+            mc_usize n = mc_strlen(gv->name);
+            if (n + 2 > sizeof(sym)) die("aarch64-darwin: global name too long");
+            mc_memcpy(sym + 1, gv->name, n + 1);
+
+            if (gv->has_init && gv->init_str_id >= 0) {
+                str_appendf(out, ".section __DATA,__data\n");
+                str_appendf_i64(out, ".p2align %d\n", (long long)p2);
+                if (!gv->is_static) {
+                    str_appendf(out, ".globl ");
+                    str_appendf_s(out, "%s", sym);
+                    str_appendf(out, "\n");
+                }
+                str_appendf_s(out, "%s:\n", sym);
+
+                if (gv->init_str_id >= prg->nstrs) {
+                    die("internal: bad init_str_id %d", gv->init_str_id);
+                }
+                if (gv->init_kind == 1) {
+                    // Pointer to string literal.
+                    str_appendf(out, "  .quad .Ldar_str");
+                    str_appendf_i64(out, "%d", (long long)gv->init_str_id);
+                    str_appendf(out, "\n");
+                    if (gv->size > 8) {
+                        str_appendf_i64(out, "  .zero %d\n", (long long)(gv->size - 8));
+                    }
+                    str_appendf(out, "\n");
+                } else {
+                    const StringLit *sl = &prg->strs[gv->init_str_id];
+                    mc_usize len = sl->len;
+                    if (gv->size > 0 && len > (mc_usize)gv->size) len = (mc_usize)gv->size;
+                    for (mc_usize off = 0; off < len; ) {
+                        str_appendf(out, "  .byte ");
+                        mc_usize m = len - off;
+                        if (m > 16) m = 16;
+                        for (mc_usize j = 0; j < m; j++) {
+                            unsigned int b = (unsigned int)sl->data[off + j];
+                            str_appendf_su(out, "%s%u", (j == 0) ? "" : ", ", (unsigned long long)b);
+                        }
+                        str_appendf(out, "\n");
+                        off += m;
+                    }
+                    if (gv->size > (int)len) {
+                        str_appendf_i64(out, "  .zero %d\n", (long long)(gv->size - (int)len));
+                    }
+                    str_appendf(out, "\n");
+                }
+            } else {
+                // Uninitialized: best-effort common symbol.
+                if (gv->size <= 0) continue;
+                str_appendf(out, ".comm ");
+                str_appendf_s(out, "%s", sym);
+                str_appendf(out, ", ");
+                str_appendf_i64(out, "%d", (long long)gv->size);
+                str_appendf(out, ", ");
+                str_appendf_i64(out, "%d", (long long)align);
+                str_appendf(out, "\n\n");
+            }
+        }
+    }
+
+    // Emit functions.
+    str_appendf(out, ".text\n");
+    int label_id = 0;
+    for (int i = 0; i < prg->nfns; i++) {
+        const Function *fn = &prg->fns[i];
+        if (!fn->has_body) continue;
+        a64_emit_fn(out, prg, fn, &label_id);
+    }
+
+    // Emit string/byte blobs (string literals and init blobs) into a const section.
+    if (prg->nstrs > 0) {
+        str_appendf(out, ".section __TEXT,__const\n");
+        for (int i = 0; i < prg->nstrs; i++) {
+            const StringLit *sl = &prg->strs[i];
+            str_appendf_i64(out, ".Ldar_str%d:\n", (long long)i);
+            for (mc_usize off = 0; off < sl->len; ) {
+                str_appendf(out, "  .byte ");
+                mc_usize n = sl->len - off;
+                if (n > 16) n = 16;
+                for (mc_usize j = 0; j < n; j++) {
+                    unsigned int b = (unsigned int)sl->data[off + j];
+                    str_appendf_su(out, "%s%u", (j == 0) ? "" : ", ", (unsigned long long)b);
+                }
+                str_appendf(out, "\n");
+                off += n;
+            }
+            str_appendf(out, "\n");
+        }
+    }
+}
+

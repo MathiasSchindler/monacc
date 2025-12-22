@@ -92,6 +92,7 @@
 // Minimal errno values (Linux)
 #define MC_ENOENT 2
 #define MC_EPERM 1
+#define MC_ENOSYS 38
 #define MC_EAGAIN 11
 #define MC_EINTR 4
 #define MC_EEXIST 17

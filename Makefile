@@ -1,9 +1,32 @@
 # monacc unified build
 #
-# Usage:
-#   make        # Build compiler + all tools
-#   make test   # Build everything + run all tests
-#   make clean  # Remove build artifacts
+# Main Targets:
+#   make              Build compiler + all tools
+#   make test         Build everything + run all tests
+#   MULTI=1 make test Run full platform/tool matrix build & test
+#   make clean        Remove all build artifacts
+#
+# Optional initramfs targets for kernel bring-up:
+#   make initramfs    Build compressed initramfs for experimental kernel
+#
+# Build Configuration (set via environment or make arguments):
+#   DEBUG=1           Build with debug symbols, no optimization
+#   LTO=1             Enable link-time optimization (default: 1)
+#   EMITOBJ=0         Force external assembler (--as as)
+#   LINKINT=0         Force external linker (--ld ld)
+#   HOST_PIE=1        Enable position-independent executable
+#
+# Test Configuration:
+#   All test groups are enabled by default. To disable specific groups:
+#   SELFTEST_EMITOBJ=0       Disable object emission tests
+#   SELFTEST_ELFREAD=0       Disable ELF reader tests
+#   SELFTEST_LINKINT=0       Disable internal linker tests
+#   SELFTEST_MATHF=0         Disable math function tests
+#   SELFTEST_STAGE2=0        Disable stage-2 self-hosting tests
+#   SELFTEST_STAGE3=0        Disable stage-3 self-hosting tests
+#   SELFTEST_MONACCBUGS=0    Disable regression tests
+#   SELFTEST_BINSHELL=0      Disable bin/sh execution tests
+#   SELFTEST_REPO_GUARDS=0   Disable repository guardrail checks
 
 CC ?= cc
 MONACC := bin/monacc
@@ -52,26 +75,25 @@ endif
 # smaller ET_EXEC binary. Set HOST_PIE=1 to keep the distro default.
 HOST_PIE ?= 0
 
-# Optional compiler probes.
-# Note: the emit-obj probe is enabled by default and is treated as a normal test.
-SELFTEST ?= 0
+# All tests are enabled by default as part of `make test`.
+# Advanced users can disable specific test groups by setting these to 0.
+# - SELFTEST_EMITOBJ: Object emission tests
+# - SELFTEST_ELFREAD: ELF reader tests
+# - SELFTEST_LINKINT: Internal linker tests
+# - SELFTEST_MATHF: Math function tests
+# - SELFTEST_STAGE2: Stage-2 self-hosting tests
+# - SELFTEST_STAGE3: Stage-3 self-hosting tests
+# - SELFTEST_MONACCBUGS: Regression tests (docs/monaccbugs.md)
+# - SELFTEST_BINSHELL: bin/sh execution tests
+# - SELFTEST_REPO_GUARDS: Repository guardrail checks
 SELFTEST_EMITOBJ ?= 1
 SELFTEST_ELFREAD ?= 1
 SELFTEST_LINKINT ?= 1
 SELFTEST_MATHF ?= 1
-SELFTEST_STAGE2 ?= 0
-SELFTEST_STAGE2_INTERNAL ?= 0
-SELFTEST_STAGE3 ?= 0
-SELFTEST_BINSHELL ?= 0
-SELFTEST_BINSHELL_BUILD ?= 0
-SELFTEST_BINSHELL_TOOLS ?= 0
-SELFTEST_BINSHELL_TOOLS_HARNESS ?= 0
-
-# Compiler regression tests for known bug fixes (see docs/monaccbugs.md).
-# Runs as part of `make test` by default; set SELFTEST_MONACCBUGS=0 to skip.
+SELFTEST_STAGE2 ?= 1
+SELFTEST_STAGE3 ?= 1
 SELFTEST_MONACCBUGS ?= 1
-
-# Repo guardrails (fast grep-based checks).
+SELFTEST_BINSHELL ?= 1
 SELFTEST_REPO_GUARDS ?= 1
 
 CFLAGS_BASE := -Wall -Wextra -Wpedantic -fno-stack-protector
@@ -178,18 +200,7 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 # Default goal: build everything
 .DEFAULT_GOAL := all
 
-.PHONY: all all-split tools-ld tools-internal test clean debug selfhost
-.PHONY: matrix-tool matrix-mandelbrot
-.PHONY: darwin-tools
-.PHONY: darwin-smoke
-.PHONY: darwin-monacc
-.PHONY: darwin-monacc-smoke
-.PHONY: darwin-native-smoke
-.PHONY: binsh-smoke
-.PHONY: binsh-tools-smoke
-.PHONY: binsh-tools-harness-smoke
-.PHONY: closure-smoke
-.PHONY: selfcontained-build-smoke
+.PHONY: all test clean
 
 # === Initramfs image (for booting sysbox) ===
 
@@ -209,13 +220,7 @@ all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
 	@echo ""
 	@echo "Build complete: bin/monacc + $(words $(TOOL_BINS)) tools + aliases"
 
-# Optional split build: build tools twice, once linked via external ld and once via
-# the internal linker. This is useful for comparison/bring-up.
-all-split: $(MONACC) tools-ld tools-internal
-	@echo ""
-	@echo "Split build complete: bin/ld/* (external ld) + bin/internal/* (internal linker)"
-
-# === Self-hosting probe: build compiler with monacc ===
+# === Self-hosting support (used by test target) ===
 
 MONACC_SELF := bin/monacc-self
 MONACC_SELF2 := bin/monacc-self2
@@ -233,27 +238,22 @@ SELFHOST2_LINKINT ?= 0
 # Stage-3 knobs (default to stage-2 settings).
 SELFHOST3_EMITOBJ ?= $(SELFHOST2_EMITOBJ)
 SELFHOST3_LINKINT ?= $(SELFHOST2_LINKINT)
+
 # monacc emits _start only for the first input file. Ensure that translation unit
 # contains main(), otherwise the produced binary will be a trivial exit stub.
 COMPILER_SELFHOST_SRC := \
 	compiler/monacc_main.c \
 	$(filter-out core/mc_start.c core/mc_vsnprintf.c compiler/monacc_main.c,$(COMPILER_SRC))
 
-selfhost: $(MONACC_SELF)
-	@echo ""
-	@echo "Self-host build complete: $(MONACC_SELF)"
-
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
 	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
-# Stage-2 selfhost: rebuild the compiler using the self-built compiler.
-# The assembler/linker internalization is controlled by SELFHOST2_EMITOBJ and
-# SELFHOST2_LINKINT.
-.PHONY: selfhost2
+# Internal targets for test scripts (not user-facing)
+.PHONY: selfhost selfhost2 selfhost3
+selfhost: $(MONACC_SELF)
 selfhost2: $(MONACC_SELF2)
-	@echo ""
-	@echo "Stage-2 self-host build complete: $(MONACC_SELF2)"
+selfhost3: $(MONACC_SELF3)
 
 $(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
 	@echo "==> Building stage-2 self-hosted compiler"
@@ -262,66 +262,12 @@ $(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
 		$(if $(filter 0,$(SELFHOST2_LINKINT)),--ld ld,) \
 		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
 
-.PHONY: selfhost2-smoke
-selfhost2-smoke: $(MONACC_SELF2)
-	@echo "==> Stage-2 smoke: compile+run examples/hello.c"
-	@mkdir -p build/selfhost2
-	@./$(MONACC_SELF2) examples/hello.c -o build/selfhost2/hello-self2
-	@set +e; ./build/selfhost2/hello-self2 >/dev/null; rc=$$?; set -e; \
-		if [ $$rc -ne 42 ]; then echo "selfhost2-smoke: FAIL (rc=$$rc, expected 42)"; exit 1; fi
-	@echo "selfhost2-smoke: OK"
-
-# Step-8 bring-up: a minimal script that runs under ./bin/sh.
-binsh-smoke: all
-	@echo "==> bin/sh smoke: run minimal script"
-	@./bin/sh tests/tools/binsh-minimal.sh
-	@echo "binsh-smoke: OK"
-
-# Step-8 bring-up: run a small real tools smoke under ./bin/sh.
-binsh-tools-smoke: all
-	@echo "==> bin/sh tools smoke: run small suite"
-	@./bin/sh tests/tools/binsh-tools-smoke.sh
-	@echo "binsh-tools-smoke: OK"
-
-# Step-8 bring-up: run the canonical tools harness (smoke suite) under ./bin/sh.
-binsh-tools-harness-smoke: all
-	@echo "==> bin/sh tools harness: smoke suite"
-	@SB_TEST_BIN="$$(pwd)/bin" SB_TEST_SHOW_SUITES=1 ./bin/sh tests/tools/run.sh smoke
-	@echo "binsh-tools-harness-smoke: OK"
-
-# Step-8 closure: run a self-contained smoke script under ./bin/sh.
-closure-smoke: all
-	@echo "==> closure smoke: compile+run under ./bin/sh"
-	@./bin/sh tests/closure/selfcontained-smoke.sh
-	@echo "closure-smoke: OK"
-
-# Step-8 closure: rebuild compiler stages under ./bin/sh (heavier).
-selfcontained-build-smoke: all
-	@echo "==> selfcontained build: rebuild stages under ./bin/sh"
-	@./bin/sh tests/closure/selfcontained-build.sh
-	@echo "selfcontained-build-smoke: OK"
-
-# Stage-3 selfhost: rebuild the compiler using the stage-2 compiler.
-.PHONY: selfhost3
-selfhost3: $(MONACC_SELF3)
-	@echo ""
-	@echo "Stage-3 self-host build complete: $(MONACC_SELF3)"
-
 $(MONACC_SELF3): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF2) | bin
 	@echo "==> Building stage-3 self-hosted compiler"
 	@$(MONACC_SELF2) \
 		$(if $(filter 0,$(SELFHOST3_EMITOBJ)),--as as,) \
 		$(if $(filter 0,$(SELFHOST3_LINKINT)),--ld ld,) \
 		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
-
-.PHONY: selfhost3-smoke
-selfhost3-smoke: $(MONACC_SELF3)
-	@echo "==> Stage-3 smoke: compile+run examples/hello.c"
-	@mkdir -p build/selfhost3
-	@./$(MONACC_SELF3) examples/hello.c -o build/selfhost3/hello-self3
-	@set +e; ./build/selfhost3/hello-self3 >/dev/null; rc=$$?; set -e; \
-		if [ $$rc -ne 42 ]; then echo "selfhost3-smoke: FAIL (rc=$$rc, expected 42)"; exit 1; fi
-	@echo "selfhost3-smoke: OK"
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -492,38 +438,39 @@ test: all
 	tool_rc=$$?; \
 	echo ""; \
 	if [ "$(SELFTEST_ELFREAD)" = "1" ]; then \
-		echo "==> Probe: ELF ET_REL reader"; \
+		echo "==> Testing: ELF ET_REL reader"; \
 		$(HOST_BASH) tests/compiler/elfobj-dump.sh; elfread_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_LINKINT)" = "1" ]; then \
-		echo "==> Probe: --link-internal"; \
+		echo "==> Testing: --link-internal"; \
 		$(HOST_BASH) tests/compiler/link-internal-smoke.sh; linkint_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_MATHF)" = "1" ]; then \
-		echo "==> Selftest: mc_mathf + tensor helpers"; \
+		echo "==> Testing: mc_mathf + tensor helpers"; \
 		$(HOST_BASH) tests/compiler/selftest-mathf.sh; mathf_rc=$$?; \
 		echo ""; \
 	fi; \
-	if [ "$(SELFTEST)" = "1" ]; then \
-		echo "==> Selftest: host-built monacc -> monacc-self"; \
-		$(HOST_BASH) tests/compiler/selftest.sh; \
-		echo ""; \
-	fi; \
 	if [ "$(SELFTEST_EMITOBJ)" = "1" ]; then \
-		echo "==> Selftest: --emit-obj"; \
+		echo "==> Testing: --emit-obj"; \
 		$(HOST_BASH) tests/compiler/selftest-emitobj.sh; emitobj_rc=$$?; \
 		echo ""; \
 	fi; \
+	if [ "$(SELFTEST_STAGE2)" = "1" ] || [ "$(SELFTEST_STAGE3)" = "1" ]; then \
+		if [ ! -f $(MONACC_SELF) ]; then \
+			echo "==> Building self-hosted compiler (stage-1)"; \
+			$(MAKE) $(MONACC_SELF); \
+		fi; \
+	fi; \
 	if [ "$(SELFTEST_STAGE2)" = "1" ]; then \
-		echo "==> Selftest: stage-2 (monacc-self -> monacc-self2)"; \
-		SELFTEST_STAGE2_STRICT=1 SELFTEST_STAGE2_INTERNAL="$(SELFTEST_STAGE2_INTERNAL)" $(HOST_BASH) tests/compiler/selftest-stage2.sh; stage2_rc=$$?; \
+		echo "==> Testing: stage-2 (monacc-self -> monacc-self2)"; \
+		$(HOST_BASH) tests/compiler/selftest-stage2.sh; stage2_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_STAGE3)" = "1" ]; then \
-		echo "==> Selftest: stage-3 (monacc-self2 -> monacc-self3)"; \
-		SELFTEST_STAGE3_STRICT=1 $(HOST_BASH) tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
+		echo "==> Testing: stage-3 (monacc-self2 -> monacc-self3)"; \
+		$(HOST_BASH) tests/compiler/selftest-stage3.sh; stage3_rc=$$?; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_MONACCBUGS)" = "1" ]; then \
@@ -532,32 +479,16 @@ test: all
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
-		echo "==> Probe: run minimal script under ./bin/sh"; \
-		./bin/sh tests/tools/binsh-minimal.sh; binsh_rc=$$?; \
-		echo ""; \
-	fi; \
-	if [ "$(SELFTEST_BINSHELL_TOOLS)" = "1" ]; then \
-		echo "==> Probe: tools smoke under ./bin/sh"; \
+		echo "==> Testing: bin/sh execution"; \
+		./bin/sh tests/tools/binsh-minimal.sh || binsh_rc=1; \
 		./bin/sh tests/tools/binsh-tools-smoke.sh || binsh_rc=1; \
-		echo ""; \
-	fi; \
-	if [ "$(SELFTEST_BINSHELL_TOOLS_HARNESS)" = "1" ]; then \
-		echo "==> Probe: tools harness smoke under ./bin/sh"; \
 		SB_TEST_BIN="$$(pwd)/bin" SB_TEST_SHOW_SUITES=1 ./bin/sh tests/tools/run.sh smoke || binsh_rc=1; \
-		echo ""; \
-	fi; \
-	if [ "$(SELFTEST_BINSHELL)" = "1" ]; then \
-		echo "==> Probe: closure smoke under ./bin/sh"; \
 		./bin/sh tests/closure/selfcontained-smoke.sh || binsh_rc=1; \
-		echo ""; \
-	fi; \
-	if [ "$(SELFTEST_BINSHELL_BUILD)" = "1" ]; then \
-		echo "==> Probe: selfcontained build under ./bin/sh"; \
 		./bin/sh tests/closure/selfcontained-build.sh || binsh_rc=1; \
 		echo ""; \
 	fi; \
 	if [ "$(SELFTEST_REPO_GUARDS)" = "1" ]; then \
-		echo "==> Probe: repo guardrails"; \
+		echo "==> Testing: repository guardrails"; \
 		$(HOST_SH) tests/repo/no-kernel-binutils-creep.sh .; repo_guard_rc=$$?; \
 		$(HOST_SH) tests/repo/function-overlap.sh . || repo_guard_rc=1; \
 		echo ""; \
@@ -594,31 +525,6 @@ endif
 
 clean:
 	rm -rf bin build $(HOST_BIN)
-
-# === Debug build ===
-
-debug:
-	$(MAKE) clean
-	$(MAKE) DEBUG=1 LTO=0 all
-
-# Build only one tool across multiple toolchains (monacc + gcc/clang), without
-# compiling all other tools.
-#
-# Examples:
-#   make matrix-tool TOOL=mandelbrot
-#   make matrix-tool TOOL=mandelbrot TCS="monacc gcc-15 clang-20"
-#   MATRIX_TCS="monacc gcc-15 clang-21" make matrix-tool TOOL=mandelbrot
-#
-TOOL ?= mandelbrot
-TCS ?=
-
-matrix-tool: $(MONACC)
-	@echo "==> Matrix: build tool=$(TOOL)"
-	@mkdir -p build/matrix
-	@MATRIX_TOOLS="$(TOOL)" sh tests/matrix/build-matrix.sh $(TCS)
-
-matrix-mandelbrot:
-	@$(MAKE) matrix-tool TOOL=mandelbrot TCS="$(TCS)"
 
 # === Hosted macOS build (clang + libc) ===
 

@@ -94,6 +94,10 @@ struct mc_compiler {
     int trace_enabled;
     int trace_force;    // Force tracing (--trace-selfhost)
     int trace_cached;   // Cached environment check result (-1 = unchecked)
+    
+    // Code generation state
+    // Label counters for backend code generation (per-compilation unit state)
+    int a64_expr_label_id;  // aarch64 expression label counter
 };
 
 // Initialize compiler context with default options

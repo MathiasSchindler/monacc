@@ -1,7 +1,12 @@
 #include "monacc_libc.h"
 #include "mc.h"
 #include "monacc_base.h"
-#include "include/monacc_modules.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
+#include "include/monacc/token.h"
+#include "include/monacc/ast.h"
+#include "include/monacc/pp.h"
+#include "include/monacc/backend.h"
 #include "mc_compiler.h"
 
 static int trace_enabled_ctx(mc_compiler *ctx) {

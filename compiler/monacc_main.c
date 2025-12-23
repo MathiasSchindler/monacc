@@ -1,17 +1,17 @@
 #include "monacc.h"
 #include "mc_compiler.h"
 
-static int g_trace_force = 0;
-static int g_trace_cached = -1;
-
-static int trace_enabled(void) {
-    if (g_trace_force) return 1;
-    if (g_trace_cached >= 0) return g_trace_cached;
-    g_trace_cached = 0;
+static int trace_enabled_ctx(mc_compiler *ctx) {
+    if (!ctx) return 0;
+    if (ctx->trace_force) return 1;
+    if (ctx->trace_cached >= 0) return ctx->trace_cached;
+    
+    // Initialize trace state from environment
+    ctx->trace_cached = 0;
     char **envp = mc_get_start_envp();
     const char *v = envp ? mc_getenv_kv(envp, "MONACC_TRACE=") : NULL;
-    if (v && *v && mc_strcmp(v, "0") != 0) g_trace_cached = 1;
-    return g_trace_cached;
+    if (v && *v && mc_strcmp(v, "0") != 0) ctx->trace_cached = 1;
+    return ctx->trace_cached;
 }
 
 static void trace_write(const char *s) {
@@ -19,8 +19,8 @@ static void trace_write(const char *s) {
     xwrite_best_effort(2, s, mc_strlen(s));
 }
 
-static void trace_checkpoint(const char *what, const char *path) {
-    if (!trace_enabled()) return;
+static void trace_checkpoint_ctx(mc_compiler *ctx, const char *what, const char *path) {
+    if (!ctx || !trace_enabled_ctx(ctx)) return;
     trace_write("TRACE: ");
     trace_write(what ? what : "?");
     if (path && *path) {
@@ -238,9 +238,9 @@ static void mt_apply_builtin_defines(MacroTable *mt, Target target) {
     }
 }
 
-static void compile_to_obj(Target target, const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
+static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path, const char *tmp_s, const char *tmp_o, const PPConfig *cfg,
                            const CmdDefine *defs, int ndefs, int with_start, const char *dump_pp_path, const char *as_prog, int emit_obj) {
-    trace_checkpoint("read input", in_path);
+    trace_checkpoint_ctx(ctx, "read input", in_path);
 
     MacroTable mt;
     mc_memset(&mt, 0, sizeof(mt));
@@ -252,9 +252,9 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
     Str pp;
     mc_memset(&pp, 0, sizeof(pp));
 
-    trace_checkpoint("preprocess start", in_path);
+    trace_checkpoint_ctx(ctx, "preprocess start", in_path);
     preprocess_file(cfg, &mt, &ot, in_path, &pp);
-    trace_checkpoint("preprocess end", in_path);
+    trace_checkpoint_ctx(ctx, "preprocess end", in_path);
 
     if (dump_pp_path) {
         write_file(dump_pp_path, pp.buf ? pp.buf : "", pp.len);
@@ -275,14 +275,14 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
     mc_memset(&prg, 0, sizeof(prg));
     p.prg = &prg;
 
-    trace_checkpoint("parse start", in_path);
+    trace_checkpoint_ctx(ctx, "parse start", in_path);
     parse_program(&p, &prg);
-    trace_checkpoint("parse end", in_path);
+    trace_checkpoint_ctx(ctx, "parse end", in_path);
 
     Str out_asm;
     mc_memset(&out_asm, 0, sizeof(out_asm));
 
-    trace_checkpoint("codegen start", in_path);
+    trace_checkpoint_ctx(ctx, "codegen start", in_path);
     if (target == TARGET_X86_64_LINUX) {
         emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
     } else if (target == TARGET_AARCH64_DARWIN) {
@@ -291,7 +291,7 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
     } else {
         die("internal: unknown target");
     }
-    trace_checkpoint("codegen end", in_path);
+    trace_checkpoint_ctx(ctx, "codegen end", in_path);
 
     // Always emit the textual assembly as well; it's used by the external 'as' path
     // and helps diagnose internal object emission failures.
@@ -301,11 +301,11 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
         if (target != TARGET_X86_64_LINUX) {
             die("emit-obj is only supported for x86_64-linux today");
         }
-        trace_checkpoint("assemble (internal) start", tmp_o);
+        trace_checkpoint_ctx(ctx, "assemble (internal) start", tmp_o);
         assemble_x86_64_elfobj(out_asm.buf ? out_asm.buf : "", out_asm.len, tmp_o);
-        trace_checkpoint("assemble (internal) end", tmp_o);
+        trace_checkpoint_ctx(ctx, "assemble (internal) end", tmp_o);
     } else {
-        trace_checkpoint("assemble (external) start", tmp_o);
+        trace_checkpoint_ctx(ctx, "assemble (external) start", tmp_o);
         char *as_argv[8];
         if (target == TARGET_AARCH64_DARWIN) {
             // Drive the platform assembler via clang.
@@ -326,7 +326,7 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
         }
         int rc = run_cmd(as_argv);
         if (rc != 0) die_i64("as failed (", rc, ")");
-        trace_checkpoint("assemble (external) end", tmp_o);
+        trace_checkpoint_ctx(ctx, "assemble (external) end", tmp_o);
     }
 
     monacc_free(out_asm.buf);
@@ -435,7 +435,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (!mc_strcmp(argv[i], "--trace-selfhost")) {
-                g_trace_force = 1;
+                ctx.trace_force = 1;
                 ctx.trace_enabled = 1;
                 continue;
             }
@@ -495,10 +495,10 @@ int main(int argc, char **argv) {
 
     if (nin_paths < 1 || !ctx.opts.out_path) usage(argv[0]);
 
-    if (trace_enabled()) {
-        trace_checkpoint("start", argv[0]);
-        trace_checkpoint(ctx.opts.emit_obj ? "mode: --emit-obj" : "mode: external as", NULL);
-        trace_checkpoint(ctx.opts.link_internal ? "mode: --link-internal" : "mode: external ld", NULL);
+    if (trace_enabled_ctx(&ctx)) {
+        trace_checkpoint_ctx(&ctx, "start", argv[0]);
+        trace_checkpoint_ctx(&ctx, ctx.opts.emit_obj ? "mode: --emit-obj" : "mode: external as", NULL);
+        trace_checkpoint_ctx(&ctx, ctx.opts.link_internal ? "mode: --link-internal" : "mode: external ld", NULL);
     }
 
     // Link-only mode: if all inputs are .o files, skip compilation.
@@ -518,11 +518,11 @@ int main(int argc, char **argv) {
             if (target != TARGET_X86_64_LINUX) {
                 die("link-internal is only supported for x86_64-linux today");
             }
-            trace_checkpoint("link (internal) start", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (internal) start", ctx.opts.out_path);
             link_internal_exec_objs((const char **)in_paths, nin_paths, ctx.opts.out_path, ctx.opts.keep_shdr);
-            trace_checkpoint("link (internal) end", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (internal) end", ctx.opts.out_path);
         } else {
-            trace_checkpoint("link (external) start", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (external) start", ctx.opts.out_path);
             int base = 0;
             int argc_ld = nin_paths + 32;
             char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
@@ -563,7 +563,7 @@ int main(int argc, char **argv) {
             int rc = run_cmd(ld_argv);
             monacc_free(ld_argv);
             if (rc != 0) die_i64("ld failed (", rc, ")");
-            trace_checkpoint("link (external) end", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (external) end", ctx.opts.out_path);
         }
 
         if (target == TARGET_X86_64_LINUX && !ctx.opts.keep_shdr) {
@@ -582,7 +582,7 @@ int main(int argc, char **argv) {
         char tmp_s[4096];
         if (mc_snprint_cstr_cstr(tmp_s, sizeof(tmp_s), ctx.opts.out_path, ".s") >= (int)sizeof(tmp_s)) die("path too long");
         // In -c mode we intentionally do not emit _start.
-        compile_to_obj(target, in_paths[0], tmp_s, ctx.opts.out_path, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
+        compile_to_obj(&ctx, target, in_paths[0], tmp_s, ctx.opts.out_path, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
         if (!ctx.opts.emit_obj) xunlink_best_effort(tmp_s);
 
         mc_compiler_destroy(&ctx);
@@ -617,7 +617,7 @@ int main(int argc, char **argv) {
             mc_memcpy(obj_paths[i], tmp_o, no);
         }
 
-        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, i == 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
+        compile_to_obj(&ctx, target, in_paths[i], tmp_s, tmp_o, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, i == 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
     }
 
     // Link all objects.
@@ -627,7 +627,7 @@ int main(int argc, char **argv) {
             if (target != TARGET_X86_64_LINUX) {
                 die("link-internal is only supported for x86_64-linux today");
             }
-            trace_checkpoint("link (internal) re-exec start", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (internal) re-exec start", ctx.opts.out_path);
             // Run the internal linker in a fresh process to isolate it from any allocator state
             // left behind by the compile phase (important for large self-host builds).
             int argc_lnk = nin_paths + 9;
@@ -636,7 +636,7 @@ int main(int argc, char **argv) {
             int base = 0;
             lnk_argv[base++] = argv[0];
             lnk_argv[base++] = "--link-internal";
-            if (g_trace_force) {
+            if (ctx.trace_force) {
                 lnk_argv[base++] = "--trace-selfhost";
             }
             if (ctx.opts.keep_shdr) {
@@ -651,9 +651,9 @@ int main(int argc, char **argv) {
             int rc = run_cmd(lnk_argv);
             monacc_free(lnk_argv);
             if (rc != 0) die_i64("link-internal failed (", rc, ")");
-            trace_checkpoint("link (internal) re-exec end", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (internal) re-exec end", ctx.opts.out_path);
         } else {
-            trace_checkpoint("link (external) start", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (external) start", ctx.opts.out_path);
             int base = 0;
             // Allocate with slack to keep this robust as flags change.
             int argc_ld = nin_paths + 32;
@@ -702,7 +702,7 @@ int main(int argc, char **argv) {
             int rc = run_cmd(ld_argv);
             monacc_free(ld_argv);
             if (rc != 0) die_i64("ld failed (", rc, ")");
-            trace_checkpoint("link (external) end", ctx.opts.out_path);
+            trace_checkpoint_ctx(&ctx, "link (external) end", ctx.opts.out_path);
         }
     }
 

@@ -15,7 +15,10 @@ void mc_compiler_init(mc_compiler *ctx) {
     ctx->opts.keep_shdr = 0;       // Default to stripping section headers
     ctx->opts.compile_only = 0;
     
+    // Initialize trace state
     ctx->trace_enabled = 0;
+    ctx->trace_force = 0;
+    ctx->trace_cached = -1;
 }
 
 void mc_compiler_destroy(mc_compiler *ctx) {

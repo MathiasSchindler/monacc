@@ -1,8 +1,24 @@
 #pragma once
 
-// Compiler context structure
-// This structure encapsulates all global compiler state, making the compiler
-// more modular and testable. Part of Phase 2 structural rebase.
+// Compiler Context Module (mc_compiler.h)
+// ========================================
+// 
+// This module provides the central compiler context structure that encapsulates
+// all compiler state, making the compiler more modular, testable, and easier to
+// reason about.
+//
+// Part of Phase 2 of the monacc compiler structural rebase. This phase focuses
+// on eliminating global variables by moving them into an explicit compiler
+// context that gets threaded through the compilation pipeline.
+//
+// Current State (Phase 2):
+//   - Compiler options and configuration (mc_options)
+//   - Tracing/debugging state
+//   - Lifecycle management (init/destroy)
+//
+// Future Phases:
+//   - Phase 3: Split monolithic monacc.h into focused module headers
+//   - Later: Diagnostics subsystem, memory arena management, etc.
 
 #include "monacc.h"
 
@@ -54,6 +70,14 @@ typedef struct {
 } mc_options;
 
 // Compiler context - holds all compiler state
+// 
+// This structure is the single source of truth for all compiler-wide state.
+// It is passed through the compilation pipeline from the driver (main) down
+// through frontend (preprocessor, lexer, parser) and backend (codegen, asm, link).
+//
+// Evolution:
+//   Phase 2 (current): Basic state consolidation (options, trace state)
+//   Future phases: Diagnostics, memory arenas, symbol tables, etc.
 struct mc_compiler {
     mc_options opts;
     
@@ -63,8 +87,12 @@ struct mc_compiler {
     // Memory arenas (future: move allocations here)
     // mc_arena *arena;
     
-    // State tracking
+    // Tracing/debugging state
+    // These control optional trace output for debugging compiler behavior.
+    // Set via --trace-selfhost or MONACC_TRACE environment variable.
     int trace_enabled;
+    int trace_force;    // Force tracing (--trace-selfhost)
+    int trace_cached;   // Cached environment check result (-1 = unchecked)
 };
 
 // Initialize compiler context with default options

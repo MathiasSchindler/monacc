@@ -1,4 +1,5 @@
 #include "monacc.h"
+#include "mc_compiler.h"
 
 static int g_trace_force = 0;
 static int g_trace_cached = -1;
@@ -172,11 +173,6 @@ static Target parse_target_or_die(const char *argv0, const char *s) {
     usage(argv0);
 }
 
-typedef struct {
-    char *name;
-    char *repl;
-} CmdDefine;
-
 static char *join_dir_prog(const char *dir, const char *prog) {
     mc_usize dlen = mc_strlen(dir);
     mc_usize plen = mc_strlen(prog);
@@ -192,11 +188,11 @@ static char *join_dir_prog(const char *dir, const char *prog) {
     return out;
 }
 
-static void cmd_define_add(CmdDefine **defs, int *ndefs, const char *name, mc_usize name_len, const char *repl) {
-    CmdDefine *nd = (CmdDefine *)monacc_realloc(*defs, (mc_usize)(*ndefs + 1) * sizeof(**defs));
+static void cmd_define_add(mc_compiler *ctx, const char *name, mc_usize name_len, const char *repl) {
+    CmdDefine *nd = (CmdDefine *)monacc_realloc(ctx->opts.cmd_defines, (mc_usize)(ctx->opts.ncmd_defines + 1) * sizeof(*ctx->opts.cmd_defines));
     if (!nd) die("oom");
-    *defs = nd;
-    CmdDefine *d = &(*defs)[(*ndefs)++];
+    ctx->opts.cmd_defines = nd;
+    CmdDefine *d = &ctx->opts.cmd_defines[ctx->opts.ncmd_defines++];
 
     d->name = (char *)monacc_malloc(name_len + 1);
     if (!d->name) die("oom");
@@ -354,41 +350,25 @@ static void compile_to_obj(Target target, const char *in_path, const char *tmp_s
 }
 
 int main(int argc, char **argv) {
+    // Phase 2: Initialize compiler context
+    mc_compiler ctx;
+    mc_compiler_init(&ctx);
+    
     char **in_paths = NULL;
     int nin_paths = 0;
-    const char *out_path = NULL;
-    const char *dump_pp_path = NULL;
-    const char *dump_elfobj_path = NULL;
-    const char *dump_elfsec_path = NULL;
-    const char *as_prog = "as";
-    const char *ld_prog = "ld";
-    char *as_prog_alloc = NULL;
-    char *ld_prog_alloc = NULL;
-    int compile_only = 0;
-    int use_nmagic = 1;
-    // Default to the self-contained toolchain.
-    // External as/ld remain available for bring-up/debugging via --as/--ld/--toolchain.
-    int emit_obj = 1;
-    int link_internal = 1;
-    int keep_shdr = 0;
     Target target = TARGET_X86_64_LINUX;
-    PPConfig cfg;
-    mc_memset(&cfg, 0, sizeof(cfg));
-
-    CmdDefine *defs = NULL;
-    int ndefs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (!mc_strcmp(argv[i], "-o")) {
             if (i + 1 >= argc) usage(argv[0]);
-            out_path = argv[++i];
+            ctx.opts.out_path = argv[++i];
         } else if (!mc_strcmp(argv[i], "-c")) {
-            compile_only = 1;
+            ctx.opts.compile_only = 1;
         } else if (!mc_strcmp(argv[i], "-I")) {
             if (i + 1 >= argc) usage(argv[0]);
-            cfg.include_dirs = (char **)monacc_realloc(cfg.include_dirs, (mc_usize)(cfg.ninclude_dirs + 1) * sizeof(char *));
-            if (!cfg.include_dirs) die("oom");
-            cfg.include_dirs[cfg.ninclude_dirs++] = argv[++i];
+            ctx.opts.pp_config.include_dirs = (char **)monacc_realloc(ctx.opts.pp_config.include_dirs, (mc_usize)(ctx.opts.pp_config.ninclude_dirs + 1) * sizeof(char *));
+            if (!ctx.opts.pp_config.include_dirs) die("oom");
+            ctx.opts.pp_config.include_dirs[ctx.opts.pp_config.ninclude_dirs++] = argv[++i];
         } else if (!mc_strncmp(argv[i], "-D", 2)) {
             const char *arg = argv[i] + 2;
             if (*arg == 0) {
@@ -397,98 +377,100 @@ int main(int argc, char **argv) {
             }
             const char *eq = mc_strchr(arg, '=');
             if (!eq) {
-                cmd_define_add(&defs, &ndefs, arg, mc_strlen(arg), "1");
+                cmd_define_add(&ctx, arg, mc_strlen(arg), "1");
             } else {
-                cmd_define_add(&defs, &ndefs, arg, (mc_usize)(eq - arg), eq + 1);
+                cmd_define_add(&ctx, arg, (mc_usize)(eq - arg), eq + 1);
             }
         } else if (argv[i][0] == '-') {
             if (!mc_strcmp(argv[i], "--target")) {
                 if (i + 1 >= argc) usage(argv[0]);
                 target = parse_target_or_die(argv[0], argv[++i]);
+                ctx.opts.target = (target == TARGET_X86_64_LINUX) ? MC_TARGET_X86_64_LINUX : MC_TARGET_AARCH64_DARWIN;
                 // aarch64-darwin bring-up uses external clang asm/link.
                 if (target == TARGET_AARCH64_DARWIN) {
-                    emit_obj = 0;
-                    link_internal = 0;
-                    if (as_prog_alloc) {
-                        monacc_free(as_prog_alloc);
-                        as_prog_alloc = NULL;
+                    ctx.opts.emit_obj = 0;
+                    ctx.opts.link_internal = 0;
+                    if (ctx.opts.as_prog_alloc) {
+                        monacc_free(ctx.opts.as_prog_alloc);
+                        ctx.opts.as_prog_alloc = NULL;
                     }
-                    if (ld_prog_alloc) {
-                        monacc_free(ld_prog_alloc);
-                        ld_prog_alloc = NULL;
+                    if (ctx.opts.ld_prog_alloc) {
+                        monacc_free(ctx.opts.ld_prog_alloc);
+                        ctx.opts.ld_prog_alloc = NULL;
                     }
-                    as_prog = "clang";
-                    ld_prog = "clang";
+                    ctx.opts.as_prog = "clang";
+                    ctx.opts.ld_prog = "clang";
                 }
                 continue;
             }
             if (!mc_strcmp(argv[i], "--dump-pp")) {
                 if (i + 1 >= argc) usage(argv[0]);
-                dump_pp_path = argv[++i];
+                ctx.opts.dump_pp_path = argv[++i];
                 continue;
             }
             if (!mc_strcmp(argv[i], "--dump-elfobj")) {
                 if (i + 1 >= argc) usage(argv[0]);
-                dump_elfobj_path = argv[++i];
+                ctx.opts.dump_elfobj_path = argv[++i];
                 continue;
             }
             if (!mc_strcmp(argv[i], "--dump-elfsec")) {
                 if (i + 1 >= argc) usage(argv[0]);
-                dump_elfsec_path = argv[++i];
+                ctx.opts.dump_elfsec_path = argv[++i];
                 continue;
             }
             if (!mc_strcmp(argv[i], "--no-nmagic")) {
-                use_nmagic = 0;
+                ctx.opts.use_nmagic = 0;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--keep-shdr")) {
-                keep_shdr = 1;
+                ctx.opts.keep_shdr = 1;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--emit-obj")) {
-                emit_obj = 1;
+                ctx.opts.emit_obj = 1;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--link-internal")) {
-                link_internal = 1;
+                ctx.opts.link_internal = 1;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--trace-selfhost")) {
                 g_trace_force = 1;
+                ctx.trace_enabled = 1;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--toolchain")) {
                 if (i + 1 >= argc) usage(argv[0]);
                 const char *dir = argv[++i];
-                if (as_prog_alloc) monacc_free(as_prog_alloc);
-                if (ld_prog_alloc) monacc_free(ld_prog_alloc);
-                as_prog_alloc = join_dir_prog(dir, "as");
-                ld_prog_alloc = join_dir_prog(dir, "ld");
-                as_prog = as_prog_alloc;
-                ld_prog = ld_prog_alloc;
+                if (ctx.opts.as_prog_alloc) monacc_free(ctx.opts.as_prog_alloc);
+                if (ctx.opts.ld_prog_alloc) monacc_free(ctx.opts.ld_prog_alloc);
+                ctx.opts.as_prog_alloc = join_dir_prog(dir, "as");
+                ctx.opts.ld_prog_alloc = join_dir_prog(dir, "ld");
+                ctx.opts.as_prog = ctx.opts.as_prog_alloc;
+                ctx.opts.ld_prog = ctx.opts.ld_prog_alloc;
                 // Toolchain selection is meaningful only for external as/ld.
-                emit_obj = 0;
-                link_internal = 0;
+                ctx.opts.emit_obj = 0;
+                ctx.opts.link_internal = 0;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--as")) {
                 if (i + 1 >= argc) usage(argv[0]);
-                if (as_prog_alloc) {
-                    monacc_free(as_prog_alloc);
-                    as_prog_alloc = NULL;
+                if (ctx.opts.as_prog_alloc) {
+                    monacc_free(ctx.opts.as_prog_alloc);
+                    ctx.opts.as_prog_alloc = NULL;
                 }
-                as_prog = argv[++i];
-                emit_obj = 0;
+                ctx.opts.as_prog = argv[++i];
+                ctx.opts.emit_obj = 0;
                 continue;
             }
             if (!mc_strcmp(argv[i], "--ld")) {
                 if (i + 1 >= argc) usage(argv[0]);
-                if (ld_prog_alloc) {
-                    monacc_free(ld_prog_alloc);
-                    ld_prog_alloc = NULL;
+                if (ctx.opts.ld_prog_alloc) {
+                    monacc_free(ctx.opts.ld_prog_alloc);
+                    ctx.opts.ld_prog_alloc = NULL;
                 }
-                ld_prog = argv[++i];
-                link_internal = 0;
+                ctx.opts.ld_prog = argv[++i];
+                ctx.opts.link_internal = 0;
                 continue;
             }
             usage(argv[0]);
@@ -499,22 +481,24 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (dump_elfobj_path) {
-        elfobj_dump(dump_elfobj_path);
+    if (ctx.opts.dump_elfobj_path) {
+        elfobj_dump(ctx.opts.dump_elfobj_path);
+        mc_compiler_destroy(&ctx);
         return 0;
     }
 
-    if (dump_elfsec_path) {
-        elfsec_dump(dump_elfsec_path);
+    if (ctx.opts.dump_elfsec_path) {
+        elfsec_dump(ctx.opts.dump_elfsec_path);
+        mc_compiler_destroy(&ctx);
         return 0;
     }
 
-    if (nin_paths < 1 || !out_path) usage(argv[0]);
+    if (nin_paths < 1 || !ctx.opts.out_path) usage(argv[0]);
 
     if (trace_enabled()) {
         trace_checkpoint("start", argv[0]);
-        trace_checkpoint(emit_obj ? "mode: --emit-obj" : "mode: external as", NULL);
-        trace_checkpoint(link_internal ? "mode: --link-internal" : "mode: external ld", NULL);
+        trace_checkpoint(ctx.opts.emit_obj ? "mode: --emit-obj" : "mode: external as", NULL);
+        trace_checkpoint(ctx.opts.link_internal ? "mode: --link-internal" : "mode: external ld", NULL);
     }
 
     // Link-only mode: if all inputs are .o files, skip compilation.
@@ -528,31 +512,31 @@ int main(int argc, char **argv) {
     }
 
     if (all_obj_inputs) {
-        if (compile_only) die("-c does not accept .o inputs");
+        if (ctx.opts.compile_only) die("-c does not accept .o inputs");
 
-        if (link_internal) {
+        if (ctx.opts.link_internal) {
             if (target != TARGET_X86_64_LINUX) {
                 die("link-internal is only supported for x86_64-linux today");
             }
-            trace_checkpoint("link (internal) start", out_path);
-            link_internal_exec_objs((const char **)in_paths, nin_paths, out_path, keep_shdr);
-            trace_checkpoint("link (internal) end", out_path);
+            trace_checkpoint("link (internal) start", ctx.opts.out_path);
+            link_internal_exec_objs((const char **)in_paths, nin_paths, ctx.opts.out_path, ctx.opts.keep_shdr);
+            trace_checkpoint("link (internal) end", ctx.opts.out_path);
         } else {
-            trace_checkpoint("link (external) start", out_path);
+            trace_checkpoint("link (external) start", ctx.opts.out_path);
             int base = 0;
             int argc_ld = nin_paths + 32;
             char **ld_argv = (char **)monacc_calloc((mc_usize)argc_ld + 1, sizeof(char *));
             if (!ld_argv) die("oom");
             if (target == TARGET_AARCH64_DARWIN) {
-                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "clang");
+                ld_argv[base++] = (char *)(ctx.opts.ld_prog ? ctx.opts.ld_prog : "clang");
             } else {
-                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+                ld_argv[base++] = (char *)(ctx.opts.ld_prog ? ctx.opts.ld_prog : "ld");
                 ld_argv[base++] = "-nostdlib";
                 ld_argv[base++] = "-static";
                 ld_argv[base++] = "-s";
                 ld_argv[base++] = "--gc-sections";
                 ld_argv[base++] = "--build-id=none";
-                if (use_nmagic) {
+                if (ctx.opts.use_nmagic) {
                     ld_argv[base++] = "-n";
                 }
                 ld_argv[base++] = "-z";
@@ -574,49 +558,35 @@ int main(int argc, char **argv) {
                 ld_argv[base++] = in_paths[i];
             }
             ld_argv[base++] = "-o";
-            ld_argv[base++] = (char *)out_path;
+            ld_argv[base++] = (char *)ctx.opts.out_path;
             ld_argv[base] = NULL;
             int rc = run_cmd(ld_argv);
             monacc_free(ld_argv);
             if (rc != 0) die_i64("ld failed (", rc, ")");
-            trace_checkpoint("link (external) end", out_path);
+            trace_checkpoint("link (external) end", ctx.opts.out_path);
         }
 
-        if (target == TARGET_X86_64_LINUX && !keep_shdr) {
-            elf_trim_shdr_best_effort(out_path);
+        if (target == TARGET_X86_64_LINUX && !ctx.opts.keep_shdr) {
+            elf_trim_shdr_best_effort(ctx.opts.out_path);
         }
 
-        if (as_prog_alloc) monacc_free(as_prog_alloc);
-        if (ld_prog_alloc) monacc_free(ld_prog_alloc);
-        monacc_free(cfg.include_dirs);
-        for (int i = 0; i < ndefs; i++) {
-            monacc_free(defs[i].name);
-            monacc_free(defs[i].repl);
-        }
-        monacc_free(defs);
+        mc_compiler_destroy(&ctx);
         monacc_free(in_paths);
         return 0;
     }
 
-    if (compile_only) {
+    if (ctx.opts.compile_only) {
         if (nin_paths != 1) {
             die("-c requires exactly one input file");
         }
         char tmp_s[4096];
-        if (mc_snprint_cstr_cstr(tmp_s, sizeof(tmp_s), out_path, ".s") >= (int)sizeof(tmp_s)) die("path too long");
+        if (mc_snprint_cstr_cstr(tmp_s, sizeof(tmp_s), ctx.opts.out_path, ".s") >= (int)sizeof(tmp_s)) die("path too long");
         // In -c mode we intentionally do not emit _start.
-        compile_to_obj(target, in_paths[0], tmp_s, out_path, &cfg, defs, ndefs, 0, dump_pp_path, as_prog, emit_obj);
-        if (!emit_obj) xunlink_best_effort(tmp_s);
+        compile_to_obj(target, in_paths[0], tmp_s, ctx.opts.out_path, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
+        if (!ctx.opts.emit_obj) xunlink_best_effort(tmp_s);
 
-        if (as_prog_alloc) monacc_free(as_prog_alloc);
-        if (ld_prog_alloc) monacc_free(ld_prog_alloc);
+        mc_compiler_destroy(&ctx);
 
-        monacc_free(cfg.include_dirs);
-        for (int i = 0; i < ndefs; i++) {
-            monacc_free(defs[i].name);
-            monacc_free(defs[i].repl);
-        }
-        monacc_free(defs);
         monacc_free(in_paths);
         return 0;
     }
@@ -630,10 +600,10 @@ int main(int argc, char **argv) {
     for (int i = 0; i < nin_paths; i++) {
         char tmp_s[4096];
         char tmp_o[4096];
-        if (mc_snprint_cstr_cstr_u64_cstr(tmp_s, sizeof(tmp_s), out_path, ".", (mc_u64)i, ".s") >= (int)sizeof(tmp_s)) {
+        if (mc_snprint_cstr_cstr_u64_cstr(tmp_s, sizeof(tmp_s), ctx.opts.out_path, ".", (mc_u64)i, ".s") >= (int)sizeof(tmp_s)) {
             die("path too long");
         }
-        if (mc_snprint_cstr_cstr_u64_cstr(tmp_o, sizeof(tmp_o), out_path, ".", (mc_u64)i, ".o") >= (int)sizeof(tmp_o)) {
+        if (mc_snprint_cstr_cstr_u64_cstr(tmp_o, sizeof(tmp_o), ctx.opts.out_path, ".", (mc_u64)i, ".o") >= (int)sizeof(tmp_o)) {
             die("path too long");
         }
 
@@ -647,17 +617,17 @@ int main(int argc, char **argv) {
             mc_memcpy(obj_paths[i], tmp_o, no);
         }
 
-        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &cfg, defs, ndefs, i == 0, dump_pp_path, as_prog, emit_obj);
+        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, i == 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
     }
 
     // Link all objects.
     // Size-oriented defaults: we emit per-function/per-string sections and link with --gc-sections.
     {
-        if (link_internal) {
+        if (ctx.opts.link_internal) {
             if (target != TARGET_X86_64_LINUX) {
                 die("link-internal is only supported for x86_64-linux today");
             }
-            trace_checkpoint("link (internal) re-exec start", out_path);
+            trace_checkpoint("link (internal) re-exec start", ctx.opts.out_path);
             // Run the internal linker in a fresh process to isolate it from any allocator state
             // left behind by the compile phase (important for large self-host builds).
             int argc_lnk = nin_paths + 9;
@@ -669,21 +639,21 @@ int main(int argc, char **argv) {
             if (g_trace_force) {
                 lnk_argv[base++] = "--trace-selfhost";
             }
-            if (keep_shdr) {
+            if (ctx.opts.keep_shdr) {
                 lnk_argv[base++] = "--keep-shdr";
             }
             for (int i = 0; i < nin_paths; i++) {
                 lnk_argv[base++] = obj_paths[i];
             }
             lnk_argv[base++] = "-o";
-            lnk_argv[base++] = (char *)out_path;
+            lnk_argv[base++] = (char *)ctx.opts.out_path;
             lnk_argv[base] = NULL;
             int rc = run_cmd(lnk_argv);
             monacc_free(lnk_argv);
             if (rc != 0) die_i64("link-internal failed (", rc, ")");
-            trace_checkpoint("link (internal) re-exec end", out_path);
+            trace_checkpoint("link (internal) re-exec end", ctx.opts.out_path);
         } else {
-            trace_checkpoint("link (external) start", out_path);
+            trace_checkpoint("link (external) start", ctx.opts.out_path);
             int base = 0;
             // Allocate with slack to keep this robust as flags change.
             int argc_ld = nin_paths + 32;
@@ -691,9 +661,9 @@ int main(int argc, char **argv) {
             if (!ld_argv) die("oom");
             if (target == TARGET_AARCH64_DARWIN) {
                 // Drive the native linker via clang.
-                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "clang");
+                ld_argv[base++] = (char *)(ctx.opts.ld_prog ? ctx.opts.ld_prog : "clang");
             } else {
-                ld_argv[base++] = (char *)(ld_prog ? ld_prog : "ld");
+                ld_argv[base++] = (char *)(ctx.opts.ld_prog ? ctx.opts.ld_prog : "ld");
                 ld_argv[base++] = "-nostdlib";
                 ld_argv[base++] = "-static";
                 ld_argv[base++] = "-s";
@@ -701,7 +671,7 @@ int main(int argc, char **argv) {
                 ld_argv[base++] = "--build-id=none";
                 // Reduce file-size padding by avoiding page alignment between segments (nmagic).
                 // This is slightly less conventional; can be disabled with --no-nmagic.
-                if (use_nmagic) {
+                if (ctx.opts.use_nmagic) {
                     ld_argv[base++] = "-n";
                 }
                 ld_argv[base++] = "-z";
@@ -727,17 +697,17 @@ int main(int argc, char **argv) {
                 ld_argv[base++] = obj_paths[i];
             }
             ld_argv[base++] = "-o";
-            ld_argv[base++] = (char *)out_path;
+            ld_argv[base++] = (char *)ctx.opts.out_path;
             ld_argv[base] = NULL;
             int rc = run_cmd(ld_argv);
             monacc_free(ld_argv);
             if (rc != 0) die_i64("ld failed (", rc, ")");
-            trace_checkpoint("link (external) end", out_path);
+            trace_checkpoint("link (external) end", ctx.opts.out_path);
         }
     }
 
-    if (target == TARGET_X86_64_LINUX && !keep_shdr) {
-        elf_trim_shdr_best_effort(out_path);
+    if (target == TARGET_X86_64_LINUX && !ctx.opts.keep_shdr) {
+        elf_trim_shdr_best_effort(ctx.opts.out_path);
     }
 
     // Best-effort cleanup.
@@ -749,14 +719,7 @@ int main(int argc, char **argv) {
     }
     monacc_free(asm_paths);
     monacc_free(obj_paths);
-    if (as_prog_alloc) monacc_free(as_prog_alloc);
-    if (ld_prog_alloc) monacc_free(ld_prog_alloc);
-    monacc_free(cfg.include_dirs);
-    for (int i = 0; i < ndefs; i++) {
-        monacc_free(defs[i].name);
-        monacc_free(defs[i].repl);
-    }
-    monacc_free(defs);
+    mc_compiler_destroy(&ctx);
     monacc_free(in_paths);
     return 0;
 }

@@ -63,8 +63,10 @@ struct mc_compiler {
     // Memory arenas (future: move allocations here)
     // mc_arena *arena;
     
-    // State tracking
+    // Tracing state
     int trace_enabled;
+    int trace_force;
+    int trace_cached;
 };
 
 // Initialize compiler context with default options

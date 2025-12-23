@@ -29,7 +29,12 @@ cat > "$TEST_C" << 'EOF'
 // without conflicts or syntax errors
 EOF
 
-if ! cc -I "$ROOT_DIR/compiler" -I "$ROOT_DIR/core" -fsyntax-only "$TEST_C" 2>&1 | grep -q -v "pragma once"; then
+# Compile and check - ignore "pragma once" warnings
+if cc -I "$ROOT_DIR/compiler" -I "$ROOT_DIR/core" -fsyntax-only "$TEST_C" 2>&1 | grep -v "pragma once" | grep -q "error"; then
+    echo "ERROR: Headers failed to compile"
+    cc -I "$ROOT_DIR/compiler" -I "$ROOT_DIR/core" -fsyntax-only "$TEST_C" 2>&1
+    exit 1
+else
     echo "  Headers compile successfully"
 fi
 

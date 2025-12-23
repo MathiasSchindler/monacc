@@ -10,6 +10,9 @@
 // Shared core helpers (string/mem, syscalls, parsing, etc).
 #include "mc.h"
 
+// Forward declarations for compiler context (defined in mc_compiler.h)
+typedef struct mc_compiler mc_compiler;
+
 void *monacc_malloc(mc_usize size);
 void *monacc_calloc(mc_usize nmemb, mc_usize size);
 void *monacc_realloc(void *ptr, mc_usize size);
@@ -186,6 +189,7 @@ typedef struct {
     Lexer lx;
     Token tok;
     Program *prg;
+    mc_compiler *ctx;  // Compiler context for diagnostics, tracing
     char cur_fn_name[128];
 } Parser;
 
@@ -553,7 +557,7 @@ void str_appendf_si(Str *s, const char *fmt, const char *s0, long long i0);
 void str_appendf_su(Str *s, const char *fmt, const char *s0, unsigned long long u0);
 void str_appendf_is(Str *s, const char *fmt, long long i0, const char *s0);
 
-void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out);
+void preprocess_file(mc_compiler *ctx, const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out);
 
 void parse_program(Parser *p, Program *out);
 
@@ -606,15 +610,15 @@ void diriter_close(DirIter *it);
 int diriter_next(DirIter *it, const linux_dirent64 **out_ent);
 int run_cmd(char *const argv[]);
 
-void emit_x86_64_sysv_freestanding(const Program *prg, Str *out);
-void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int with_start);
-void emit_aarch64_darwin_hosted(const Program *prg, Str *out);
+void emit_x86_64_sysv_freestanding(mc_compiler *ctx, const Program *prg, Str *out);
+void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *prg, Str *out, int with_start);
+void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str *out);
 
 // Internal toolchain reduction: assemble monacc-emitted x86_64 assembly into an ELF64 relocatable object.
-void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path);
+void assemble_x86_64_elfobj(mc_compiler *ctx, const char *asm_buf, mc_usize asm_len, const char *out_o_path);
 
 // AST utilities (Phase 1: optional debug dumps)
-void ast_dump(const Program *prg, const char *path);
+void ast_dump(mc_compiler *ctx, const Program *prg, const char *path);
 
 // AST/program helpers used across modules
 Expr *new_expr(ExprKind k);

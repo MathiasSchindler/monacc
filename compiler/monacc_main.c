@@ -253,7 +253,7 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
     mc_memset(&pp, 0, sizeof(pp));
 
     trace_checkpoint_ctx(ctx, "preprocess start", in_path);
-    preprocess_file(cfg, &mt, &ot, in_path, &pp);
+    preprocess_file(ctx, cfg, &mt, &ot, in_path, &pp);
     trace_checkpoint_ctx(ctx, "preprocess end", in_path);
 
     if (dump_pp_path) {
@@ -262,6 +262,7 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
 
     Parser p;
     mc_memset(&p, 0, sizeof(p));
+    p.ctx = ctx;
     p.lx.path = in_path;
     p.lx.src = pp.buf;
     p.lx.len = pp.len;
@@ -281,7 +282,7 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
 
     // Dump AST if requested (Phase 1: optional debug toggle)
     if (ctx->opts.dump_ast_path) {
-        ast_dump(&prg, ctx->opts.dump_ast_path);
+        ast_dump(ctx, &prg, ctx->opts.dump_ast_path);
     }
 
     Str out_asm;
@@ -289,10 +290,10 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
 
     trace_checkpoint_ctx(ctx, "codegen start", in_path);
     if (target == TARGET_X86_64_LINUX) {
-        emit_x86_64_sysv_freestanding_with_start(&prg, &out_asm, with_start);
+        emit_x86_64_sysv_freestanding_with_start(ctx, &prg, &out_asm, with_start);
     } else if (target == TARGET_AARCH64_DARWIN) {
         (void)with_start;
-        emit_aarch64_darwin_hosted(&prg, &out_asm);
+        emit_aarch64_darwin_hosted(ctx, &prg, &out_asm);
     } else {
         die("internal: unknown target");
     }
@@ -307,7 +308,7 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
             die("emit-obj is only supported for x86_64-linux today");
         }
         trace_checkpoint_ctx(ctx, "assemble (internal) start", tmp_o);
-        assemble_x86_64_elfobj(out_asm.buf ? out_asm.buf : "", out_asm.len, tmp_o);
+        assemble_x86_64_elfobj(ctx, out_asm.buf ? out_asm.buf : "", out_asm.len, tmp_o);
         trace_checkpoint_ctx(ctx, "assemble (internal) end", tmp_o);
     } else {
         trace_checkpoint_ctx(ctx, "assemble (external) start", tmp_o);

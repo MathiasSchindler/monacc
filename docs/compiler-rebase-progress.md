@@ -35,7 +35,7 @@ All Phase 1 tests passing consistently.
 
 ## Phase 2 – Introduce Explicit Compiler Context Object 🔄 IN PROGRESS
 
-**Status:** Approximately 50% complete
+**Status:** Approximately 75% complete
 
 ### Completed Items
 - ✅ `struct mc_compiler` and `mc_options` defined in `mc_compiler.h`
@@ -51,6 +51,15 @@ All Phase 1 tests passing consistently.
 - ✅ Cleanup handled by `mc_compiler_destroy()`
 - ✅ Trace state integrated into context (`trace_force`, `trace_cached`)
 - ✅ No global variables found in audit
+- ✅ Frontend functions accept/use `mc_compiler*` parameter:
+  - `preprocess_file()` - direct parameter
+  - `parse_program()` - via `Parser.ctx` field
+- ✅ Backend functions accept/use `mc_compiler*` parameter:
+  - `emit_x86_64_sysv_freestanding_with_start()`
+  - `emit_x86_64_sysv_freestanding()`
+  - `emit_aarch64_darwin_hosted()`
+  - `assemble_x86_64_elfobj()`
+  - `ast_dump()`
 
 ### Current State
 The compiler context is initialized in `main()` and properly manages:
@@ -60,14 +69,22 @@ The compiler context is initialized in `main()` and properly manages:
 - Tracing/debugging state
 - Resource cleanup on exit
 
-The context is threaded through key functions like `compile_to_obj()`.
+The context is threaded through key functions like `compile_to_obj()`, and now
+also through all frontend and backend functions:
+- `preprocess_file()` - accepts `mc_compiler*` parameter
+- `parse_program()` - receives context via `Parser.ctx` field
+- `emit_x86_64_sysv_freestanding()` and `emit_x86_64_sysv_freestanding_with_start()` - accept `mc_compiler*`
+- `emit_aarch64_darwin_hosted()` - accepts `mc_compiler*`
+- `assemble_x86_64_elfobj()` - accepts `mc_compiler*`
+- `ast_dump()` - accepts `mc_compiler*`
+
+All functions currently reserve the context parameter with `(void)ctx;` for future use.
 
 ### Remaining Work
 - [ ] Unify `Target` enum with `mc_target` enum in mc_compiler.h
-- [ ] Thread context through more frontend functions (preprocess_file, parse_program)
-- [ ] Thread context through backend functions (emit_x86_64_*, emit_aarch64_*)
 - [ ] Consider adding diagnostics subsystem to context
 - [ ] Consider adding memory arenas to context
+- [ ] Utilize the threaded context for actual diagnostics and tracing (currently reserved with (void)ctx)
 
 ### Test Status
 - ✅ Phase 1 smoke tests passing

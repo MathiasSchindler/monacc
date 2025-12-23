@@ -4634,7 +4634,8 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
     die("internal: unhandled stmt kind");
 }
 
-void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int with_start) {
+void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *prg, Str *out, int with_start) {
+    (void)ctx;  // Reserved for future use (diagnostics, tracing)
     CG cg;
     mc_memset(&cg, 0, sizeof(cg));
     cg.out = *out;
@@ -4884,8 +4885,8 @@ void emit_x86_64_sysv_freestanding_with_start(const Program *prg, Str *out, int 
     *out = cg.out;
 }
 
-void emit_x86_64_sysv_freestanding(const Program *prg, Str *out) {
-    emit_x86_64_sysv_freestanding_with_start(prg, out, 1);
+void emit_x86_64_sysv_freestanding(mc_compiler *ctx, const Program *prg, Str *out) {
+    emit_x86_64_sysv_freestanding_with_start(ctx, prg, out, 1);
 }
 
 // ===== AArch64 Darwin hosted (bring-up) =====
@@ -7707,7 +7708,8 @@ static void a64_emit_fn(Str *out, const Program *prg, const Function *fn, int *l
     str_appendf(out, "  ret\n\n");
 }
 
-void emit_aarch64_darwin_hosted(const Program *prg, Str *out) {
+void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str *out) {
+    (void)ctx;  // Reserved for future use (diagnostics, tracing)
     if (!prg || !out) die("internal: emit_aarch64_darwin_hosted null");
 
     a64_expr_label_id = 0;

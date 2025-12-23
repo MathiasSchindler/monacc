@@ -103,7 +103,12 @@ LDFLAGS :=
 else
 CFLAGS := -Os -DNDEBUG $(CFLAGS_BASE) -ffunction-sections -fdata-sections \
 	-fno-unwind-tables -fno-asynchronous-unwind-tables
+ifeq ($(UNAME_S),Darwin)
+# macOS ld does not support GNU ld's --gc-sections; use dead_strip instead.
+LDFLAGS := -Wl,-dead_strip
+else
 LDFLAGS := -s -Wl,--gc-sections
+endif
 endif
 
 ifeq ($(LTO),1)
@@ -197,8 +202,10 @@ EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
 	float_call_ret float_call_mixed float_call_many \
 	float_cast_callargs
 
-# Default goal: build everything
+# Default goal: build everything (except on macOS where we default to native smoke)
+ifneq ($(UNAME_S),Darwin)
 .DEFAULT_GOAL := all
+endif
 
 .PHONY: all test clean
 

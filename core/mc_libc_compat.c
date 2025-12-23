@@ -1,14 +1,14 @@
 #include "mc.h"
 
-void *memcpy(void *dst, const void *src, mc_usize n) {
+void *(memcpy)(void *dst, const void *src, mc_usize n) {
 	return mc_memcpy(dst, src, n);
 }
 
-void *memmove(void *dst, const void *src, mc_usize n) {
+void *(memmove)(void *dst, const void *src, mc_usize n) {
 	return mc_memmove(dst, src, n);
 }
 
-void *memset(void *dst, int c, mc_usize n) {
+void *(memset)(void *dst, int c, mc_usize n) {
 	return mc_memset(dst, c, n);
 }
 

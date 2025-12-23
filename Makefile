@@ -18,6 +18,7 @@
 #
 # Test Configuration:
 #   All test groups are enabled by default. To disable specific groups:
+#   SELFTEST_PHASE1=0        Disable Phase 1 compiler smoke tests
 #   SELFTEST_EMITOBJ=0       Disable object emission tests
 #   SELFTEST_ELFREAD=0       Disable ELF reader tests
 #   SELFTEST_LINKINT=0       Disable internal linker tests
@@ -77,6 +78,7 @@ HOST_PIE ?= 0
 
 # All tests are enabled by default as part of `make test`.
 # Advanced users can disable specific test groups by setting these to 0.
+# - SELFTEST_PHASE1: Phase 1 compiler smoke tests (fundamental invariants)
 # - SELFTEST_EMITOBJ: Object emission tests
 # - SELFTEST_ELFREAD: ELF reader tests
 # - SELFTEST_LINKINT: Internal linker tests
@@ -86,6 +88,7 @@ HOST_PIE ?= 0
 # - SELFTEST_MONACCBUGS: Regression tests (docs/monaccbugs.md)
 # - SELFTEST_BINSHELL: bin/sh execution tests
 # - SELFTEST_REPO_GUARDS: Repository guardrail checks
+SELFTEST_PHASE1 ?= 1
 SELFTEST_EMITOBJ ?= 1
 SELFTEST_ELFREAD ?= 1
 SELFTEST_LINKINT ?= 1
@@ -419,6 +422,7 @@ test: all
 	@echo "==> Testing examples"
 	@mkdir -p build/test
 	@ok=0; fail=0; \
+	phase1_rc=0; \
 	elfread_rc=0; \
 	linkint_rc=0; \
 	emitobj_rc=0; \
@@ -440,6 +444,11 @@ test: all
 		fi; \
 	done; \
 	echo ""; \
+	if [ "$(SELFTEST_PHASE1)" = "1" ]; then \
+		echo "==> Testing: Phase 1 smoke tests"; \
+		$(HOST_BASH) tests/compiler/phase1-smoke.sh; phase1_rc=$$?; \
+		echo ""; \
+	fi; \
 	echo "==> Testing tools"; \
 	SB_TEST_BIN="$$(pwd)/bin" $(HOST_SH) tests/tools/run.sh; \
 	tool_rc=$$?; \
@@ -519,10 +528,10 @@ test: all
 		echo "Wrote build/matrix/matrixstat.tsv"; \
 		echo ""; \
 	fi; \
-	if [ $$fail -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$monaccbugs_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$repo_guard_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
+	if [ $$fail -eq 0 ] && [ $$phase1_rc -eq 0 ] && [ $$tool_rc -eq 0 ] && [ $$elfread_rc -eq 0 ] && [ $$linkint_rc -eq 0 ] && [ $$emitobj_rc -eq 0 ] && [ $$mathf_rc -eq 0 ] && [ $$stage2_rc -eq 0 ] && [ $$stage3_rc -eq 0 ] && [ $$monaccbugs_rc -eq 0 ] && [ $$binsh_rc -eq 0 ] && [ $$repo_guard_rc -eq 0 ] && [ $$matrix_rc -eq 0 ]; then \
 		echo "All tests passed ($$ok examples, tools suite OK)"; \
 	else \
-		echo "Some tests failed (examples: $$fail failed, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, monaccbugs: exit $$monaccbugs_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
+		echo "Some tests failed (examples: $$fail failed, phase1: exit $$phase1_rc, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, monaccbugs: exit $$monaccbugs_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
 

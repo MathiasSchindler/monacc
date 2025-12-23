@@ -2361,8 +2361,136 @@ static void cg_binop(CG *cg, const Expr *e) {
     if (cg_binop_mem_rhs(cg, e, use32)) return;
 
 slow_binop:
-    // General case: evaluate both operands, push/pop to get them in registers.
+    // General case: evaluate lhs first.
     cg_expr(cg, e->lhs);
+
+    // Optimization: avoid push/pop if RHS is simple (can be loaded directly to register).
+    // This saves 2 bytes (push+pop) per operation.
+    if (cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rcx", "%ecx")) {
+        // LHS is in %rax, RHS is in %rcx.
+
+        // Pointer arithmetic logic (adapted for LHS=rax, RHS=rcx).
+        if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
+            if (e->ptr_index_side == 1) {
+                // LHS=ptr (rax), RHS=idx (rcx)
+                if (e->rhs && e->rhs->ptr == 0 && e->rhs->lval_size == 4 && !e->rhs->is_unsigned && e->rhs->base != BT_LONG && e->rhs->base != BT_FLOAT) {
+                    // Sign extend index in rcx if needed (cg_expr_to_reg usually handles this, but be safe for explicit int vars)
+                    // actually cg_expr_to_reg emits 'movslq' so it is extended.
+                }
+                if (e->ptr_scale != 1) {
+                    str_appendf_i64(&cg->out, "  imul $%d, %%rcx\n", e->ptr_scale);
+                }
+            } else if (e->ptr_index_side == 2) {
+                // RHS=ptr (rcx), LHS=idx (rax)
+                if (e->lhs && e->lhs->ptr == 0 && e->lhs->lval_size == 4 && !e->lhs->is_unsigned && e->lhs->base != BT_LONG && e->lhs->base != BT_FLOAT) {
+                    str_appendf(&cg->out, "  cdqe\n");
+                }
+                if (e->ptr_scale != 1) {
+                    str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", e->ptr_scale);
+                }
+            }
+        }
+
+        switch (e->kind) {
+            case EXPR_ADD:
+                if (use32) str_appendf(&cg->out, "  add %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  add %%rcx, %%rax\n");
+                return;
+            case EXPR_SUB:
+                if (use32) str_appendf(&cg->out, "  sub %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  sub %%rcx, %%rax\n");
+                return;
+            case EXPR_BAND:
+                if (use32) str_appendf(&cg->out, "  and %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  and %%rcx, %%rax\n");
+                return;
+            case EXPR_BXOR:
+                if (use32) str_appendf(&cg->out, "  xor %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  xor %%rcx, %%rax\n");
+                return;
+            case EXPR_BOR:
+                if (use32) str_appendf(&cg->out, "  or %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  or %%rcx, %%rax\n");
+                return;
+            case EXPR_SHL:
+                // LHS in rax, RHS (count) in rcx. Op needs count in cl.
+                if (use32) str_appendf(&cg->out, "  shl %%cl, %%eax\n");
+                else str_appendf(&cg->out, "  shl %%cl, %%rax\n");
+                return;
+            case EXPR_SHR:
+                if (use32) {
+                    if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                        str_appendf(&cg->out, "  shr %%cl, %%eax\n");
+                    } else {
+                        str_appendf(&cg->out, "  sar %%cl, %%eax\n");
+                    }
+                } else {
+                    if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                        str_appendf(&cg->out, "  shr %%cl, %%rax\n");
+                    } else {
+                        str_appendf(&cg->out, "  sar %%cl, %%rax\n");
+                    }
+                }
+                return;
+            case EXPR_MUL:
+                if (use32) str_appendf(&cg->out, "  imul %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  imul %%rcx, %%rax\n");
+                return;
+            case EXPR_DIV:
+            case EXPR_MOD:
+                // LHS in rax, RHS in rcx.
+                if (use32) {
+                    str_appendf(&cg->out, "  cdq\n");
+                    if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                        str_appendf(&cg->out, "  xor %%edx, %%edx\n");
+                        str_appendf(&cg->out, "  div %%ecx\n");
+                    } else {
+                        str_appendf(&cg->out, "  idiv %%ecx\n");
+                    }
+                } else {
+                    str_appendf(&cg->out, "  cqo\n");
+                    if ((e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) || (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned))) {
+                        str_appendf(&cg->out, "  xor %%edx, %%edx\n");
+                        str_appendf(&cg->out, "  div %%rcx\n");
+                    } else {
+                        str_appendf(&cg->out, "  idiv %%rcx\n");
+                    }
+                }
+                if (e->kind == EXPR_MOD) {
+                    if (use32) str_appendf(&cg->out, "  mov %%edx, %%eax\n");
+                    else str_appendf(&cg->out, "  mov %%rdx, %%rax\n");
+                }
+                return;
+            case EXPR_EQ:
+            case EXPR_NE:
+            case EXPR_LT:
+            case EXPR_LE:
+            case EXPR_GT:
+            case EXPR_GE:
+            {
+                // cmp rhs, lhs -> cmp rcx, rax.
+                if (use32) str_appendf(&cg->out, "  cmp %%ecx, %%eax\n");
+                else str_appendf(&cg->out, "  cmp %%rcx, %%rax\n");
+                
+                int use_unsigned = 0;
+                if (e->lhs && (e->lhs->ptr > 0 || e->lhs->is_unsigned)) use_unsigned = 1;
+                if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
+                const char *cc = "e";
+                if (e->kind == EXPR_EQ) cc = "e";
+                else if (e->kind == EXPR_NE) cc = "ne";
+                else if (e->kind == EXPR_LT) { cc = use_unsigned ? "b" : "l"; }
+                else if (e->kind == EXPR_LE) { cc = use_unsigned ? "be" : "le"; }
+                else if (e->kind == EXPR_GT) { cc = use_unsigned ? "a" : "g"; }
+                else if (e->kind == EXPR_GE) { cc = use_unsigned ? "ae" : "ge"; }
+                
+                str_appendf_s(&cg->out, "  set%s %%al\n", cc);
+                str_appendf(&cg->out, "  movzb %%al, %%eax\n");
+                return;
+            }
+            default: break;
+        }
+    }
+
     str_appendf(&cg->out, "  push %%rax\n");
     cg_expr(cg, e->rhs);
     str_appendf(&cg->out, "  pop %%rcx\n");

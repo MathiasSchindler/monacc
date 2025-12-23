@@ -22,6 +22,10 @@ void mc_compiler_init(mc_compiler *ctx) {
     
     // Initialize code generation state
     ctx->a64_expr_label_id = 0;
+    
+    // Initialize allocator state (unused until allocator is refactored)
+    ctx->alloc_cur = NULL;
+    ctx->alloc_left = 0;
 }
 
 void mc_compiler_destroy(mc_compiler *ctx) {

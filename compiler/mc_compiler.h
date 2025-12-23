@@ -98,6 +98,13 @@ struct mc_compiler {
     // Code generation state
     // Label counters for backend code generation (per-compilation unit state)
     int a64_expr_label_id;  // aarch64 expression label counter
+    
+    // Memory allocator state (future: move allocator into context)
+    // Currently these are unused; the allocator in monacc_sys.c uses globals.
+    // Future work: thread context through monacc_malloc/calloc/realloc to enable
+    // per-context memory arenas and better isolation between compilation units.
+    unsigned char *alloc_cur;  // Current allocation pointer
+    mc_usize alloc_left;       // Remaining bytes in current allocation chunk
 };
 
 // Initialize compiler context with default options

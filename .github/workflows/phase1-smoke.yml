@@ -1,0 +1,41 @@
+name: Phase 1 Smoke Tests
+
+on:
+  push:
+    branches: [ main, master, 'copilot/**' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  phase1-smoke:
+    name: Phase 1 Compiler Smoke Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build compiler (bin/monacc)
+      run: make bin/monacc
+    
+    - name: Build self-hosted compiler (bin/monacc-self)
+      run: make bin/monacc-self
+    
+    - name: Run Phase 1 smoke tests
+      run: bash tests/compiler/phase1-smoke.sh
+    
+    - name: Verify self-hosted compiler can compile trivial program
+      run: |
+        mkdir -p build/ci-test
+        cat > build/ci-test/trivial.c <<'EOF'
+        int main(void) {
+          return 42;
+        }
+        EOF
+        ./bin/monacc-self build/ci-test/trivial.c -o build/ci-test/trivial
+        ./build/ci-test/trivial
+        rc=$?
+        if [ $rc -ne 42 ]; then
+          echo "CI: self-hosted compiler test failed (rc=$rc, expected 42)"
+          exit 1
+        fi
+        echo "CI: self-hosted compiler test passed"

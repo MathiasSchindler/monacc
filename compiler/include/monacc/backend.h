@@ -12,9 +12,11 @@
 #include "mc_types.h"
 
 // Forward declarations
-typedef struct Program Program;
 typedef struct mc_compiler mc_compiler;
-typedef struct Str Str;
+
+// The following types are defined in ast.h and util.h
+// which are included before this header in monacc_modules.h
+// No forward declarations needed here.
 
 // ===== Code Generation APIs =====
 

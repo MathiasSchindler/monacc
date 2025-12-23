@@ -13,15 +13,10 @@
 
 // Forward declarations
 typedef struct mc_compiler mc_compiler;
-typedef struct PPConfig PPConfig;
-typedef struct MacroTable MacroTable;
-typedef struct OnceTable OnceTable;
-typedef struct Str Str;
-typedef struct Parser Parser;
-typedef struct Program Program;
-typedef struct Token Token;
-typedef struct Lexer Lexer;
-typedef enum TokenKind TokenKind;
+
+// The following types are defined in token.h, ast.h, and util.h
+// which are included before this header in monacc_modules.h
+// No forward declarations needed here.
 
 // ===== Parser State =====
 

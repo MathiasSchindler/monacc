@@ -161,6 +161,7 @@ CORE_TOOL_SRC := $(CORE_COMMON_SRC)
 CORE_COMPILER_SRC := $(CORE_MIN_SRC) core/mc_start.c
 
 COMPILER_SRC := \
+	compiler/mc_compiler.c \
 	compiler/monacc_front.c \
 	compiler/monacc_fmt.c \
 	compiler/monacc_elfread.c \

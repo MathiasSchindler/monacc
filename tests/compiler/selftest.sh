@@ -28,6 +28,7 @@ link_err="$out_dir/monacc-self.link.err"
 # Keep the source list explicit and stable.
 # (This matches the main Makefile build list.)
 src=(
+  compiler/mc_compiler.c
   compiler/monacc_front.c
   compiler/monacc_fmt.c
   compiler/monacc_str.c

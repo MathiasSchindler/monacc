@@ -258,7 +258,7 @@ COMPILER_SELFHOST_SRC := \
 
 $(MONACC_SELF): $(COMPILER_SELFHOST_SRC) $(MONACC) | bin
 	@echo "==> Building self-hosted compiler"
-	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -DSELFHOST -I core -I compiler -I compiler/include $(COMPILER_SELFHOST_SRC) -o $@
 
 # Internal targets for test scripts (not user-facing)
 .PHONY: selfhost selfhost2 selfhost3
@@ -271,14 +271,14 @@ $(MONACC_SELF2): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF) | bin
 	@$(MONACC_SELF) \
 		$(if $(filter 0,$(SELFHOST2_EMITOBJ)),--as as,) \
 		$(if $(filter 0,$(SELFHOST2_LINKINT)),--ld ld,) \
-		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+		-DSELFHOST -I core -I compiler -I compiler/include $(COMPILER_SELFHOST_SRC) -o $@
 
 $(MONACC_SELF3): $(COMPILER_SELFHOST_SRC) $(MONACC_SELF2) | bin
 	@echo "==> Building stage-3 self-hosted compiler"
 	@$(MONACC_SELF2) \
 		$(if $(filter 0,$(SELFHOST3_EMITOBJ)),--as as,) \
 		$(if $(filter 0,$(SELFHOST3_LINKINT)),--ld ld,) \
-		-DSELFHOST -I core -I compiler $(COMPILER_SELFHOST_SRC) -o $@
+		-DSELFHOST -I core -I compiler -I compiler/include $(COMPILER_SELFHOST_SRC) -o $@
 
 # Stage a minimal rootfs:
 # - /init is PID 1 (copied from bin/init)
@@ -574,7 +574,7 @@ HOST_CORE_SRC := $(filter-out core/mc_libc_compat.c,$(CORE_COMMON_SRC))
 HOST_CORE_HDR := $(wildcard core/*.h)
 
 # Hosted compiler header deps.
-HOST_COMPILER_HDR := $(wildcard compiler/*.h)
+HOST_COMPILER_HDR := $(wildcard compiler/*.h) $(wildcard compiler/include/*.h) $(wildcard compiler/include/monacc/*.h)
 
 $(HOST_BIN):
 	mkdir -p $(HOST_BIN)
@@ -591,7 +591,7 @@ HOST_MONACC_SRC := $(filter-out core/mc_libc_compat.c core/mc_start.c,$(COMPILER
 
 $(HOST_BIN)/monacc: $(HOST_MONACC_SRC) $(HOST_CORE_HDR) $(HOST_COMPILER_HDR) | $(HOST_BIN)
 	@echo "  monacc"
-	@$(HOST_MONACC_CC) $(HOST_MONACC_CFLAGS) $(HOST_MONACC_LDFLAGS) -I core -I compiler $(HOST_MONACC_SRC) -o $@
+	@$(HOST_MONACC_CC) $(HOST_MONACC_CFLAGS) $(HOST_MONACC_LDFLAGS) -I core -I compiler -I compiler/include $(HOST_MONACC_SRC) -o $@
 
 # Default rule for single-file tools.
 $(HOST_BIN)/%: tools/%.c $(HOST_CORE_SRC) $(HOST_CORE_HDR) | $(HOST_BIN)

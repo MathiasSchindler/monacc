@@ -522,7 +522,8 @@ static void resolve_include(const PPConfig *cfg, const char *including_path, con
     die("include not found: %s (from %s)", inc, including_path);
 }
 
-void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out) {
+void preprocess_file(mc_compiler *ctx, const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const char *path, Str *out) {
+    (void)ctx;  // Reserved for future use (diagnostics, tracing)
     if (once_contains(ot, path)) return;
     mc_usize len = 0;
     char *src = slurp_file(path, &len);
@@ -663,7 +664,7 @@ void preprocess_file(const PPConfig *cfg, MacroTable *mt, OnceTable *ot, const c
                 inc[n] = 0;
                 char full[MONACC_PATH_MAX];
                 resolve_include(cfg, path, inc, full, sizeof(full));
-                preprocess_file(cfg, mt, ot, full, out);
+                preprocess_file(ctx, cfg, mt, ot, full, out);
                 str_appendf(out, "\n");
             } else if ((mc_usize)(line_end - q) >= 6 && mc_memcmp(q, "define", 6) == 0) {
                 if (!if_active[if_sp]) {

@@ -520,7 +520,8 @@ int program_find_global(const Program *p, const char *name, mc_usize name_len) {
 }
 
 // AST dump for debugging (Phase 1 optional debug toggle)
-void ast_dump(const Program *prg, const char *path) {
+void ast_dump(mc_compiler *ctx, const Program *prg, const char *path) {
+    (void)ctx;  // Reserved for future use (diagnostics, tracing)
     if (!prg || !path) return;
     
     int fd = xopen_wtrunc(path, 0644);

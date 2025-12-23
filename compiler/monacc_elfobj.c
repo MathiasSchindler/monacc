@@ -2451,7 +2451,8 @@ static void asmstate_free(AsmState *st) {
     st->cur = NULL;
 }
 
-void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path) {
+void assemble_x86_64_elfobj(mc_compiler *ctx, const char *asm_buf, mc_usize asm_len, const char *out_o_path) {
+    (void)ctx;  // Reserved for future use (diagnostics, tracing)
     AsmState st;
     mc_memset(&st, 0, sizeof(st));
 

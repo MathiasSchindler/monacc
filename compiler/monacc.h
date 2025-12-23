@@ -613,6 +613,9 @@ void emit_aarch64_darwin_hosted(const Program *prg, Str *out);
 // Internal toolchain reduction: assemble monacc-emitted x86_64 assembly into an ELF64 relocatable object.
 void assemble_x86_64_elfobj(const char *asm_buf, mc_usize asm_len, const char *out_o_path);
 
+// AST utilities (Phase 1: optional debug dumps)
+void ast_dump(const Program *prg, const char *path);
+
 // AST/program helpers used across modules
 Expr *new_expr(ExprKind k);
 Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams, Expr **args);

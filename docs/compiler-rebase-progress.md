@@ -13,7 +13,7 @@ The structural rebase aims to:
 ## Phase 1 – Lock Invariants and Add Safeguards ✅ COMPLETE
 
 **Status:** Complete  
-**Documentation:** `docs/phase1-safeguards.md`
+**Documentation:** `docs/phase1-safeguards.md`, `docs/compiler-architecture.md`
 
 ### Completed Items
 - ✅ Minimal compiler smoke test exists (`tests/compiler/phase1-smoke.sh`)
@@ -22,8 +22,11 @@ The structural rebase aims to:
   - `--dump-pp <path>` - dump preprocessed output
   - `--dump-elfobj <file.o>` - dump ELF object internals
   - `--dump-elfsec <file>` - dump ELF section info
+  - `--dump-ast <file>` - dump parsed AST (**NEW**)
   - `--trace-selfhost` - trace compilation steps
   - `MONACC_TRACE=1` - environment variable tracing
+- ✅ Test for AST dump functionality (`tests/compiler/test-dump-ast.sh`)
+- ✅ Architecture documentation (`docs/compiler-architecture.md`)
 
 ### Tests
 All Phase 1 tests passing consistently.
@@ -32,7 +35,7 @@ All Phase 1 tests passing consistently.
 
 ## Phase 2 – Introduce Explicit Compiler Context Object 🔄 IN PROGRESS
 
-**Status:** Approximately 40% complete
+**Status:** Approximately 50% complete
 
 ### Completed Items
 - ✅ `struct mc_compiler` and `mc_options` defined in `mc_compiler.h`
@@ -40,27 +43,31 @@ All Phase 1 tests passing consistently.
 - ✅ Converted `main()` to use `mc_compiler` context
 - ✅ Moved all command-line options into `ctx.opts`:
   - `out_path`, `dump_*_path`, `as_prog`, `ld_prog`
+  - `dump_ast_path` (**NEW**)
   - `compile_only`, `emit_obj`, `link_internal`
   - `use_nmagic`, `keep_shdr`, `target`
   - `pp_config` (include directories)
   - `cmd_defines` (command-line -D defines)
 - ✅ Cleanup handled by `mc_compiler_destroy()`
+- ✅ Trace state integrated into context (`trace_force`, `trace_cached`)
+- ✅ No global variables found in audit
 
 ### Current State
 The compiler context is initialized in `main()` and properly manages:
 - All compiler options and flags
 - Preprocessor configuration
 - Command-line defines
+- Tracing/debugging state
 - Resource cleanup on exit
 
+The context is threaded through key functions like `compile_to_obj()`.
+
 ### Remaining Work
-- [ ] Convert `compile_to_obj()` to accept `mc_compiler*` parameter
-- [ ] Move global trace variables into context:
-  - `g_trace_force` → `ctx.trace_enabled`
-  - `g_trace_cached` → internal to context
-- [ ] Unify `Target` enum with `mc_target` enum
-- [ ] Gradually convert other functions to use compiler context
-- [ ] Create adapter functions where needed for gradual migration
+- [ ] Unify `Target` enum with `mc_target` enum in mc_compiler.h
+- [ ] Thread context through more frontend functions (preprocess_file, parse_program)
+- [ ] Thread context through backend functions (emit_x86_64_*, emit_aarch64_*)
+- [ ] Consider adding diagnostics subsystem to context
+- [ ] Consider adding memory arenas to context
 
 ### Test Status
 - ✅ Phase 1 smoke tests passing
@@ -210,6 +217,10 @@ compiler/
 
 ## Recent Commits
 
+- `5b27fd1` - Add compiler architecture documentation for structural rebase
+- `ba03df9` - Add test for --dump-ast functionality  
+- `bffb2f2` - Add --dump-ast debug flag (Phase 1 optional debug toggle)
+- `afa7fb9` - Initial plan
 - `42b0142` - Phase 2 (partial): Move cmd_defines into mc_compiler context
 - `060d2c1` - Phase 2 (partial): Begin using mc_compiler context in main()
 

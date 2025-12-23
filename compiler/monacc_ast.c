@@ -518,3 +518,63 @@ int program_find_global(const Program *p, const char *name, mc_usize name_len) {
     }
     return -1;
 }
+
+// AST dump for debugging (Phase 1 optional debug toggle)
+void ast_dump(const Program *prg, const char *path) {
+    if (!prg || !path) return;
+    
+    int fd = xopen_wtrunc(path, 0644);
+    
+    Str out;
+    mc_memset(&out, 0, sizeof(out));
+    
+    // Header
+    str_appendf(&out, "=== AST Dump ===\n\n");
+    
+    // Functions
+    str_appendf_i64(&out, "Functions: %lld\n", (long long)prg->nfns);
+    for (int i = 0; i < prg->nfns; i++) {
+        const Function *fn = &prg->fns[i];
+        str_appendf_s(&out, "  %s", fn->name);
+        str_appendf_i64(&out, " (stack_size=%lld", (long long)fn->stack_size);
+        str_appendf_i64(&out, ", nparams=%lld)\n", (long long)fn->nparams);
+    }
+    str_appendf(&out, "\n");
+    
+    // Global variables
+    str_appendf_i64(&out, "Globals: %lld\n", (long long)prg->nglobals);
+    for (int i = 0; i < prg->nglobals; i++) {
+        const GlobalVar *gv = &prg->globals[i];
+        str_appendf_s(&out, "  %s", gv->name);
+        str_appendf_i64(&out, " (size=%lld", (long long)gv->size);
+        if (gv->is_extern) str_appendf(&out, ", extern");
+        if (gv->is_static) str_appendf(&out, ", static");
+        str_appendf(&out, ")\n");
+    }
+    str_appendf(&out, "\n");
+    
+    // Structs
+    str_appendf_i64(&out, "Structs: %lld\n", (long long)prg->nstructs);
+    for (int i = 0; i < prg->nstructs; i++) {
+        const StructDef *sd = &prg->structs[i];
+        str_appendf_s(&out, "  %s", sd->name);
+        str_appendf_i64(&out, " (size=%lld", (long long)sd->size);
+        str_appendf_i64(&out, ", members=%lld)\n", (long long)sd->nmembers);
+    }
+    str_appendf(&out, "\n");
+    
+    // Typedefs
+    str_appendf_i64(&out, "Typedefs: %lld\n", (long long)prg->ntypedefs);
+    for (int i = 0; i < prg->ntypedefs; i++) {
+        const Typedef *td = &prg->typedefs[i];
+        str_appendf_s(&out, "  %s\n", td->name);
+    }
+    str_appendf(&out, "\n");
+    
+    // String literals
+    str_appendf_i64(&out, "String literals: %lld\n\n", (long long)prg->nstrs);
+    
+    xwrite_best_effort(fd, out.buf, out.len);
+    monacc_free(out.buf);
+    xclose_best_effort(fd);
+}

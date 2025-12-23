@@ -143,11 +143,11 @@ static MC_NORETURN void usage(const char *argv0) {
     (void)argv0;
 #ifdef SELFHOST
     const char *msg =
-        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+        "usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [--dump-ast <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
         "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n";
     (void)xwrite_best_effort(2, msg, mc_strlen(msg));
 #else
-    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
+    errf("usage: monacc <input1.c> [input2.c ...] -o <output> [-c] [--target <x86_64-linux|aarch64-darwin>] [--emit-obj] [--link-internal] [--trace-selfhost] [--dump-elfobj <file.o>] [--dump-elfsec <file>] [--dump-ast <file>] [-I dir ...] [-DNAME[=VALUE] ...] [--dump-pp <path>] [--no-nmagic] [--keep-shdr] [--toolchain <dir>] [--as <path>] [--ld <path>]\n"
          "notes: defaults to internal asm/link (equivalent to --emit-obj --link-internal); use --as/--ld/--toolchain to force external tools\n");
 #endif
     _exit(2);
@@ -278,6 +278,11 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
     trace_checkpoint_ctx(ctx, "parse start", in_path);
     parse_program(&p, &prg);
     trace_checkpoint_ctx(ctx, "parse end", in_path);
+
+    // Dump AST if requested (Phase 1: optional debug toggle)
+    if (ctx->opts.dump_ast_path) {
+        ast_dump(&prg, ctx->opts.dump_ast_path);
+    }
 
     Str out_asm;
     mc_memset(&out_asm, 0, sizeof(out_asm));
@@ -416,6 +421,11 @@ int main(int argc, char **argv) {
             if (!mc_strcmp(argv[i], "--dump-elfsec")) {
                 if (i + 1 >= argc) usage(argv[0]);
                 ctx.opts.dump_elfsec_path = argv[++i];
+                continue;
+            }
+            if (!mc_strcmp(argv[i], "--dump-ast")) {
+                if (i + 1 >= argc) usage(argv[0]);
+                ctx.opts.dump_ast_path = argv[++i];
                 continue;
             }
             if (!mc_strcmp(argv[i], "--no-nmagic")) {

@@ -171,6 +171,23 @@ Continue Phase 2 by:
 1. Identifying remaining global state
 2. Moving globals into `mc_compiler` context
 3. Threading context through function signatures
-4. Using adapter functions to minimize disruption
+4. ✅ Using adapter functions to minimize disruption (`monacc_adapters.h` - COMPLETED)
+
+**Adapter Functions (Phase 2 Interim Solution)**
+
+To minimize breakage during signature changes, adapter macros have been created in
+`compiler/monacc_adapters.h`. These provide backward-compatible wrappers for functions
+whose signatures changed to accept `mc_compiler *ctx` parameters.
+
+The adapters:
+- Create temporary contexts with default settings
+- Call the new signatures internally
+- Enable gradual migration of existing code
+- Are documented in `docs/adapters.md`
+
+This approach allows:
+- External tools to continue working during the transition
+- Incremental migration rather than big-bang changes
+- Clear deprecation path for future phases
 
 Then proceed to Phase 3 to begin splitting headers.

@@ -35,7 +35,7 @@ All Phase 1 tests passing consistently.
 
 ## Phase 2 – Introduce Explicit Compiler Context Object 🔄 IN PROGRESS
 
-**Status:** Approximately 75% complete
+**Status:** Approximately 80% complete
 
 ### Completed Items
 - ✅ `struct mc_compiler` and `mc_options` defined in `mc_compiler.h`
@@ -60,6 +60,11 @@ All Phase 1 tests passing consistently.
   - `emit_aarch64_darwin_hosted()`
   - `assemble_x86_64_elfobj()`
   - `ast_dump()`
+- ✅ **Adapter/glue functions created** (`compiler/monacc_adapters.h`):
+  - Backward-compatible macro wrappers for signature-changed functions
+  - Enables gradual migration from old to new signatures
+  - Documented in `docs/adapters.md`
+  - Tested in `tests/compiler/test-adapters.sh`
 
 ### Current State
 The compiler context is initialized in `main()` and properly manages:
@@ -80,6 +85,38 @@ also through all frontend and backend functions:
 
 All functions currently reserve the context parameter with `(void)ctx;` for future use.
 
+**New: Adapter Functions**
+To minimize breakage during the signature changes, adapter macros have been created in
+`compiler/monacc_adapters.h`. These provide backward-compatible wrappers that:
+- Create a temporary `mc_compiler` context with default settings
+- Call the new signature with the temporary context
+- Clean up the context after the call
+
+Example usage:
+```c
+// Old code (no longer works after signature change):
+// emit_x86_64_sysv_freestanding(&prg, &out);
+
+// Transitional code using adapter:
+MONACC_CALL_NOCTX(emit_x86_64_sysv_freestanding, &prg, &out);
+
+// New code with explicit context:
+mc_compiler ctx;
+mc_compiler_init(&ctx);
+emit_x86_64_sysv_freestanding(&ctx, &prg, &out);
+mc_compiler_destroy(&ctx);
+```
+
+Available adapters:
+- `preprocess_file_noCtx()` / `MONACC_CALL_NOCTX(preprocess_file, ...)`
+- `emit_x86_64_sysv_freestanding_noCtx()` / `MONACC_CALL_NOCTX(emit_x86_64_sysv_freestanding, ...)`
+- `emit_x86_64_sysv_freestanding_with_start_noCtx()` / `MONACC_CALL_NOCTX(emit_x86_64_sysv_freestanding_with_start, ...)`
+- `emit_aarch64_darwin_hosted_noCtx()` / `MONACC_CALL_NOCTX(emit_aarch64_darwin_hosted, ...)`
+- `assemble_x86_64_elfobj_noCtx()` / `MONACC_CALL_NOCTX(assemble_x86_64_elfobj, ...)`
+- `ast_dump_noCtx()` / `MONACC_CALL_NOCTX(ast_dump, ...)`
+
+See `docs/adapters.md` for full documentation and migration guidelines.
+
 ### Remaining Work
 - [ ] Unify `Target` enum with `mc_target` enum in mc_compiler.h
 - [ ] Consider adding diagnostics subsystem to context
@@ -91,6 +128,8 @@ All functions currently reserve the context parameter with `(void)ctx;` for futu
 - ✅ Command-line options working correctly
 - ✅ -D define flag working
 - ✅ Example programs compile and run
+- ✅ Adapter functions compile and link correctly
+- ✅ Full test suite passing
 
 ---
 

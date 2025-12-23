@@ -29,6 +29,7 @@ link_err="$out_dir/monacc-self.link.err"
 # Note: unlike scripts/selftest.sh, we include monacc_elfobj.c so the produced
 # monacc-self also supports --emit-obj in SELFHOST mode.
 src=(
+  compiler/mc_compiler.c
   compiler/monacc_front.c
   compiler/monacc_fmt.c
   compiler/monacc_elfread.c

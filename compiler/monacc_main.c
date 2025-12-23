@@ -188,11 +188,11 @@ static char *join_dir_prog(const char *dir, const char *prog) {
     return out;
 }
 
-static void cmd_define_add(CmdDefine **defs, int *ndefs, const char *name, mc_usize name_len, const char *repl) {
-    CmdDefine *nd = (CmdDefine *)monacc_realloc(*defs, (mc_usize)(*ndefs + 1) * sizeof(**defs));
+static void cmd_define_add(mc_compiler *ctx, const char *name, mc_usize name_len, const char *repl) {
+    CmdDefine *nd = (CmdDefine *)monacc_realloc(ctx->opts.cmd_defines, (mc_usize)(ctx->opts.ncmd_defines + 1) * sizeof(*ctx->opts.cmd_defines));
     if (!nd) die("oom");
-    *defs = nd;
-    CmdDefine *d = &(*defs)[(*ndefs)++];
+    ctx->opts.cmd_defines = nd;
+    CmdDefine *d = &ctx->opts.cmd_defines[ctx->opts.ncmd_defines++];
 
     d->name = (char *)monacc_malloc(name_len + 1);
     if (!d->name) die("oom");
@@ -357,11 +357,6 @@ int main(int argc, char **argv) {
     char **in_paths = NULL;
     int nin_paths = 0;
     Target target = TARGET_X86_64_LINUX;
-    
-    // Temporary: keep local variables for options not yet migrated to ctx
-    // These will be moved into ctx in subsequent commits
-    CmdDefine *defs = NULL;
-    int ndefs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (!mc_strcmp(argv[i], "-o")) {
@@ -382,9 +377,9 @@ int main(int argc, char **argv) {
             }
             const char *eq = mc_strchr(arg, '=');
             if (!eq) {
-                cmd_define_add(&defs, &ndefs, arg, mc_strlen(arg), "1");
+                cmd_define_add(&ctx, arg, mc_strlen(arg), "1");
             } else {
-                cmd_define_add(&defs, &ndefs, arg, (mc_usize)(eq - arg), eq + 1);
+                cmd_define_add(&ctx, arg, (mc_usize)(eq - arg), eq + 1);
             }
         } else if (argv[i][0] == '-') {
             if (!mc_strcmp(argv[i], "--target")) {
@@ -576,11 +571,6 @@ int main(int argc, char **argv) {
         }
 
         mc_compiler_destroy(&ctx);
-        for (int i = 0; i < ndefs; i++) {
-            monacc_free(defs[i].name);
-            monacc_free(defs[i].repl);
-        }
-        monacc_free(defs);
         monacc_free(in_paths);
         return 0;
     }
@@ -592,16 +582,11 @@ int main(int argc, char **argv) {
         char tmp_s[4096];
         if (mc_snprint_cstr_cstr(tmp_s, sizeof(tmp_s), ctx.opts.out_path, ".s") >= (int)sizeof(tmp_s)) die("path too long");
         // In -c mode we intentionally do not emit _start.
-        compile_to_obj(target, in_paths[0], tmp_s, ctx.opts.out_path, &ctx.opts.pp_config, defs, ndefs, 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
+        compile_to_obj(target, in_paths[0], tmp_s, ctx.opts.out_path, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
         if (!ctx.opts.emit_obj) xunlink_best_effort(tmp_s);
 
         mc_compiler_destroy(&ctx);
 
-        for (int i = 0; i < ndefs; i++) {
-            monacc_free(defs[i].name);
-            monacc_free(defs[i].repl);
-        }
-        monacc_free(defs);
         monacc_free(in_paths);
         return 0;
     }
@@ -632,7 +617,7 @@ int main(int argc, char **argv) {
             mc_memcpy(obj_paths[i], tmp_o, no);
         }
 
-        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &ctx.opts.pp_config, defs, ndefs, i == 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
+        compile_to_obj(target, in_paths[i], tmp_s, tmp_o, &ctx.opts.pp_config, ctx.opts.cmd_defines, ctx.opts.ncmd_defines, i == 0, ctx.opts.dump_pp_path, ctx.opts.as_prog, ctx.opts.emit_obj);
     }
 
     // Link all objects.
@@ -735,11 +720,6 @@ int main(int argc, char **argv) {
     monacc_free(asm_paths);
     monacc_free(obj_paths);
     mc_compiler_destroy(&ctx);
-    for (int i = 0; i < ndefs; i++) {
-        monacc_free(defs[i].name);
-        monacc_free(defs[i].repl);
-    }
-    monacc_free(defs);
     monacc_free(in_paths);
     return 0;
 }

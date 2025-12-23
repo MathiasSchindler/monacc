@@ -19,6 +19,13 @@ void mc_compiler_init(mc_compiler *ctx) {
     ctx->trace_enabled = 0;
     ctx->trace_force = 0;
     ctx->trace_cached = -1;
+    
+    // Initialize code generation state
+    ctx->a64_expr_label_id = 0;
+    
+    // Initialize allocator state (unused until allocator is refactored)
+    ctx->alloc_cur = NULL;
+    ctx->alloc_left = 0;
 }
 
 void mc_compiler_destroy(mc_compiler *ctx) {

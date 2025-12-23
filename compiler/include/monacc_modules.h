@@ -11,8 +11,8 @@
 // to multiple compiler modules.
 
 #include "monacc/diag.h"
+#include "monacc/util.h"
 #include "monacc/token.h"
 #include "monacc/ast.h"
 #include "monacc/pp.h"
 #include "monacc/backend.h"
-#include "monacc/util.h"

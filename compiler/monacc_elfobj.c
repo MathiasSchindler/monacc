@@ -1,4 +1,9 @@
-#include "monacc.h"
+#include "monacc_libc.h"
+#include "mc.h"
+#include "monacc_base.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
+#include "include/monacc/backend.h"
 
 // Internal assembler: converts monacc-emitted x86_64 AT&T-ish assembly into an ELF64 relocatable object (.o).
 //

@@ -46,6 +46,7 @@ typedef struct {
     const char *dump_pp_path;
     const char *dump_elfobj_path;
     const char *dump_elfsec_path;
+    const char *dump_ast_path;      // --dump-ast (dump parsed AST)
     
     // Toolchain selection
     const char *as_prog;

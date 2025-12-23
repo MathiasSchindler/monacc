@@ -13,6 +13,18 @@
 // Forward declarations for compiler context (defined in mc_compiler.h)
 typedef struct mc_compiler mc_compiler;
 
+// ===== Module Headers =====
+// For better modularity, the types and APIs below are also available via
+// module-specific headers in compiler/include/monacc/:
+//   - monacc/diag.h    - Diagnostic and error reporting
+//   - monacc/token.h   - Token types and lexer
+//   - monacc/ast.h     - AST node types and program structure
+//   - monacc/pp.h      - Preprocessor and parser
+//   - monacc/backend.h - Code generation and linking
+//   - monacc/util.h    - String builders and file I/O
+// Use monacc_modules.h to include all module headers at once.
+// ===== End Module Headers =====
+
 void *monacc_malloc(mc_usize size);
 void *monacc_calloc(mc_usize nmemb, mc_usize size);
 void *monacc_realloc(void *ptr, mc_usize size);

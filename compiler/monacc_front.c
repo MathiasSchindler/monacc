@@ -1,4 +1,10 @@
-#include "monacc.h"
+#include "monacc_libc.h"
+#include "mc.h"
+#include "monacc_base.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
+#include "include/monacc/token.h"
+#include "include/monacc/pp.h"
 
 __attribute__((noreturn, format(printf, 1, 2)))
 void die(const char *fmt, ...) {

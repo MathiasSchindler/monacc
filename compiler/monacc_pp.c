@@ -1,4 +1,11 @@
-#include "monacc.h"
+#include "monacc_libc.h"
+#include "mc.h"
+#include "monacc_base.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
+#include "include/monacc/token.h"
+#include "include/monacc/ast.h"
+#include "include/monacc/pp.h"
 
 // Keep path buffers explicit to avoid pulling in <limits.h> for PATH_MAX.
 #ifndef MONACC_PATH_MAX

@@ -10,13 +10,12 @@
 // monolithic monacc.h into focused module headers.
 
 #include "mc_types.h"
+#include "token.h"  // For Lexer, Token, TokenKind, PPConfig, MacroTable, OnceTable
+#include "ast.h"    // For Program
+#include "util.h"   // For Str
 
 // Forward declarations
 typedef struct mc_compiler mc_compiler;
-
-// The following types are defined in token.h, ast.h, and util.h
-// which are included before this header in monacc_modules.h
-// No forward declarations needed here.
 
 // ===== Parser State =====
 

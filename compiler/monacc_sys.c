@@ -1,4 +1,8 @@
-#include "monacc.h"
+#include "monacc_libc.h"
+#include "mc.h"
+#include "monacc_base.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
 
 static int xsys_is_err(long r) {
     // Core syscall wrappers return -errno on failure, in range [-4095, -1].

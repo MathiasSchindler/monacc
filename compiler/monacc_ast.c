@@ -1,4 +1,9 @@
-#include "monacc.h"
+#include "monacc_libc.h"
+#include "mc.h"
+#include "monacc_base.h"
+#include "include/monacc/diag.h"
+#include "include/monacc/util.h"
+#include "include/monacc/ast.h"
 
 #ifdef SELFHOST
 static void sb_write_cstr(int fd, const char *s) {

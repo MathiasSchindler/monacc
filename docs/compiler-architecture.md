@@ -165,6 +165,38 @@ Each phase maintains a working compiler with passing tests.
 - Example programs provide regression testing
 - New `--dump-ast` flag aids debugging during refactoring
 
+## Module Separation Progress
+
+### Phase 3 Improvements: ELF and Linker Isolation
+
+As part of ensuring frontend modules do not depend on backend, ELF, or linker details,
+the following changes have been implemented:
+
+**New Module Headers:**
+- `include/monacc/elf.h` - ELF object file operations (assembly, debugging)
+- `include/monacc/link.h` - Internal linker operations
+
+**Updated Module Boundaries:**
+- `include/monacc/backend.h` - Now focused solely on code generation (assembly emission)
+  - Removed ELF object file operations
+  - Removed linker operations
+  - Added cross-references to elf.h and link.h
+
+**Key Benefits:**
+1. **Clear Separation**: Frontend modules (pp, parse, sema, ast, front) have no knowledge of ELF or linker internals
+2. **Focused Interfaces**: Backend.h provides pure code generation; ELF and linker are separate concerns
+3. **Driver-Only Access**: Only monacc_main.c (the driver) includes elf.h and link.h
+4. **Maintainability**: Changes to ELF format or linker strategy don't affect frontend or backend code generation
+
+**Implementation Files Updated:**
+- `monacc_elfobj.c` - Now includes elf.h instead of backend.h
+- `monacc_elfread.c` - Now includes elf.h instead of backend.h
+- `monacc_link.c` - Now includes link.h instead of backend.h
+- `monacc_main.c` - Explicitly includes backend.h, elf.h, and link.h
+
+This change enforces architectural boundaries and prevents accidental dependencies
+from creeping in during future development.
+
 ## Next Steps
 
 Continue Phase 2 by:

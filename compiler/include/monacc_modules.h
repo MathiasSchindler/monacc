@@ -15,4 +15,5 @@
 #include "monacc/token.h"
 #include "monacc/ast.h"
 #include "monacc/pp.h"
+#include "monacc/sema.h"
 #include "monacc/backend.h"

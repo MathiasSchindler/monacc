@@ -175,6 +175,7 @@ COMPILER_SRC := \
 	compiler/monacc_sys.c \
 	compiler/monacc_ast.c \
 	compiler/monacc_parse.c \
+	compiler/monacc_sema.c \
 	compiler/monacc_str.c \
 	compiler/monacc_codegen.c \
 	compiler/monacc_pp.c \

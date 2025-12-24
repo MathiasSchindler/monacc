@@ -7,6 +7,10 @@
 #include "include/monacc/backend.h"
 #include "mc_compiler.h"
 
+// Forward declarations for internal backend functions
+static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *prg, Str *out, int with_start);
+static void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str *out);
+
 // ===== Codegen =====
 
 typedef struct {
@@ -4641,7 +4645,9 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
     die("internal: unhandled stmt kind");
 }
 
-void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *prg, Str *out, int with_start) {
+// ===== x86_64 Backend (Internal) =====
+
+static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *prg, Str *out, int with_start) {
     (void)ctx;  // Reserved for future use (diagnostics, tracing)
     CG cg;
     mc_memset(&cg, 0, sizeof(cg));
@@ -4892,7 +4898,7 @@ void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *p
     *out = cg.out;
 }
 
-void emit_x86_64_sysv_freestanding(mc_compiler *ctx, const Program *prg, Str *out) {
+static void emit_x86_64_sysv_freestanding(mc_compiler *ctx, const Program *prg, Str *out) {
     emit_x86_64_sysv_freestanding_with_start(ctx, prg, out, 1);
 }
 
@@ -7713,7 +7719,37 @@ static void a64_emit_fn(Str *out, mc_compiler *ctx, const Program *prg, const Fu
     str_appendf(out, "  ret\n\n");
 }
 
-void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str *out) {
+// ===== Unified Backend API =====
+
+void mc_backend_codegen(mc_compiler *ctx, const Program *prg, Str *out, const mc_backend_options *opts) {
+    if (!ctx || !prg || !out) {
+        die("internal: mc_backend_codegen: null parameter");
+    }
+
+    // Use default options if none provided
+    mc_backend_options default_opts;
+    if (!opts) {
+        mc_memset(&default_opts, 0, sizeof(default_opts));
+        default_opts.with_start = 1;  // Default to generating _start
+        opts = &default_opts;
+    }
+
+    // Dispatch to target-specific codegen
+    if (ctx->opts.target == MC_TARGET_X86_64_LINUX) {
+        emit_x86_64_sysv_freestanding_with_start(ctx, prg, out, opts->with_start);
+    } else if (ctx->opts.target == MC_TARGET_AARCH64_DARWIN) {
+        // Note: aarch64-darwin is hosted (uses system libc/CRT), so with_start
+        // is not applicable - the system provides _main as the entry point.
+        (void)opts->with_start;
+        emit_aarch64_darwin_hosted(ctx, prg, out);
+    } else {
+        die("internal: mc_backend_codegen: unknown target %d", (int)ctx->opts.target);
+    }
+}
+
+// ===== Legacy Backend Functions (for internal use) =====
+
+static void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str *out) {
     if (!prg || !out) die("internal: emit_aarch64_darwin_hosted null");
 
     // Initialize code generation state

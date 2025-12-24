@@ -306,14 +306,15 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
     mc_memset(&out_asm, 0, sizeof(out_asm));
 
     trace_checkpoint_ctx(ctx, "codegen start", in_path);
-    if (target == TARGET_X86_64_LINUX) {
-        emit_x86_64_sysv_freestanding_with_start(ctx, &prg, &out_asm, with_start);
-    } else if (target == TARGET_AARCH64_DARWIN) {
-        (void)with_start;
-        emit_aarch64_darwin_hosted(ctx, &prg, &out_asm);
-    } else {
-        die("internal: unknown target");
-    }
+    
+    // Set up backend options
+    mc_backend_options backend_opts;
+    mc_memset(&backend_opts, 0, sizeof(backend_opts));
+    backend_opts.with_start = with_start;
+    
+    // Use unified backend API
+    mc_backend_codegen(ctx, &prg, &out_asm, &backend_opts);
+    
     trace_checkpoint_ctx(ctx, "codegen end", in_path);
 
     // Always emit the textual assembly as well; it's used by the external 'as' path

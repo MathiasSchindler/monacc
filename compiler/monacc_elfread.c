@@ -3,7 +3,7 @@
 #include "monacc_base.h"
 #include "include/monacc/diag.h"
 #include "include/monacc/util.h"
-#include "include/monacc/backend.h"
+#include "include/monacc/elf.h"
 
 // Minimal ELF64 ET_REL reader used for testing/bring-up of an internal linker.
 

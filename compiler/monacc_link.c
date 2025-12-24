@@ -3,7 +3,7 @@
 #include "monacc_base.h"
 #include "include/monacc/diag.h"
 #include "include/monacc/util.h"
-#include "include/monacc/backend.h"
+#include "include/monacc/link.h"
 #include "monacc_sys.h"
 
 // Step 2 (docs/ldremoval.md): Minimal internal link of a single ELF64 ET_REL object

@@ -7,6 +7,8 @@
 #include "include/monacc/ast.h"
 #include "include/monacc/pp.h"
 #include "include/monacc/backend.h"
+#include "include/monacc/elf.h"
+#include "include/monacc/link.h"
 #include "mc_compiler.h"
 
 static int trace_enabled_ctx(mc_compiler *ctx) {

@@ -3,7 +3,7 @@
 #include "monacc_base.h"
 #include "include/monacc/diag.h"
 #include "include/monacc/util.h"
-#include "include/monacc/backend.h"
+#include "include/monacc/elf.h"
 
 // Internal assembler: converts monacc-emitted x86_64 AT&T-ish assembly into an ELF64 relocatable object (.o).
 //

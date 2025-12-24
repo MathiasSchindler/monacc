@@ -66,7 +66,12 @@ OBJS := \
 	$(BUILD)/boot/pvh.o \
 	$(BUILD)/elf/elf.o \
 	$(BUILD)/fs/cpio_newc.o \
+	$(BUILD)/fs/vfs.o \
 	$(BUILD)/mm/pmm.o \
+	$(BUILD)/proc/process.o \
+	$(BUILD)/proc/sched.o \
+	$(BUILD)/sys/syscalls.o \
+	$(BUILD)/sys/utils.o \
 	$(BUILD)/user/test_mmap.o \
 	$(BUILD)/user/echo_blob.o
 
@@ -88,6 +93,15 @@ $(BUILD)/fs:
 $(BUILD)/arch:
 	mkdir -p $(BUILD)/arch
 
+$(BUILD)/mm:
+	mkdir -p $(BUILD)/mm
+
+$(BUILD)/proc:
+	mkdir -p $(BUILD)/proc
+
+$(BUILD)/sys:
+	mkdir -p $(BUILD)/sys
+
 $(BUILD)/boot/multiboot2.o: boot/multiboot2.S | $(BUILD)/boot
 	$(AS) $(ASFLAGS) -o $@ $<
 
@@ -97,7 +111,7 @@ $(BUILD)/boot/mb2.o: boot/mb2.c include/kernel.h | $(BUILD)/boot
 $(BUILD)/boot/pvh.o: boot/pvh.c include/kernel.h | $(BUILD)/boot
 	$(CC) $(CFLAGS) boot/pvh.c -o $@
 
-$(BUILD)/main.o: main.c include/kernel.h | $(BUILD)
+$(BUILD)/main.o: main.c include/kernel.h include/proc.h include/fs.h include/sys.h | $(BUILD)
 	$(CC) $(CFLAGS) main.c -o $@
 
 $(BUILD)/arch/serial.o: arch/serial.c include/kernel.h | $(BUILD)/arch
@@ -133,9 +147,6 @@ $(BUILD)/arch/lowlevel.o: arch/lowlevel.S | $(BUILD)/arch
 $(BUILD)/arch/gdt_reload.o: arch/gdt_reload.S | $(BUILD)/arch
 	$(AS) $(ASFLAGS) -o $@ arch/gdt_reload.S
 
-$(BUILD)/mm:
-	mkdir -p $(BUILD)/mm
-
 $(BUILD)/elf:
 	mkdir -p $(BUILD)/elf
 
@@ -145,8 +156,23 @@ $(BUILD)/elf/elf.o: elf/elf.c include/kernel.h | $(BUILD)/elf
 $(BUILD)/fs/cpio_newc.o: fs/cpio_newc.c include/kernel.h | $(BUILD)/fs
 	$(CC) $(CFLAGS) fs/cpio_newc.c -o $@
 
+$(BUILD)/fs/vfs.o: fs/vfs.c include/kernel.h include/fs.h include/proc.h include/sys.h | $(BUILD)/fs
+	$(CC) $(CFLAGS) fs/vfs.c -o $@
+
 $(BUILD)/mm/pmm.o: mm/pmm.c include/kernel.h | $(BUILD)/mm
 	$(CC) $(CFLAGS) mm/pmm.c -o $@
+
+$(BUILD)/proc/process.o: proc/process.c include/kernel.h include/proc.h include/fs.h include/sys.h | $(BUILD)/proc
+	$(CC) $(CFLAGS) proc/process.c -o $@
+
+$(BUILD)/proc/sched.o: proc/sched.c include/kernel.h include/proc.h include/sys.h | $(BUILD)/proc
+	$(CC) $(CFLAGS) proc/sched.c -o $@
+
+$(BUILD)/sys/syscalls.o: sys/syscalls.c include/kernel.h include/proc.h include/fs.h include/sys.h | $(BUILD)/sys
+	$(CC) $(CFLAGS) sys/syscalls.c -o $@
+
+$(BUILD)/sys/utils.o: sys/utils.c include/kernel.h include/sys.h include/proc.h | $(BUILD)/sys
+	$(CC) $(CFLAGS) sys/utils.c -o $@
 
 $(BUILD)/user:
 	mkdir -p $(BUILD)/user

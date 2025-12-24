@@ -4,15 +4,13 @@ This directory contains the x86_64 code generation backend, split from the monol
 
 ## Module Organization
 
-### Completed Modules
-
-- `emit.c` - Low-level assembly instruction emission (loads, stores)
-  - Lines extracted from monacc_codegen.c: ~790-1027
-  - ~250 lines of code
-
 ### Modules To Be Implemented
 
-The following modules are planned but not yet extracted:
+The following modules have placeholder files created but code not yet extracted:
+
+- `emit.c` - Low-level assembly instruction emission
+  - Lines to extract from monacc_codegen.c: ~790-1027 (~250 lines)
+  - emit_load_*, emit_store_* functions
 
 - `abi.c` - SysV ABI compliance
   - Parameter classification and calling conventions
@@ -41,12 +39,12 @@ The following modules are planned but not yet extracted:
 
 ## Current Status
 
-**Phase 1 (Completed)**: Directory structure created, `emit.c` extracted
+**Phase 1 (Completed)**: Directory structure created, placeholder files established, implementation guide documented
 
-**Phase 2 (In Progress)**: Extracting remaining modules
+**Phase 2 (Not Started)**: Code extraction from monacc_codegen.c
 
-The bulk of x86_64 codegen logic remains in `../../monacc_codegen.c` temporarily.
-Clear section markers indicate which code belongs in which module.
+The bulk of x86_64 codegen logic remains in `../../monacc_codegen.c`.
+Clear section markers and documentation indicate which code belongs in which module.
 
 ## Integration
 

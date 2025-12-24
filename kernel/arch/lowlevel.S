@@ -56,6 +56,14 @@ rdmsr:
     or %rdx, %rax
     ret
 
+/* rdtsc64() -> rax */
+.global rdtsc64
+rdtsc64:
+    rdtsc
+    shl $32, %rdx
+    or %rdx, %rax
+    ret
+
 /* wrmsr(msr: edi, val: rsi) */
 .global wrmsr
 wrmsr:

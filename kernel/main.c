@@ -17,8 +17,16 @@ void enter_user(uint64_t entry, uint64_t sp);
 extern void user_elf_echo_start(void);
 extern void user_elf_echo_end(void);
 
+/* Very small timebase: use TSC deltas. Frequency is best-effort.
+ * (Good enough for /proc/uptime and simple timeouts.)
+ */
+uint64_t g_boot_tsc = 0;
+uint64_t g_tsc_hz = 1000000000ull;
+
 __attribute__((noreturn)) void kmain(void) {
 	serial_init();
+	serial2_init();
+	g_boot_tsc = rdtsc64();
 	serial_write("monacc kernel\n");
 
 	/* Initialize physical memory manager */

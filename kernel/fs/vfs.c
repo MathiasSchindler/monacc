@@ -2,6 +2,7 @@
 #include "fs.h"
 #include "proc.h"
 #include "sys.h"
+#include "net.h"
 
 /* Global file/pipe state */
 struct kpipe g_pipes[KPIPE_MAX];
@@ -124,6 +125,19 @@ int kfile_alloc_pipe_end(uint32_t pipe_id, uint8_t end) {
 	return id;
 }
 
+int kfile_alloc_net(uint32_t handle, uint32_t domain, uint32_t type, uint32_t proto) {
+	int id = kfile_alloc();
+	if (id < 0) return -1;
+	struct kfile *f = &g_kfiles[id];
+	f->kind = (uint8_t)KFILE_KIND_NET;
+	f->net_handle = handle;
+	f->net_domain = domain;
+	f->net_type = type;
+	f->net_proto = proto;
+	f->net_flags = 0;
+	return id;
+}
+
 void kfile_incref(uint32_t id) {
 	struct kfile *f = kfile_get(id);
 	if (!f) return;
@@ -156,6 +170,10 @@ void kfile_decref(uint32_t id) {
 		}
 	}
 	if (f->refcnt == 0) {
+		if (f->kind == (uint8_t)KFILE_KIND_NET) {
+			// Best-effort close; ignore errors (proxy may be absent).
+			(void)netproxy_close(f->net_handle);
+		}
 		kfile_free(id);
 	}
 }
@@ -215,6 +233,13 @@ struct kfile *kfd_get_pipe(int fd) {
 	struct kfile *f = kfd_get(fd);
 	if (!f) return 0;
 	if (f->kind != (uint8_t)KFILE_KIND_PIPE) return 0;
+	return f;
+}
+
+struct kfile *kfd_get_net(int fd) {
+	struct kfile *f = kfd_get(fd);
+	if (!f) return 0;
+	if (f->kind != (uint8_t)KFILE_KIND_NET) return 0;
 	return f;
 }
 

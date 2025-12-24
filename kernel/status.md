@@ -98,14 +98,14 @@ cd kernel
 make clean && make iso
 
 # Run (implies iso rebuild if needed)
-make run-bios-serial
+make run
 
 # Note: if ../release/monacc-dev-initramfs.cpio exists, it will be included
 # by default in the ISO as a Multiboot2 module.
 
 # Override (or disable) the initramfs module explicitly:
 make INITRAMFS=../build/initramfs/sysbox.cpio iso
-make INITRAMFS= run-bios-serial
+make INITRAMFS= run
 
 # From the repo root instead:
 cd ..
@@ -116,10 +116,13 @@ The Makefile uses monacc (../bin/monacc) for C files and GNU as for assembly fil
 
 ## How to run
 
-- Main run: `make run-serial`
-- Debug logging (exceptions etc): `make run-bios-serial-log` (writes `build/qemu.log`)
+- BIOS/SeaBIOS (default, headless serial): `make run`
+- BIOS/SeaBIOS + host-proxy networking over COM2: `make run-net`
+- Direct PVH boot (no ISO/GRUB): `make run-pvh`
+- UEFI/OVMF (optional): `make run-uefi`
+- Debug logging to file: `make run-debug` (writes `build/debugcon.log`)
 
-You can also run QEMU manually (equivalent to `make run-bios-serial`):
+You can also run QEMU manually (equivalent to `make run`):
 
 ```bash
 cd kernel

@@ -13,6 +13,7 @@ enum kfile_kind {
 	KFILE_KIND_FILE = 1,
 	KFILE_KIND_DIR  = 2,
 	KFILE_KIND_PIPE = 3,
+	KFILE_KIND_NET  = 4,
 };
 
 /* Pipe structure */
@@ -41,9 +42,17 @@ struct kfile {
 	uint64_t off;
 	uint32_t mode;
 	uint32_t pipe_id;
+	uint8_t inline_data[128];
 	char path[KEXEC_MAX_STR];
 	uint64_t scan_off;
 	uint64_t dir_off;
+
+	// KFILE_KIND_NET
+	uint32_t net_handle;
+	uint32_t net_domain;
+	uint32_t net_type;
+	uint32_t net_proto;
+	uint32_t net_flags;
 };
 
 /* Pipe operations */
@@ -59,6 +68,7 @@ void kfile_free(uint32_t id);
 int kfile_alloc_file(const uint8_t *data, uint64_t size, uint32_t mode);
 int kfile_alloc_dir(const char *path, uint32_t mode);
 int kfile_alloc_pipe_end(uint32_t pipe_id, uint8_t end);
+int kfile_alloc_net(uint32_t handle, uint32_t domain, uint32_t type, uint32_t proto);
 void kfile_incref(uint32_t id);
 void kfile_decref(uint32_t id);
 
@@ -70,6 +80,7 @@ struct kfile *kfd_get(int fd);
 struct kfile *kfd_get_file(int fd);
 struct kfile *kfd_get_dir(int fd);
 struct kfile *kfd_get_pipe(int fd);
+struct kfile *kfd_get_net(int fd);
 int kfd_close(int fd);
 void kproc_close_all_fds(struct kproc *p);
 

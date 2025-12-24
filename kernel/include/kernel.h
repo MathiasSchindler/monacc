@@ -14,9 +14,29 @@
 #define O_CREAT 0100
 #define O_TRUNC 01000
 #define O_APPEND 02000
+#define O_NONBLOCK 00004000
 #define O_NOFOLLOW 0400000
 #define O_CLOEXEC 02000000
 #define O_DIRECTORY 0200000
+
+// socket(2) (Linux values)
+#define AF_INET6 10
+#define SOCK_STREAM 1
+#define SOCK_DGRAM 2
+#define SOCK_NONBLOCK 00004000
+#define SOCK_CLOEXEC 02000000
+
+// poll(2)
+struct mc_pollfd {
+	int32_t fd;
+	int16_t events;
+	int16_t revents;
+};
+
+#define POLLIN 0x0001
+#define POLLOUT 0x0004
+#define POLLERR 0x0008
+#define POLLHUP 0x0010
 
 // *at(2)
 #define AT_SYMLINK_NOFOLLOW 0x100
@@ -109,6 +129,7 @@ void ltr(uint16_t sel);
 void disable_interrupts(void);
 uint64_t rdmsr(uint32_t msr);
 void wrmsr(uint32_t msr, uint64_t val);
+uint64_t rdtsc64(void);
 uint64_t read_cr2(void);
 __attribute__((noreturn)) void halt_forever(void);
 
@@ -121,6 +142,14 @@ __attribute__((noreturn)) void kmain(void);
 void serial_putc(char c);
 char serial_getc(void);
 void serial_write(const char *s);
+
+// Optional second UART (COM2) used for host-proxy networking.
+void serial2_init(void);
+void serial2_putc(char c);
+char serial2_getc(void);
+int serial2_try_getc(char *out);
+void serial2_write(const void *buf, uint64_t n);
+void serial2_read(void *buf, uint64_t n);
 
 /* Legacy PIC (8259A) support.
  * For bring-up we remap PIC away from exception vectors and mask all IRQs.

@@ -2,10 +2,91 @@
 #include "proc.h"
 #include "fs.h"
 #include "sys.h"
+#include "net.h"
 
 /* Embedded monacc-built ELF tools (from user/*.S incbin). */
 extern void user_elf_echo_start(void);
 extern void user_elf_echo_end(void);
+
+extern uint64_t g_boot_tsc;
+extern uint64_t g_tsc_hz;
+
+static int kstreq(const char *a, const char *b) {
+	if (!a || !b) return 0;
+	uint64_t i = 0;
+	for (;;) {
+		char ca = a[i];
+		char cb = b[i];
+		if (ca != cb) return 0;
+		if (ca == 0) return 1;
+		i++;
+	}
+}
+
+static uint64_t k_uptime_centis(void) {
+	uint64_t now = rdtsc64();
+	uint64_t base = g_boot_tsc;
+	if (base == 0) {
+		g_boot_tsc = now;
+		base = now;
+	}
+	uint64_t hz = g_tsc_hz;
+	if (hz == 0) hz = 1000000000ull;
+	uint64_t delta = now - base;
+	return (delta * 100ull) / hz;
+}
+
+static uint64_t kfmt_u64_dec(char *dst, uint64_t cap, uint64_t v) {
+	if (!dst || cap == 0) return 0;
+	char tmp[32];
+	uint64_t n = 0;
+	if (v == 0) {
+		dst[0] = '0';
+		return 1;
+	}
+	while (v && n < sizeof(tmp)) {
+		tmp[n++] = (char)('0' + (v % 10));
+		v /= 10;
+	}
+	uint64_t out = 0;
+	while (n && out < cap) {
+		dst[out++] = tmp[--n];
+	}
+	return out;
+}
+
+static uint64_t krand_state;
+
+static uint64_t kmix_u64(uint64_t x) {
+	x ^= x >> 33;
+	x *= 0xff51afd7ed558ccdULL;
+	x ^= x >> 33;
+	x *= 0xc4ceb9fe1a85ec53ULL;
+	x ^= x >> 33;
+	return x;
+}
+
+static void krand_seed_if_needed(void) {
+	if (krand_state) return;
+	uint64_t x = rdtsc64();
+	x ^= (uint64_t)(uintptr_t)&krand_state;
+	x ^= (uint64_t)(uintptr_t)g_cur;
+	x ^= syscall_user_rsp;
+	if (g_cur) x ^= ((uint64_t)g_cur->pid << 1) ^ ((uint64_t)g_cur->ppid << 17);
+	krand_state = kmix_u64(x);
+	if (!krand_state) krand_state = 1;
+}
+
+static uint64_t krand_u64(void) {
+	krand_seed_if_needed();
+	/* xorshift64* */
+	uint64_t x = krand_state;
+	x ^= x >> 12;
+	x ^= x << 25;
+	x ^= x >> 27;
+	krand_state = x;
+	return x * 2685821657736338717ULL;
+}
 
 void syscall_handler(struct regs *r) {
 	/* If we haven't established a current process yet, treat the first syscall
@@ -128,6 +209,13 @@ void syscall_handler(struct regs *r) {
 		{
 			struct kfile *f = kfd_get_file(fd);
 			if (!f) {
+				struct kfile *nf = kfd_get_net(fd);
+				if (nf) {
+					uint32_t n32 = (count > 0xffffffffull) ? 0xffffffffu : (uint32_t)count;
+					int64_t rr = netproxy_recvfrom(nf->net_handle, buf, n32, 0);
+					r->rax = (uint64_t)rr;
+					return;
+				}
 				if (kfd_get_dir(fd)) {
 					r->rax = (uint64_t)(-(int64_t)21); /* -EISDIR */
 					return;
@@ -162,42 +250,49 @@ void syscall_handler(struct regs *r) {
 			return;
 		}
 		if (fd != 1 && fd != 2) {
-			/* Not stdio: allow writing to pipes if mapped. */
+			/* Not stdio: allow writing to pipes or net sockets if mapped. */
 			struct kfile *pf = kfd_get_pipe(fd);
-			if (!pf || pf->pipe_end != 1) {
-				r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
-				return;
-			}
-			struct kpipe *pp = kpipe_get(pf->pipe_id);
-			if (!pp) {
-				r->rax = (uint64_t)(-(int64_t)9);
-				return;
-			}
-			if (pp->read_refs == 0) {
-				r->rax = (uint64_t)(-(int64_t)32); /* -EPIPE */
-				return;
-			}
-			if (pp->count == KPIPE_BUF) {
-				/* Block until space becomes available. */
-				g_cur->state = KPROC_WAITING;
-				g_cur->wait_kind = KWAIT_PIPE_WRITE;
-				g_cur->wait_obj = pf->pipe_id;
-				r->rcx -= 2; /* retry syscall */
-				struct kproc *next = kproc_pick_next();
-				if (next != g_cur) {
-					kproc_switch(r, next);
+			if (pf && pf->pipe_end == 1) {
+				struct kpipe *pp = kpipe_get(pf->pipe_id);
+				if (!pp) {
+					r->rax = (uint64_t)(-(int64_t)9);
+					return;
 				}
+				if (pp->read_refs == 0) {
+					r->rax = (uint64_t)(-(int64_t)32); /* -EPIPE */
+					return;
+				}
+				if (pp->count == KPIPE_BUF) {
+					/* Block until space becomes available. */
+					g_cur->state = KPROC_WAITING;
+					g_cur->wait_kind = KWAIT_PIPE_WRITE;
+					g_cur->wait_obj = pf->pipe_id;
+					r->rcx -= 2; /* retry syscall */
+					struct kproc *next = kproc_pick_next();
+					if (next != g_cur) {
+						kproc_switch(r, next);
+					}
+					return;
+				}
+				uint64_t space = (uint64_t)(KPIPE_BUF - pp->count);
+				uint64_t n = (count < space) ? count : space;
+				for (uint64_t i = 0; i < n; i++) {
+					pp->buf[pp->wpos] = buf[i];
+					pp->wpos = (pp->wpos + 1u) % KPIPE_BUF;
+					pp->count++;
+				}
+				kpipe_wake_waiters(pf->pipe_id);
+				r->rax = n;
 				return;
 			}
-			uint64_t space = (uint64_t)(KPIPE_BUF - pp->count);
-			uint64_t n = (count < space) ? count : space;
-			for (uint64_t i = 0; i < n; i++) {
-				pp->buf[pp->wpos] = buf[i];
-				pp->wpos = (pp->wpos + 1u) % KPIPE_BUF;
-				pp->count++;
+			struct kfile *nf = kfd_get_net(fd);
+			if (nf) {
+				uint32_t n32 = (count > 0xffffffffull) ? 0xffffffffu : (uint32_t)count;
+				int64_t wr = netproxy_sendto(nf->net_handle, buf, n32, 0, 0, 0);
+				r->rax = (uint64_t)wr;
+				return;
 			}
-			kpipe_wake_waiters(pf->pipe_id);
-			r->rax = n;
+			r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
 			return;
 		}
 		/* Stdout/stderr: if redirected, handle it; otherwise serial. */
@@ -311,6 +406,12 @@ void syscall_handler(struct regs *r) {
 			r->rax = 0;
 			return;
 		}
+		struct kfile *nf = kfd_get_net(fd);
+		if (nf) {
+			kstat_fill(st, (uint32_t)(0140000u | 0666u), 0); /* S_IFSOCK | 0666 */
+			r->rax = 0;
+			return;
+		}
 		struct kfile *f = kfd_get_file(fd);
 		if (!f) {
 			r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
@@ -318,6 +419,204 @@ void syscall_handler(struct regs *r) {
 		}
 		kstat_fill(st, f->mode ? f->mode : (uint32_t)(S_IFREG | 0444u), f->size);
 		r->rax = 0;
+		return;
+	}
+	case 7: { /* poll(fds, nfds, timeout) */
+		struct mc_pollfd *fds = (struct mc_pollfd *)r->rdi;
+		uint64_t nfds = r->rsi;
+		int32_t timeout_ms = (int32_t)r->rdx;
+		if (!fds) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		if (nfds == 0) {
+			r->rax = 0;
+			return;
+		}
+		if (nfds > 16) {
+			r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+			return;
+		}
+		uint32_t handles[16];
+		int16_t events[16];
+		int16_t revents[16];
+		for (uint64_t i = 0; i < nfds; i++) {
+			fds[i].revents = 0;
+			struct kfile *nf = kfd_get_net(fds[i].fd);
+			if (!nf) {
+				r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+				return;
+			}
+			handles[i] = nf->net_handle;
+			events[i] = fds[i].events;
+			revents[i] = 0;
+		}
+		int64_t pr = netproxy_poll(handles, events, revents, (uint32_t)nfds, timeout_ms);
+		if (pr < 0) {
+			r->rax = (uint64_t)pr;
+			return;
+		}
+		for (uint64_t i = 0; i < nfds; i++) {
+			fds[i].revents = revents[i];
+		}
+		r->rax = (uint64_t)pr;
+		return;
+	}
+	case 41: { /* socket(domain, type, protocol) */
+		uint32_t domain = (uint32_t)r->rdi;
+		uint32_t type = (uint32_t)r->rsi;
+		uint32_t proto = (uint32_t)r->rdx;
+		int64_t h = netproxy_socket(domain, type, proto);
+		if (h < 0) {
+			r->rax = (uint64_t)h;
+			return;
+		}
+		int kid = kfile_alloc_net((uint32_t)h, domain, type, proto);
+		if (kid < 0) {
+			(void)netproxy_close((uint32_t)h);
+			r->rax = (uint64_t)(-(int64_t)24); /* -EMFILE */
+			return;
+		}
+		struct kfile *nf = kfile_get((uint32_t)kid);
+		if (nf) {
+			nf->net_flags = (type & (uint32_t)SOCK_NONBLOCK) ? (uint32_t)O_NONBLOCK : 0u;
+		}
+		int fd = kfd_install_first_free(g_cur, 0, (uint32_t)kid);
+		if (fd < 0) {
+			kfile_free((uint32_t)kid);
+			(void)netproxy_close((uint32_t)h);
+			r->rax = (uint64_t)(-(int64_t)24); /* -EMFILE */
+			return;
+		}
+		r->rax = (uint64_t)fd;
+		return;
+	}
+	case 42: { /* connect(fd, addr, addrlen) */
+		int fd = (int)r->rdi;
+		const void *addr = (const void *)r->rsi;
+		uint32_t addrlen = (uint32_t)r->rdx;
+		struct kfile *nf = kfd_get_net(fd);
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)88); /* -ENOTSOCK */
+			return;
+		}
+		if (addrlen && !addr) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		int64_t cr = netproxy_connect(nf->net_handle, addr, addrlen);
+		r->rax = (uint64_t)cr;
+		return;
+	}
+	case 44: { /* sendto(fd, buf, len, flags, addr, addrlen) */
+		int fd = (int)r->rdi;
+		const void *buf = (const void *)r->rsi;
+		uint32_t len = (uint32_t)r->rdx;
+		uint32_t flags = (uint32_t)r->r10;
+		const void *addr = (const void *)r->r8;
+		uint32_t addrlen = (uint32_t)r->r9;
+		struct kfile *nf = kfd_get_net(fd);
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)88);
+			return;
+		}
+		if (len && !buf) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
+		if (addrlen && !addr) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
+		int64_t sr = netproxy_sendto(nf->net_handle, buf, len, flags, addr, addrlen);
+		r->rax = (uint64_t)sr;
+		return;
+	}
+	case 45: { /* recvfrom(fd, buf, len, flags, addr, addrlen) */
+		int fd = (int)r->rdi;
+		void *buf = (void *)r->rsi;
+		uint32_t len = (uint32_t)r->rdx;
+		uint32_t flags = (uint32_t)r->r10;
+		struct kfile *nf = kfd_get_net(fd);
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)88);
+			return;
+		}
+		if (len && !buf) {
+			r->rax = (uint64_t)(-(int64_t)14);
+			return;
+		}
+		int64_t rr = netproxy_recvfrom(nf->net_handle, buf, len, flags);
+		r->rax = (uint64_t)rr;
+		return;
+	}
+	case 54: { /* setsockopt(fd, level, optname, optval, optlen) */
+		int fd = (int)r->rdi;
+		struct kfile *nf = kfd_get_net(fd);
+		(void)r->rsi;
+		(void)r->rdx;
+		(void)r->r10;
+		(void)r->r8;
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)88); /* -ENOTSOCK */
+			return;
+		}
+		// Accept and ignore for now.
+		r->rax = 0;
+		return;
+	}
+	case 55: { /* getsockopt(fd, level, optname, optval, optlen) */
+		int fd = (int)r->rdi;
+		int level = (int)r->rsi;
+		int optname = (int)r->rdx;
+		void *optval = (void *)r->r10;
+		uint32_t *optlenp = (uint32_t *)r->r8;
+		struct kfile *nf = kfd_get_net(fd);
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)88); /* -ENOTSOCK */
+			return;
+		}
+		if (!optval || !optlenp) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		// Minimal support for connect_with_timeout(): SO_ERROR.
+		// Linux: SOL_SOCKET=1, SO_ERROR=4
+		if (level == 1 && optname == 4) {
+			if (*optlenp < (uint32_t)sizeof(int32_t)) {
+				r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+				return;
+			}
+			*(int32_t *)optval = 0;
+			*optlenp = (uint32_t)sizeof(int32_t);
+			r->rax = 0;
+			return;
+		}
+		r->rax = (uint64_t)(-(int64_t)92); /* -ENOPROTOOPT */
+		return;
+	}
+	case 72: { /* fcntl(fd, cmd, arg) */
+		int fd = (int)r->rdi;
+		int cmd = (int)r->rsi;
+		uint64_t arg = r->rdx;
+		struct kfile *nf = kfd_get_net(fd);
+		if (!nf) {
+			r->rax = (uint64_t)(-(int64_t)9); /* -EBADF */
+			return;
+		}
+		if (cmd == 3) { /* F_GETFL */
+			r->rax = (uint64_t)nf->net_flags;
+			return;
+		}
+		if (cmd == 4) { /* F_SETFL */
+			uint32_t newf = (uint32_t)arg;
+			int nb = (newf & (uint32_t)O_NONBLOCK) ? 1 : 0;
+			nf->net_flags = nb ? (uint32_t)O_NONBLOCK : 0u;
+			int64_t fr = netproxy_set_nonblock(nf->net_handle, nb);
+			r->rax = (uint64_t)fr;
+			return;
+		}
+		r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
 		return;
 	}
 	case 8: { /* lseek(fd, offset, whence) */
@@ -403,10 +702,7 @@ void syscall_handler(struct regs *r) {
 			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
 			return;
 		}
-		if (!g_initramfs || g_initramfs_sz == 0) {
-			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
-			return;
-		}
+		/* Note: allow a few virtual /proc files even without initramfs. */
 		if ((flags & 3u) != 0u) {
 			r->rax = (uint64_t)(-(int64_t)13); /* -EACCES */
 			return;
@@ -430,6 +726,84 @@ void syscall_handler(struct regs *r) {
 		}
 		const char *p = skip_leading_slash(full);
 		p = skip_dot_slash2(p);
+
+		/* Minimal procfs: /proc and /proc/uptime. */
+		if (flags & O_DIRECTORY) {
+			if (kstreq(p, "proc") || kstreq(p, "proc/")) {
+				uint32_t mode = (uint32_t)(S_IFDIR | 0555u);
+				int id = kfile_alloc_dir("proc", mode);
+				if (id < 0) {
+					r->rax = (uint64_t)(-(int64_t)24);
+					return;
+				}
+				int fd = kfd_install_first_free(g_cur, 3, (uint32_t)id);
+				if (fd < 0) {
+					kfile_free((uint32_t)id);
+					r->rax = (uint64_t)(-(int64_t)24);
+					return;
+				}
+				r->rax = (uint64_t)fd;
+				return;
+			}
+			if (kstreq(p, "proc/uptime")) {
+				r->rax = (uint64_t)(-(int64_t)20); /* -ENOTDIR */
+				return;
+			}
+		}
+		if (kstreq(p, "proc/uptime")) {
+			int id = kfile_alloc();
+			if (id < 0) {
+				r->rax = (uint64_t)(-(int64_t)24);
+				return;
+			}
+			struct kfile *f = kfile_get((uint32_t)id);
+			if (!f) {
+				r->rax = (uint64_t)(-(int64_t)5);
+				return;
+			}
+			f->writable = 0;
+			f->kind = (uint8_t)KFILE_KIND_FILE;
+			f->data = (const uint8_t *)f->inline_data;
+			f->off = 0;
+			f->mode = (uint32_t)(S_IFREG | 0444u);
+
+			uint64_t cs = k_uptime_centis();
+			uint64_t s = cs / 100ull;
+			uint64_t frac = cs % 100ull;
+			char *b = (char *)f->inline_data;
+			uint64_t cap = (uint64_t)sizeof(f->inline_data);
+			uint64_t pos = 0;
+			pos += kfmt_u64_dec(b + pos, (pos < cap) ? (cap - pos) : 0, s);
+			if (pos < cap) b[pos++] = '.';
+			if (pos + 2 <= cap) {
+				b[pos++] = (char)('0' + (char)(frac / 10ull));
+				b[pos++] = (char)('0' + (char)(frac % 10ull));
+			}
+			if (pos < cap) b[pos++] = ' ';
+			/* Idle time: report 0.00 for now. */
+			if (pos < cap) b[pos++] = '0';
+			if (pos < cap) b[pos++] = '.';
+			if (pos + 2 <= cap) {
+				b[pos++] = '0';
+				b[pos++] = '0';
+			}
+			if (pos < cap) b[pos++] = '\n';
+			f->size = pos;
+
+			int fd = kfd_install_first_free(g_cur, 3, (uint32_t)id);
+			if (fd < 0) {
+				kfile_free((uint32_t)id);
+				r->rax = (uint64_t)(-(int64_t)24);
+				return;
+			}
+			r->rax = (uint64_t)fd;
+			return;
+		}
+
+		if (!g_initramfs || g_initramfs_sz == 0) {
+			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
+			return;
+		}
 
 		uint32_t mode = 0;
 		uint64_t size = 0;
@@ -604,6 +978,11 @@ void syscall_handler(struct regs *r) {
 				dt = DT_DIR;
 				d->dir_emit = 2;
 				have = 1;
+			} else if (d->dir_emit == 2 && kstreq(d->path, "proc")) {
+				(void)kcopy_cstr(name_tmp, sizeof(name_tmp), "uptime");
+				dt = DT_REG;
+				d->dir_emit = 3;
+				have = 1;
 			} else {
 				have = cpio_newc_dir_next(g_initramfs, g_initramfs_sz, d->path, &d->scan_off,
 							  name_tmp, sizeof(name_tmp), &dt);
@@ -686,6 +1065,12 @@ void syscall_handler(struct regs *r) {
 		}
 		const char *p = skip_leading_slash(full);
 		p = skip_dot_slash2(p);
+		if (kstreq(p, "proc/uptime")) {
+			/* Content is generated on open; size is a small best-effort value. */
+			kstat_fill(st, (uint32_t)(S_IFREG | 0444u), 32);
+			r->rax = 0;
+			return;
+		}
 		if (!p[0]) {
 			kstat_fill(st, (uint32_t)(S_IFDIR | 0555u), 0);
 			r->rax = 0;
@@ -731,6 +1116,16 @@ void syscall_handler(struct regs *r) {
 			return;
 		}
 		const char *p = skip_leading_slash(pathbuf);
+		p = skip_dot_slash2(p);
+		if (kstreq(p, "proc/uptime")) {
+			/* Readable by everyone; reject write checks. */
+			if (mode_req & 2u) {
+				r->rax = (uint64_t)(-(int64_t)13); /* -EACCES */
+				return;
+			}
+			r->rax = 0;
+			return;
+		}
 		uint32_t mode = 0;
 		uint64_t size = 0;
 		if (cpio_newc_stat(g_initramfs, g_initramfs_sz, p, &mode, &size) != 0) {
@@ -864,6 +1259,14 @@ void syscall_handler(struct regs *r) {
 		r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
 		return;
 	}
+	case 39: { /* getpid() */
+		r->rax = (uint64_t)(g_cur ? g_cur->pid : 0);
+		return;
+	}
+	case 110: { /* getppid() */
+		r->rax = (uint64_t)(g_cur ? g_cur->ppid : 0);
+		return;
+	}
 	case 59: { /* execve(filename, argv, envp) */
 		const char *filename = (const char *)r->rdi;
 		const uint64_t *argvp = (const uint64_t *)r->rsi;
@@ -883,9 +1286,23 @@ void syscall_handler(struct regs *r) {
 			r->rax = (uint64_t)(-(int64_t)14);
 			return;
 		}
-		const char *path = skip_leading_slash(filename_buf);
-		if (!path[0]) {
-			r->rax = (uint64_t)(-(int64_t)2);
+
+		/* Resolve relative paths against cwd (like Linux execve). */
+		char full[KEXEC_MAX_STR];
+		const char *path = 0;
+		if (filename_buf[0] == '/') {
+			path = skip_leading_slash(filename_buf);
+			path = skip_dot_slash2(path);
+		} else {
+			if (resolve_path(full, sizeof(full), AT_FDCWD, filename_buf) != 0) {
+				r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+				return;
+			}
+			path = skip_leading_slash(full);
+			path = skip_dot_slash2(path);
+		}
+		if (!path || !path[0]) {
+			r->rax = (uint64_t)(-(int64_t)2); /* -ENOENT */
 			return;
 		}
 
@@ -1186,6 +1603,40 @@ void syscall_handler(struct regs *r) {
 		struct kproc *next = kproc_pick_next();
 		kproc_switch(r, next);
 		kproc_die_if_no_runnable();
+		return;
+	}
+	case 318: { /* getrandom(buf, buflen, flags) */
+		uint8_t *buf = (uint8_t *)r->rdi;
+		uint64_t buflen = r->rsi;
+		uint64_t flags = r->rdx;
+
+		/* Minimal semantics:
+		 * - only supports flags==0
+		 * - always returns buflen (no partial reads)
+		 */
+		if (!buf) {
+			r->rax = (uint64_t)(-(int64_t)14); /* -EFAULT */
+			return;
+		}
+		if (flags != 0) {
+			r->rax = (uint64_t)(-(int64_t)22); /* -EINVAL */
+			return;
+		}
+		if (buflen == 0) {
+			r->rax = 0;
+			return;
+		}
+
+		uint64_t i = 0;
+		while (i < buflen) {
+			uint64_t x = krand_u64();
+			for (int k = 0; k < 8 && i < buflen; k++) {
+				buf[i++] = (uint8_t)(x & 0xffu);
+				x >>= 8;
+			}
+		}
+
+		r->rax = buflen;
 		return;
 	}
 	default:

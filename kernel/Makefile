@@ -42,7 +42,10 @@ OVMF_VARS := $(BUILD)/ovmf_vars.fd
 VGA ?= virtio
 
 # monacc flags: just -c and -I include
-CFLAGS := -c -I include
+# Optional debug knobs (passed to C as -D...)
+KDEBUG_SYSCALLS ?= 0
+
+CFLAGS := -c -I include -DKDEBUG_SYSCALLS=$(KDEBUG_SYSCALLS)
 
 ASFLAGS := --64
 
@@ -52,6 +55,7 @@ OBJS := \
 	$(BUILD)/boot/multiboot2.o \
 	$(BUILD)/main.o \
 	$(BUILD)/arch/serial.o \
+	$(BUILD)/arch/serial2.o \
 	$(BUILD)/arch/except.o \
 	$(BUILD)/arch/pic.o \
 	$(BUILD)/arch/irq.o \
@@ -72,6 +76,7 @@ OBJS := \
 	$(BUILD)/proc/sched.o \
 	$(BUILD)/sys/syscalls.o \
 	$(BUILD)/sys/utils.o \
+	$(BUILD)/net/netproxy.o \
 	$(BUILD)/user/test_mmap.o \
 	$(BUILD)/user/echo_blob.o
 
@@ -116,6 +121,9 @@ $(BUILD)/main.o: main.c include/kernel.h include/proc.h include/fs.h include/sys
 
 $(BUILD)/arch/serial.o: arch/serial.c include/kernel.h | $(BUILD)/arch
 	$(CC) $(CFLAGS) arch/serial.c -o $@
+
+$(BUILD)/arch/serial2.o: arch/serial2.c include/kernel.h | $(BUILD)/arch
+	$(CC) $(CFLAGS) arch/serial2.c -o $@
 
 $(BUILD)/arch/except.o: arch/except.c include/kernel.h | $(BUILD)/arch
 	$(CC) $(CFLAGS) arch/except.c -o $@
@@ -168,11 +176,17 @@ $(BUILD)/proc/process.o: proc/process.c include/kernel.h include/proc.h include/
 $(BUILD)/proc/sched.o: proc/sched.c include/kernel.h include/proc.h include/sys.h | $(BUILD)/proc
 	$(CC) $(CFLAGS) proc/sched.c -o $@
 
-$(BUILD)/sys/syscalls.o: sys/syscalls.c include/kernel.h include/proc.h include/fs.h include/sys.h | $(BUILD)/sys
+$(BUILD)/sys/syscalls.o: sys/syscalls.c include/kernel.h include/proc.h include/fs.h include/sys.h include/net.h | $(BUILD)/sys
 	$(CC) $(CFLAGS) sys/syscalls.c -o $@
 
 $(BUILD)/sys/utils.o: sys/utils.c include/kernel.h include/sys.h include/proc.h | $(BUILD)/sys
 	$(CC) $(CFLAGS) sys/utils.c -o $@
+
+$(BUILD)/net:
+	mkdir -p $(BUILD)/net
+
+$(BUILD)/net/netproxy.o: net/netproxy.c include/kernel.h include/net.h | $(BUILD)/net
+	$(CC) $(CFLAGS) net/netproxy.c -o $@
 
 $(BUILD)/user:
 	mkdir -p $(BUILD)/user
@@ -254,6 +268,7 @@ $(OVMF_VARS):
 
 QEMU ?= qemu-system-x86_64
 GUI ?= 0
+QEMU_LOG ?= $(BUILD)/qemu.log
 
 QEMU_COMMON := -cdrom $(BUILD)/kernel.iso -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
@@ -265,9 +280,38 @@ endif
 
 .PHONY: run run-uefi
 
+.PHONY: run-log run-gdbstub gdb
+
+.PHONY: run-net
+
 # Default run target: boot with SeaBIOS (simplest for serial bring-up).
 run: iso
 	$(QEMU) $(QEMU_COMMON) || [ $$? -eq 33 ]
+
+# Run with host-proxy networking over COM2.
+# This enables IPv6-only net tools (dns6/tcp6/wget6/ntp6/...) without a full in-kernel TCP/IP stack.
+NETPROXY_SOCK ?= $(BUILD)/netproxy.sock
+
+run-net: iso
+	rm -f $(NETPROXY_SOCK)
+	@echo "==> starting host netproxy (COM2)"
+	@bash -c ' \
+		set -e; \
+		sock="$(NETPROXY_SOCK)"; \
+		python3 tools/netproxy.py "$$sock" & \
+		pid=$$!; \
+		trap "kill $$pid 2>/dev/null || true" EXIT; \
+		$(QEMU) $(QEMU_COMMON) -serial unix:$(NETPROXY_SOCK),server,nowait; \
+		st=$$?; \
+		if [ $$st -ne 33 ]; then exit $$st; fi; \
+	'
+
+# Same as `run`, but also logs QEMU debug output to $(QEMU_LOG).
+# Useful when the VM resets/triple-faults before printing anything.
+run-log: iso
+	rm -f $(QEMU_LOG)
+	$(QEMU) $(QEMU_COMMON) -d int,cpu_reset -D $(QEMU_LOG) || [ $$? -eq 33 ]
+	@echo "Wrote $(QEMU_LOG)"
 
 # Direct PVH boot (no ISO/GRUB): requires PVH ELF note in kernel.elf.
 # INITRAMFS is optional; if set, it is passed via -initrd and appears as a PVH module.
@@ -278,6 +322,15 @@ run-pvh: elf
 		$(QEMU) -kernel $(KERNEL_ELF) $$initrd -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 			$$( [ "$(GUI)" = "0" ] && printf '%s' '-display none -monitor none -no-reboot' || true ); \
 	} || [ $$? -eq 33 ]
+
+# Start QEMU halted with a GDB server on :1234 (useful for early boot debugging).
+run-gdbstub: iso
+	@echo "==> QEMU waiting for GDB on :1234"
+	$(QEMU) $(QEMU_COMMON) -s -S || [ $$? -eq 33 ]
+
+# Convenience: attach gdb to a `run-gdbstub` session.
+gdb: elf
+	@gdb $(KERNEL_ELF) -ex 'target remote :1234'
 
 # UEFI/OVMF run (optional).
 run-uefi: iso $(OVMF_VARS)

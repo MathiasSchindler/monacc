@@ -179,6 +179,7 @@ COMPILER_SRC := \
 	compiler/monacc_str.c \
 	compiler/monacc_codegen.c \
 	compiler/monacc_pp.c \
+	compiler/parse/ppexpr.c \
 	compiler/monacc_main.c \
 	$(CORE_COMPILER_SRC)
 
@@ -311,7 +312,7 @@ initramfs: initramfs-cpio
 
 $(MONACC): $(COMPILER_SRC) | bin
 	@echo "==> Building compiler"
-	$(CC) $(CFLAGS) -I core $(LDFLAGS) $(START_LDFLAGS) $(COMPILER_SRC) -o $@
+	$(CC) $(CFLAGS) -I core -I compiler $(LDFLAGS) $(START_LDFLAGS) $(COMPILER_SRC) -o $@
 
 bin:
 	mkdir -p bin

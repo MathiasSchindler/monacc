@@ -308,7 +308,8 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
     trace_checkpoint_ctx(ctx, "codegen start", in_path);
     
     // Set up backend options
-    mc_backend_options backend_opts = {0};
+    mc_backend_options backend_opts;
+    mc_memset(&backend_opts, 0, sizeof(backend_opts));
     backend_opts.with_start = with_start;
     
     // Use unified backend API

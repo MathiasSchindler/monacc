@@ -154,16 +154,44 @@ See `docs/adapters.md` for full documentation and migration guidelines.
 
 ## Phase 4 – Rebase & Clean Up Frontend
 
-**Status:** Not started
+**Status:** In Progress
 
-### Planned Work
-- [ ] Define stable frontend API
+### Completed Items
+- ✅ **Define stable frontend API**
+  - Created `include/monacc/sema.h` - Semantic analysis API
+  - Implemented `monacc_sema.c` - Validation and semantic analysis
+  - Documented `parse_program()` as AST producer
+  - Documented `sema_analyze()` as typed AST validator
+  - Integrated sema phase into compilation pipeline
+  - Added test suite: `tests/compiler/test-sema-api.sh`
+
+### Frontend API Contract
+The stable frontend API establishes a clear separation between parsing and semantic analysis:
+
+1. **`parse_program(Parser *p, Program *out)`**
+   - Produces an Abstract Syntax Tree (AST) from preprocessed source
+   - Currently performs type analysis during parsing (single-pass compilation)
+   - Future: May produce partially typed AST for cleaner separation
+
+2. **`sema_analyze(mc_compiler *ctx, Program *prg)`**
+   - Performs semantic analysis on parsed AST
+   - Validates type information and semantic constraints
+   - Currently validates that AST is well-formed (parser already does typing)
+   - Future: Will perform actual type checking when parser is simplified
+
+This API enables:
+- Clear architectural boundaries between syntax and semantics
+- Future separation of parsing from type checking
+- Better error messages (separate parse errors from type errors)
+- Foundation for multi-pass compilation if needed
+
+### Remaining Work
 - [ ] Split preprocessor:
   - Move to `compiler/src/front/pp/`
   - Separate tokenizer to `lex/`
   - Separate parser to `parse/`
 - [ ] Create/complete `ast.c`/`ast.h` with AST construction API
-- [ ] Create `sema.c`/`sema.h` for semantic analysis
+- [ ] Move type checking from parser to sema (optional future work)
 - [ ] Ensure frontend has no backend dependencies
 
 ---

@@ -4898,10 +4898,6 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
     *out = cg.out;
 }
 
-static void emit_x86_64_sysv_freestanding(mc_compiler *ctx, const Program *prg, Str *out) {
-    emit_x86_64_sysv_freestanding_with_start(ctx, prg, out, 1);
-}
-
 // ===== AArch64 Darwin hosted (bring-up) =====
 
 static int a64_expr_contains_call(const Expr *e) {
@@ -7626,7 +7622,10 @@ static void a64_emit_stmt(Str *out, mc_compiler *ctx, const Program *prg, const 
             return;
         }
         default:
-            die("aarch64-darwin: unsupported statement kind %d (need more backend bring-up)", s ? s->kind : -1);
+        {
+            int kind = s ? (int)s->kind : -1;
+            die("aarch64-darwin: unsupported statement kind %d (need more backend bring-up)", kind);
+        }
     }
 }
 

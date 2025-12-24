@@ -293,6 +293,13 @@ static void compile_to_obj(mc_compiler *ctx, Target target, const char *in_path,
         ast_dump(ctx, &prg, ctx->opts.dump_ast_path);
     }
 
+    // Perform semantic analysis on the parsed AST
+    trace_checkpoint_ctx(ctx, "sema start", in_path);
+    if (sema_analyze(ctx, &prg) != 0) {
+        die("semantic analysis failed");
+    }
+    trace_checkpoint_ctx(ctx, "sema end", in_path);
+
     Str out_asm;
     mc_memset(&out_asm, 0, sizeof(out_asm));
 

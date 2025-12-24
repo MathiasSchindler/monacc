@@ -7738,6 +7738,9 @@ void mc_backend_codegen(mc_compiler *ctx, const Program *prg, Str *out, const mc
     if (ctx->opts.target == MC_TARGET_X86_64_LINUX) {
         emit_x86_64_sysv_freestanding_with_start(ctx, prg, out, opts->with_start);
     } else if (ctx->opts.target == MC_TARGET_AARCH64_DARWIN) {
+        // Note: aarch64-darwin is hosted (uses system libc/CRT), so with_start
+        // is not applicable - the system provides _main as the entry point.
+        (void)opts->with_start;
         emit_aarch64_darwin_hosted(ctx, prg, out);
     } else {
         die("internal: mc_backend_codegen: unknown target %d", (int)ctx->opts.target);

@@ -24,7 +24,7 @@ typedef struct mc_compiler mc_compiler;
 
 // Backend codegen options
 typedef struct {
-    int with_start;  // Generate _start entry point (x86_64-linux only)
+    int with_start;  // Generate _start entry point (only applicable to freestanding targets like x86_64-linux)
 } mc_backend_options;
 
 // ===== Unified Code Generation API =====

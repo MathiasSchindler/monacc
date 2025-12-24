@@ -37,16 +37,22 @@ src=(
   compiler/monacc_sys.c
   compiler/monacc_ast.c
   compiler/monacc_parse.c
+  compiler/monacc_sema.c
   compiler/monacc_link.c
   compiler/monacc_codegen.c
   compiler/monacc_pp.c
+  compiler/parse/ppexpr.c
   compiler/monacc_elfobj.c
   compiler/monacc_main.c
 
   # Core helpers used by the compiler.
   core/mc_str.c
+  core/mc_fmt.c
   core/mc_snprint.c
+  core/mc_libc_compat.c
   core/mc_start_env.c
+  core/mc_io.c
+  core/mc_regex.c
 )
 
 selfhost_inc=(

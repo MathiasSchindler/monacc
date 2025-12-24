@@ -4749,15 +4749,15 @@ void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Program *p
             }
         }
         if (!entry) {
-            for (int i = 0; i < prg->nfns; i++) {
-                if (prg->fns[i].has_body) {
-                    entry = prg->fns[i].name;
-                    break;
-                }
-            }
-        }
-        if (!entry) {
-            die("internal: no function bodies to use as entry");
+            // When compiling multiple input files, `with_start` is typically enabled on
+            // only one translation unit. If that unit doesn't contain `main`, we still
+            // want a correct program entrypoint that links against `main` defined in a
+            // different object file.
+            //
+            // Fall back to calling global `main` rather than picking an arbitrary first
+            // function body from this translation unit (which may be a static helper and
+            // thus not linkable from _start).
+            entry = "main";
         }
 
         // Check if main is trivial (only (void)param discards + return N).

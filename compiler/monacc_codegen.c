@@ -19,6 +19,7 @@ typedef struct {
     const char *fn_name;
 
     int frameless;
+    int inline_epilogue;
 
     BaseType ret_base;
     int ret_ptr;
@@ -43,6 +44,26 @@ static int new_label(CG *cg) { return cg->label_id++; }
 
 static void cg_expr(CG *cg, const Expr *e);
 static void cg_normalize_scalar_result(CG *cg, const Expr *e);
+
+static const char *reg8_from_reg32(const char *reg32) {
+    if (!reg32) return NULL;
+    if (mc_strcmp(reg32, "%eax") == 0) return "%al";
+    if (mc_strcmp(reg32, "%ebx") == 0) return "%bl";
+    if (mc_strcmp(reg32, "%ecx") == 0) return "%cl";
+    if (mc_strcmp(reg32, "%edx") == 0) return "%dl";
+    if (mc_strcmp(reg32, "%esi") == 0) return "%sil";
+    if (mc_strcmp(reg32, "%edi") == 0) return "%dil";
+    if (mc_strcmp(reg32, "%r8d") == 0) return "%r8b";
+    if (mc_strcmp(reg32, "%r9d") == 0) return "%r9b";
+    if (mc_strcmp(reg32, "%r10d") == 0) return "%r10b";
+    if (mc_strcmp(reg32, "%r11d") == 0) return "%r11b";
+    if (mc_strcmp(reg32, "%r12d") == 0) return "%r12b";
+    if (mc_strcmp(reg32, "%r13d") == 0) return "%r13b";
+    if (mc_strcmp(reg32, "%r14d") == 0) return "%r14b";
+    if (mc_strcmp(reg32, "%r15d") == 0) return "%r15b";
+    return NULL;
+}
+
 
 static int cg_label_id(CG *cg, const char *name) {
     for (int i = 0; i < cg->nlabels; i++) {
@@ -117,6 +138,39 @@ static int stmt_list_may_fallthrough(const Stmt *first) {
         reachable = stmt_may_fallthrough(it);
     }
     return reachable;
+}
+
+static int stmt_count_returns(const Stmt *s) {
+    if (!s) return 0;
+    switch (s->kind) {
+        case STMT_RETURN:
+            return 1;
+        case STMT_BLOCK: {
+            int n = 0;
+            for (const Stmt *cur = s->block_first; cur; cur = cur->next) n += stmt_count_returns(cur);
+            return n;
+        }
+        case STMT_IF:
+            return stmt_count_returns(s->if_then) + stmt_count_returns(s->if_else);
+        case STMT_WHILE:
+            return stmt_count_returns(s->while_body);
+        case STMT_FOR:
+            return stmt_count_returns(s->for_init) + stmt_count_returns(s->for_body);
+        case STMT_SWITCH:
+            return stmt_count_returns(s->switch_body);
+        case STMT_CASE:
+        case STMT_DEFAULT:
+        case STMT_LABEL:
+            return stmt_count_returns(s->label_stmt);
+        case STMT_EXPR:
+        case STMT_DECL:
+        case STMT_GOTO:
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+        case STMT_ASM:
+        default:
+            return 0;
+    }
 }
 
 static int stmt_may_fallthrough(const Stmt *s) {
@@ -495,8 +549,18 @@ static int cg_expr_to_reg(CG *cg, const Expr *e, const char *reg64, const char *
             // xor reg32, reg32 is smaller than mov $0, reg
             str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
         } else if (e->num > 0 && e->num <= 0x7fffffffLL) {
-            // Use 32-bit mov which zero-extends
-            str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg32);
+            // Use 32-bit mov which zero-extends; for small immediates, xor+movb is smaller.
+            if (e->num <= 255) {
+                const char *r8 = reg8_from_reg32(reg32);
+                if (r8) {
+                    str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
+                    str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, r8);
+                } else {
+                    str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg32);
+                }
+            } else {
+                str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg32);
+            }
         } else {
             str_appendf_is(&cg->out, "  mov $%d, %s\n", (long long)e->num, reg64);
         }
@@ -4418,7 +4482,13 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                     str_appendf(&cg->out, "  movd %%eax, %%xmm0\n");
                 }
 
-                str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
+                if (cg->frameless) {
+                    str_appendf(&cg->out, "  ret\n");
+                } else if (cg->inline_epilogue) {
+                    str_appendf(&cg->out, "  leave\n  ret\n");
+                } else {
+                    str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
+                }
             }
             return;
         case STMT_LABEL:
@@ -4880,18 +4950,37 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
             str_appendf_i64(&cg.out, "  mov %%eax, %d(%%rbp)\n", (long long)off);
         }
 
-        int ret_label = new_label(&cg);
+        int can_fallthrough = stmt_may_fallthrough(fn->body);
+        int return_count = stmt_count_returns(fn->body);
+        cg.inline_epilogue = (!cg.frameless && return_count == 1 && !can_fallthrough);
+        int need_ret_label = (!cg.frameless && !cg.inline_epilogue) || (cg.ret_ptr == 0 && cg.ret_base == BT_STRUCT);
+        int ret_label = need_ret_label ? new_label(&cg) : -1;
         cg_stmt(&cg, fn->body, ret_label, NULL);
         // Only emit a default return value if control can fall through
         // to the end of the function body.
-        if (stmt_may_fallthrough(fn->body)) {
-            str_appendf(&cg.out, "  xor %%eax, %%eax\n");
+        if (can_fallthrough) {
+            // For void functions, no return value is required.
+            if (!(cg.ret_ptr == 0 && cg.ret_base == BT_VOID)) {
+                str_appendf(&cg.out, "  xor %%eax, %%eax\n");
+            }
         }
-        str_appendf_i64(&cg.out, ".Lret%d:\n", ret_label);
-        if (cg.frameless) {
-            str_appendf(&cg.out, "  ret\n\n");
-        } else {
+        if (need_ret_label) {
+            // If the last emitted instruction is an unconditional jump to this
+            // return label, drop it and let control fall through.
+            {
+                char tmp[64];
+                int n = mc_snprint_cstr_i64_cstr(tmp, sizeof(tmp), "  jmp .L", (mc_i64)ret_label, "\n");
+                if (n > 0 && (mc_usize)n < sizeof(tmp) && cg.out.len >= (mc_usize)n) {
+                    if (mc_memcmp(cg.out.buf + (cg.out.len - (mc_usize)n), tmp, (mc_usize)n) == 0) {
+                        cg.out.len -= (mc_usize)n;
+                        if (cg.out.buf) cg.out.buf[cg.out.len] = 0;
+                    }
+                }
+            }
+            str_appendf_i64(&cg.out, ".Lret%d:\n", ret_label);
             str_appendf(&cg.out, "  leave\n  ret\n\n");
+        } else if (can_fallthrough) {
+            str_appendf(&cg.out, "  ret\n\n");
         }
     }
 

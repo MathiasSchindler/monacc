@@ -548,7 +548,7 @@ int main(int argc, char **argv) {
                 die("link-internal is only supported for x86_64-linux today");
             }
             trace_checkpoint_ctx(&ctx, "link (internal) start", ctx.opts.out_path);
-            link_internal_exec_objs((const char **)in_paths, nin_paths, ctx.opts.out_path, ctx.opts.keep_shdr);
+            link_internal_exec_objs((const char **)in_paths, nin_paths, ctx.opts.out_path, ctx.opts.keep_shdr, ctx.opts.use_nmagic);
             trace_checkpoint_ctx(&ctx, "link (internal) end", ctx.opts.out_path);
         } else {
             trace_checkpoint_ctx(&ctx, "link (external) start", ctx.opts.out_path);
@@ -667,6 +667,9 @@ int main(int argc, char **argv) {
             lnk_argv[base++] = "--link-internal";
             if (ctx.trace_force) {
                 lnk_argv[base++] = "--trace-selfhost";
+            }
+            if (!ctx.opts.use_nmagic) {
+                lnk_argv[base++] = "--no-nmagic";
             }
             if (ctx.opts.keep_shdr) {
                 lnk_argv[base++] = "--keep-shdr";

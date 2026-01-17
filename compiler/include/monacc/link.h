@@ -15,7 +15,7 @@
 
 // Minimal internal linker (Step 2): link a single .o into an executable
 // without relocations.
-void link_internal_exec_single_obj(const char *obj_path, const char *out_path);
+void link_internal_exec_single_obj(const char *obj_path, const char *out_path, int use_nmagic);
 
 // Step 4: link multiple objects into a single executable.
-void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr);
+void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr, int use_nmagic);

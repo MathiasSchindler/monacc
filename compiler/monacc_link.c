@@ -351,7 +351,7 @@ static void mark_keep(InputObj *in, mc_u16 shndx) {
     in->sec_keep[shndx] = 1;
 }
 
-void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr) {
+void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char *out_path, int keep_shdr, int use_nmagic) {
     if (!obj_paths || nobj_paths <= 0) die("link-internal: no input objects");
 
     InputObj *ins = (InputObj *)monacc_calloc((mc_usize)nobj_paths, sizeof(*ins));
@@ -513,10 +513,71 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         monacc_free(work_si);
     }
 
-    // Step 5: layout with separate RX and RW PT_LOAD segments.
-    // RX holds headers + .text + .rodata (+ other non-writable alloc PROGBITS).
-    // RW holds .data (+ other writable alloc PROGBITS) and .bss as memsz>filesz.
+    // Step 5: layout program segments. With use_nmagic, keep a single PT_LOAD
+    // to minimize padding between RX/RW regions (size-focused).
     const mc_u64 base_vaddr = 0x400000ull;
+    const int single_load = use_nmagic ? 1 : 0;
+
+    mc_u16 phnum = 1;
+    mc_u64 rx_file_end = 0;
+    mc_u64 rx_mem_end = 0;
+    mc_u64 rw_file_start = 0;
+    mc_u64 rw_mem_start = 0;
+    mc_u64 rw_file_end = 0;
+    mc_u64 rw_mem_end = 0;
+    mc_u64 rw_filesz = 0;
+    int has_rw = 0;
+
+    if (single_load) {
+        const mc_u64 hdr_end = (mc_u64)sizeof(Elf64_Ehdr) + (mc_u64)phnum * (mc_u64)sizeof(Elf64_Phdr);
+        mc_u64 file = hdr_end;
+        mc_u64 mem = hdr_end;
+
+        // All PROGBITS alloc sections in ranked order.
+        for (int rank = 0; rank <= 3; rank++) {
+            for (int oi = 0; oi < nobj_paths; oi++) {
+                InputObj *in = &ins[oi];
+                for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
+                    const Elf64_Shdr *sh = &in->shdrs[si];
+                    if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+                    if (!in->sec_keep[si]) continue;
+                    if (sh->sh_type == SHT_NOBITS) continue;
+                    if (sh->sh_size == 0) continue;
+                    const char *nm = "";
+                    if (sh->sh_name < (mc_u32)in->shstr_sz) nm = in->shstrtab + sh->sh_name;
+                    if (sec_rank(nm, sh->sh_flags) != rank) continue;
+
+                    mc_u64 align = sh->sh_addralign ? sh->sh_addralign : 1;
+                    file = align_up_u64(file, align);
+                    mem = file;
+                    in->sec_fileoff[si] = file;
+                    in->sec_vaddr[si] = base_vaddr + mem;
+                    file += sh->sh_size;
+                    mem = file;
+                }
+            }
+        }
+
+        // NOBITS alloc sections (.bss*) after PROGBITS.
+        for (int oi = 0; oi < nobj_paths; oi++) {
+            InputObj *in = &ins[oi];
+            for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
+                const Elf64_Shdr *sh = &in->shdrs[si];
+                if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
+                if (!in->sec_keep[si]) continue;
+                if (sh->sh_type != SHT_NOBITS) continue;
+                if (sh->sh_size == 0) continue;
+                mc_u64 align = sh->sh_addralign ? sh->sh_addralign : 1;
+                mem = align_up_u64(mem, align);
+                in->sec_fileoff[si] = 0;
+                in->sec_vaddr[si] = base_vaddr + mem;
+                mem += sh->sh_size;
+            }
+        }
+
+        rx_file_end = file;
+        rx_mem_end = mem;
+    } else {
 
     // Avoid paying for a second program header when we don't have any RW content.
     // This matters for very small binaries like `true`/`false`.
@@ -534,7 +595,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         }
     }
 
-    mc_u16 phnum = (mc_u16)(want_rw ? 2 : 1);
+    phnum = (mc_u16)(want_rw ? 2 : 1);
     const mc_u64 hdr_end = (mc_u64)sizeof(Elf64_Ehdr) + (mc_u64)phnum * (mc_u64)sizeof(Elf64_Phdr);
 
     mc_u64 rx_file = hdr_end;
@@ -566,16 +627,16 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         }
     }
 
-    mc_u64 rx_file_end = rx_file;
-    mc_u64 rx_mem_end = rx_mem;
+    rx_file_end = rx_file;
+    rx_mem_end = rx_mem;
 
     // Start RW segment aligned to page to satisfy p_offset%align == p_vaddr%align.
-    mc_u64 rw_file_start = align_up_u64(rx_file_end, 0x1000ull);
-    mc_u64 rw_mem_start = align_up_u64(rx_mem_end, 0x1000ull);
+    rw_file_start = align_up_u64(rx_file_end, 0x1000ull);
+    rw_mem_start = align_up_u64(rx_mem_end, 0x1000ull);
     mc_u64 rw_file = rw_file_start;
     mc_u64 rw_mem = rw_mem_start;
 
-    int has_rw = 0;
+    has_rw = 0;
 
     // RW PROGBITS alloc sections in ranked order (mostly .data*).
     for (int rank = 0; rank <= 3; rank++) {
@@ -623,8 +684,10 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         }
     }
 
-    mc_u64 rw_file_end = rw_file;
-    mc_u64 rw_mem_end = rw_mem;
+    rw_file_end = rw_file;
+    rw_mem_end = rw_mem;
+
+    }
 
     // Resolve entrypoint (_start) using global map.
     mc_u64 entry = 0;
@@ -639,7 +702,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
     // If the RW segment has no file-backed bytes (only NOBITS/.bss), avoid
     // rounding the output file up to the RW p_offset. A zero-sized p_filesz
     // PT_LOAD does not need a meaningful p_offset.
-    mc_u64 rw_filesz = has_rw ? (rw_file_end - rw_file_start) : 0;
+    rw_filesz = has_rw ? (rw_file_end - rw_file_start) : 0;
     mc_u64 seg_file_end = (has_rw && rw_filesz != 0) ? rw_file_end : rx_file_end;
     // Note: for RX-only outputs, the memory image is just RX.
     unsigned char *out = (unsigned char *)monacc_calloc((mc_usize)seg_file_end, 1);
@@ -940,7 +1003,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         eh.e_phoff = (mc_u64)sizeof(Elf64_Ehdr);
         eh.e_ehsize = (mc_u16)sizeof(Elf64_Ehdr);
         eh.e_phentsize = (mc_u16)sizeof(Elf64_Phdr);
-        eh.e_phnum = (mc_u16)(has_rw ? 2 : 1);
+        eh.e_phnum = (mc_u16)(single_load ? 1 : (has_rw ? 2 : 1));
 
         if (keep_shdr) {
             eh.e_shoff = shoff;
@@ -952,9 +1015,8 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         Elf64_Phdr ph[2];
         mc_memset(ph, 0, sizeof(ph));
 
-        // RX segment includes headers and RX section bytes.
+        // RX/RWX segment includes headers and section bytes.
         ph[0].p_type = PT_LOAD;
-        ph[0].p_flags = PF_R | PF_X;
         ph[0].p_offset = 0;
         ph[0].p_vaddr = base_vaddr;
         ph[0].p_paddr = base_vaddr;
@@ -962,17 +1024,22 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         ph[0].p_memsz = rx_mem_end;
         ph[0].p_align = 0x1000ull;
 
-        if (has_rw) {
-            ph[1].p_type = PT_LOAD;
-            ph[1].p_flags = PF_R | PF_W;
-            // If the RW segment is BSS-only (p_filesz==0), keep p_offset at 0 so
-            // the file doesn't have to be padded out to rw_file_start.
-            ph[1].p_offset = (rw_filesz == 0) ? 0 : rw_file_start;
-            ph[1].p_vaddr = base_vaddr + rw_mem_start;
-            ph[1].p_paddr = base_vaddr + rw_mem_start;
-            ph[1].p_filesz = rw_filesz;
-            ph[1].p_memsz = rw_mem_end - rw_mem_start;
-            ph[1].p_align = 0x1000ull;
+        if (single_load) {
+            ph[0].p_flags = PF_R | PF_W | PF_X;
+        } else {
+            ph[0].p_flags = PF_R | PF_X;
+            if (has_rw) {
+                ph[1].p_type = PT_LOAD;
+                ph[1].p_flags = PF_R | PF_W;
+                // If the RW segment is BSS-only (p_filesz==0), keep p_offset at 0 so
+                // the file doesn't have to be padded out to rw_file_start.
+                ph[1].p_offset = (rw_filesz == 0) ? 0 : rw_file_start;
+                ph[1].p_vaddr = base_vaddr + rw_mem_start;
+                ph[1].p_paddr = base_vaddr + rw_mem_start;
+                ph[1].p_filesz = rw_filesz;
+                ph[1].p_memsz = rw_mem_end - rw_mem_start;
+                ph[1].p_align = 0x1000ull;
+            }
         }
 
         mc_memcpy(out, &eh, sizeof(eh));
@@ -989,6 +1056,6 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
     monacc_free(ins);
 }
 
-void link_internal_exec_single_obj(const char *obj_path, const char *out_path) {
-    link_internal_exec_objs(&obj_path, 1, out_path, 0);
+void link_internal_exec_single_obj(const char *obj_path, const char *out_path, int use_nmagic) {
+    link_internal_exec_objs(&obj_path, 1, out_path, 0, use_nmagic);
 }

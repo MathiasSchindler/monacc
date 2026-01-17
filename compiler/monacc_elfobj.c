@@ -933,6 +933,23 @@ static void encode_mov_imm_reg(Str *s, long long imm, const Reg *dst) {
         emit_imm32(s, imm);
         return;
     }
+    if (dst->width == 16) {
+        // 66 + B8+rd imm16
+        bin_put_u8(s, 0x66);
+        emit_rex(s, 0, 0, 0, rex_b, 0);
+        bin_put_u8(s, (unsigned int)(0xB8 + (dst->reg & 7)));
+        bin_put_u8(s, (unsigned int)(imm & 0xff));
+        bin_put_u8(s, (unsigned int)((imm >> 8) & 0xff));
+        return;
+    }
+    if (dst->width == 8) {
+        // B0+rd imm8 (requires REX for r8b+ and for spl/bpl/sil/dil)
+        int force = dst->needs_rex_byte;
+        emit_rex(s, 0, 0, 0, rex_b, force);
+        bin_put_u8(s, (unsigned int)(0xB0 + (dst->reg & 7)));
+        bin_put_u8(s, (unsigned int)(imm & 0xff));
+        return;
+    }
     die("asm: mov imm reg width");
 }
 

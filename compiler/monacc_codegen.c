@@ -333,6 +333,7 @@ static int stmt_sum_expr(const Stmt *s, ExprSumFn efn, void *ectx) {
 }
 
 static int expr_is_syscall_builtin(const Expr *e);
+static int stmt_is_void_cast_discard(const Stmt *s);
 
 static int expr_pred_contains_nonsyscall_call(const Expr *e, void *ctx) {
     (void)ctx;
@@ -376,6 +377,68 @@ static int stmt_count_var_uses(const Stmt *s, int off) {
     mc_memset(&ctx, 0, sizeof(ctx));
     ctx.off = off;
     return stmt_sum_expr(s, expr_sum_var_uses, &ctx);
+}
+
+static int expr_count_var_uses(const Expr *e, int off) {
+    VarUseCtx ctx;
+    mc_memset(&ctx, 0, sizeof(ctx));
+    ctx.off = off;
+    return expr_sum(e, expr_sum_var_uses, &ctx);
+}
+
+static int stmt_var_used_outside_void_discard(const Stmt *s, int off) {
+    if (!s) return 0;
+    switch (s->kind) {
+        case STMT_BLOCK:
+            for (const Stmt *it = s->block_first; it; it = it->next) {
+                if (stmt_var_used_outside_void_discard(it, off)) return 1;
+            }
+            return 0;
+        case STMT_EXPR:
+            if (stmt_is_void_cast_discard(s)) {
+                const Expr *e = s->expr;
+                if (e && e->kind == EXPR_CAST && e->lhs && e->lhs->kind == EXPR_VAR && e->lhs->var_offset == off) return 0;
+            }
+            return expr_count_var_uses(s->expr, off) != 0;
+        case STMT_RETURN:
+            return expr_count_var_uses(s->expr, off) != 0;
+        case STMT_DECL:
+            return expr_count_var_uses(s->decl_init, off) != 0;
+        case STMT_IF:
+            if (expr_count_var_uses(s->if_cond, off)) return 1;
+            if (stmt_var_used_outside_void_discard(s->if_then, off)) return 1;
+            if (stmt_var_used_outside_void_discard(s->if_else, off)) return 1;
+            return 0;
+        case STMT_WHILE:
+            if (expr_count_var_uses(s->while_cond, off)) return 1;
+            return stmt_var_used_outside_void_discard(s->while_body, off);
+        case STMT_FOR:
+            if (stmt_var_used_outside_void_discard(s->for_init, off)) return 1;
+            if (expr_count_var_uses(s->for_cond, off)) return 1;
+            if (expr_count_var_uses(s->for_inc, off)) return 1;
+            return stmt_var_used_outside_void_discard(s->for_body, off);
+        case STMT_SWITCH:
+            if (expr_count_var_uses(s->switch_expr, off)) return 1;
+            return stmt_var_used_outside_void_discard(s->switch_body, off);
+        case STMT_LABEL:
+            return stmt_var_used_outside_void_discard(s->label_stmt, off);
+        case STMT_ASM:
+            for (int i = 0; i < s->asm_noutputs; i++) {
+                if (expr_count_var_uses(s->asm_outputs[i].expr, off)) return 1;
+            }
+            for (int i = 0; i < s->asm_ninputs; i++) {
+                if (expr_count_var_uses(s->asm_inputs[i].expr, off)) return 1;
+            }
+            return 0;
+        case STMT_CASE:
+        case STMT_DEFAULT:
+        case STMT_GOTO:
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+            return 0;
+        default:
+            return 0;
+    }
 }
 
 static int expr_is_syscall_builtin(const Expr *e) {
@@ -1129,12 +1192,12 @@ static int fn_can_be_frameless(const Function *fn) {
     for (int i = 0; i < 6; i++) {
         int off = fn->param_offsets[i];
         if (off == 0) continue;
-        if (stmt_count_var_uses(fn->body, off) != 0) return 0;
+        if (stmt_var_used_outside_void_discard(fn->body, off)) return 0;
     }
     for (int i = 0; i < 8; i++) {
         int off = fn->xmm_param_offsets[i];
         if (off == 0) continue;
-        if (stmt_count_var_uses(fn->body, off) != 0) return 0;
+        if (stmt_var_used_outside_void_discard(fn->body, off)) return 0;
     }
     // Frameless functions start with rsp misaligned by 8 bytes (SysV). That's OK
     // only if we don't emit CALL instructions (we still allow syscall builtins).
@@ -1193,6 +1256,25 @@ static int fn_is_trivial_return(const Function *fn, long long *ret_val) {
         return 1;
     }
     return 0;
+}
+
+// Check whether a parameter is unused (ignoring (void)param; discards).
+static int fn_param_unused_outside_void_discard(const Function *fn, int index) {
+    if (!fn || !fn->has_body) return 0;
+    if (index < 0 || index >= 6) return 0;
+    int off = fn->param_offsets[index];
+    if (off == 0) return 1;
+    return !stmt_var_used_outside_void_discard(fn->body, off);
+}
+
+// Check whether the first three integer/pointer params of main are unused.
+// If so, _start can skip argv/envp setup for size.
+static int fn_main_args_unused(const Function *fn) {
+    if (!fn || !fn->has_body) return 0;
+    for (int i = 0; i < 3; i++) {
+        if (!fn_param_unused_outside_void_discard(fn, i)) return 0;
+    }
+    return 1;
 }
 
 typedef struct {
@@ -4856,24 +4938,42 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
                 str_appendf_i64(&cg.out, "  mov $%lld, %%edi\n", trivial_ret);
             }
             str_appendf(&cg.out,
-                "  mov $60, %%eax\n"
+                "  xor %%eax, %%eax\n"
+                "  mov $60, %%al\n"
                 "  syscall\n\n");
-        } else {
-            // Full _start that calls entry(argc, argv, envp) and does exit(ret).
-            // 60 is SYS_exit on x86_64 (fits in imm8, smaller than exit_group=231).
+        } else if (main_fn && fn_main_args_unused(main_fn)) {
+            // Main doesn't use argc/argv/envp: skip argument setup for size.
+            // Align stack for CALL by pushing a dummy 8 bytes.
             str_appendf_s(&cg.out,
                 ".section .text._start,\"ax\",@progbits\n"
                 ".globl _start\n"
                 "_start:\n"
-                "  xor %%ebp, %%ebp\n"
-                "  mov (%%rsp), %%rdi\n"           // argc
-                "  lea 8(%%rsp), %%rsi\n"          // argv
-                "  lea 16(%%rsp,%%rdi,8), %%rdx\n" // envp
+                "  push %%rax\n"
                 "  call %s\n"
                 "  mov %%eax, %%edi\n"
-                "  mov $60, %%eax\n"
-                "  syscall\n"
-                "  hlt\n\n",
+                "  xor %%eax, %%eax\n"
+                "  mov $60, %%al\n"
+                "  syscall\n\n",
+                entry);
+        } else {
+            // Full _start that calls entry(argc, argv, envp) and does exit(ret).
+            // 60 is SYS_exit on x86_64 (fits in imm8, smaller than exit_group=231).
+            const char *envp_setup = (main_fn && fn_param_unused_outside_void_discard(main_fn, 2))
+                ? "  xor %edx, %edx\n"
+                : "  lea 8(%rsp,%rdi,8), %rdx\n";
+            str_appendf(&cg.out,
+                ".section .text._start,\"ax\",@progbits\n"
+                ".globl _start\n"
+                "_start:\n"
+                "  pop %%rdi\n"
+                "  mov %%rsp, %%rsi\n");
+            str_appendf_s(&cg.out, "%s", envp_setup);
+            str_appendf_s(&cg.out,
+                "  call %s\n"
+                "  mov %%eax, %%edi\n"
+                "  xor %%eax, %%eax\n"
+                "  mov $60, %%al\n"
+                "  syscall\n\n",
                 entry);
         }
     }
@@ -4926,7 +5026,7 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
             if (off == 0) continue;
             // If the parameter local is never referenced, skip the spill.
             // This is safe and reduces output size.
-            if (stmt_count_var_uses(fn->body, off) == 0) continue;
+            if (!stmt_var_used_outside_void_discard(fn->body, off)) continue;
             int sz = fn->param_sizes[pi];
             if (sz == 1) {
                 str_appendf_si(&cg.out, "  mov %s, %d(%%rbp)\n", areg8[pi], (long long)off);
@@ -4944,7 +5044,7 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
         for (int xi = 0; xi < 8; xi++) {
             int off = fn->xmm_param_offsets[xi];
             if (off == 0) continue;
-            if (stmt_count_var_uses(fn->body, off) == 0) continue;
+            if (!stmt_var_used_outside_void_discard(fn->body, off)) continue;
             // Move low 32-bit float payload to GPR, then store.
             str_appendf_s(&cg.out, "  movd %s, %%eax\n", xmmreg[xi]);
             str_appendf_i64(&cg.out, "  mov %%eax, %d(%%rbp)\n", (long long)off);

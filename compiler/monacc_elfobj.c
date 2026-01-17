@@ -398,143 +398,86 @@ static void add_fixup(AsmState *st, ObjSection *sec, mc_usize disp_off, const ch
     f->cc = cc;
 }
 
-// ===== x86_64 encoder =====
+// ===== Operand parsing (registers/memory) =====
 
 typedef struct {
-    int reg;   // 0..15
-    int width; // 8/16/32/64
-    int needs_rex_byte; // for spl/bpl/sil/dil
+    int reg;
+    int width;
+    int needs_rex_byte;
 } Reg;
 
 typedef struct {
+    int riprel;
     int has_base;
     int base;
     int has_index;
     int index;
-    int scale; // 1,2,4,8
+    int scale;
     int32_t disp;
-    int riprel;
-    char *sym; // for sym(%rip)
+    char *sym;
 } Mem;
 
-typedef enum { OP_NONE = 0, OP_REG, OP_IMM, OP_MEM, OP_SYM } OpKind;
-
 typedef struct {
-    OpKind kind;
-    Reg reg;
+    int kind;
+    int indirect;
     long long imm;
+    Reg reg;
     Mem mem;
-    char *sym; // for call sym / jmp sym
-    int indirect; // leading '*' (e.g. call *%r11)
+    char *sym;
 } Operand;
 
-static int parse_int64(const char *p, const char *end, long long *out) {
-    p = skip_ws(p, end);
-    if (p >= end) return 0;
+enum {
+    OP_NONE = 0,
+    OP_IMM,
+    OP_REG,
+    OP_MEM,
+    OP_SYM,
+};
 
-    // Parse into a 64-bit bit-pattern with wraparound. This matches typical
-    // assembler behavior and avoids relying on 64-bit division in SELFHOST.
-    int neg = 0;
-    if (*p == '-') {
-        neg = 1;
-        p++;
-    } else if (*p == '+') {
-        p++;
-    }
-    if (p >= end) return 0;
-
-    int base = 10;
-    if ((end - p) >= 2 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        base = 16;
-        p += 2;
-    }
-
-    unsigned long long v = 0;
-    int nd = 0;
-    for (; p < end; p++) {
-        int d = -1;
-        unsigned char c = (unsigned char)*p;
-        if (c >= '0' && c <= '9') d = (int)(c - '0');
-        else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (int)(c - 'a');
-        else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (int)(c - 'A');
-        else break;
-        v = v * (unsigned long long)base + (unsigned long long)d;
-        nd++;
-    }
-    if (nd == 0) return 0;
-
-    p = skip_ws(p, end);
-    if (p != end) return 0;
-
-    if (neg) {
-        // Apply two's complement to get the final bit-pattern.
-        v = (~v) + 1ULL;
-    }
-
-    // Convert the bit-pattern to a signed value.
-    const unsigned long long signbit = (unsigned long long)1ULL << 63;
-    if (v & signbit) {
-        unsigned long long mag = (~v) + 1ULL;
-        if (mag == signbit) {
-            *out = (long long)(-9223372036854775807LL - 1LL);
-        } else {
-            *out = -(long long)mag;
-        }
-    } else {
-        *out = (long long)v;
-    }
+static int reg_name_match(const char *p, mc_usize n, const char *name, int reg, int width, int needs_rex, Reg *out) {
+    mc_usize ln = mc_strlen(name);
+    if (n != ln) return 0;
+    if (mc_memcmp(p, name, n) != 0) return 0;
+    out->reg = reg;
+    out->width = width;
+    out->needs_rex_byte = needs_rex;
     return 1;
 }
 
-static int reg_name_match(const char *p, mc_usize n, const char *lit, int reg, int width, int needs_rex, Reg *out) {
-    mc_usize m = mc_strlen(lit);
-    if (n == m && mc_memcmp(p, lit, m) == 0) {
-        out->reg = reg;
-        out->width = width;
-        out->needs_rex_byte = needs_rex;
-        return 1;
-    }
-    return 0;
-}
-
 static int parse_reg_name(const char *p, const char *end, Reg *out) {
-    if (p >= end || *p != '%') return 0;
-    p++;
-    mc_usize n = (mc_usize)(end - p);
+    if (!p || !out) return 0;
+    if (p < end && *p == '%') p++;
+    mc_usize n = span_len(p, end);
+    if (n == 0) return 0;
 
-    // r8..r15 (optionally with b/w/d suffix)
-    if (n >= 2 && p[0] == 'r' && p[1] >= '8' && p[1] <= '9') {
-        int r = p[1] - '0';
-        int width = 64;
-        int needs_rex = 0;
-        if (n >= 3) {
-            char s = p[2];
-            if (s == 'b') width = 8;
-            else if (s == 'w') width = 16;
-            else if (s == 'd') width = 32;
+    // r8..r15 with optional suffix (b/w/d)
+    if (n >= 2 && p[0] == 'r') {
+        int v = 0;
+        mc_usize i = 1;
+        if (p[i] >= '0' && p[i] <= '9') {
+            while (i < n && p[i] >= '0' && p[i] <= '9') {
+                v = v * 10 + (int)(p[i] - '0');
+                i++;
+            }
+            if (v >= 8 && v <= 15) {
+                int width = 64;
+                int needs_rex = 0;
+                if (i < n) {
+                    if (i + 1 != n) return 0;
+                    char suf = p[i];
+                    if (suf == 'b') { width = 8; needs_rex = 1; }
+                    else if (suf == 'w') { width = 16; }
+                    else if (suf == 'd') { width = 32; }
+                    else return 0;
+                }
+                out->reg = v;
+                out->width = width;
+                out->needs_rex_byte = needs_rex;
+                return 1;
+            }
         }
-        out->reg = r;
-        out->width = width;
-        out->needs_rex_byte = needs_rex;
-        return 1;
-    }
-    if (n >= 3 && p[0] == 'r' && p[1] == '1' && p[2] >= '0' && p[2] <= '5') {
-        int r = 10 + (p[2] - '0');
-        int width = 64;
-        int needs_rex = 0;
-        if (n >= 4) {
-            char s = p[3];
-            if (s == 'b') width = 8;
-            else if (s == 'w') width = 16;
-            else if (s == 'd') width = 32;
-        }
-        out->reg = r;
-        out->width = width;
-        out->needs_rex_byte = needs_rex;
-        return 1;
     }
 
-    // classic registers
     if (reg_name_match(p, n, "rax", 0, 64, 0, out)) return 1;
     if (reg_name_match(p, n, "eax", 0, 32, 0, out)) return 1;
     if (reg_name_match(p, n, "ax", 0, 16, 0, out)) return 1;
@@ -604,6 +547,28 @@ static int parse_reg_name(const char *p, const char *end, Reg *out) {
     return 0;
 }
 
+static int try_emit_short_jmp(AsmState *st, const char *target) {
+    ObjSym *t = find_sym(st, target, mc_strlen(target));
+    if (!t || !t->is_defined || t->sec != st->cur) return 0;
+    int64_t cur = (int64_t)st->cur->data.len;
+    int64_t disp = (int64_t)t->value - (cur + 2); // rel8 from next instruction
+    if (disp < -128 || disp > 127) return 0;
+    bin_put_u8(&st->cur->data, 0xEB); // short jmp rel8
+    bin_put_u8(&st->cur->data, (unsigned int)(disp & 0xff));
+    return 1;
+}
+
+static int try_emit_short_jcc(AsmState *st, const char *target, unsigned int short_opc) {
+    ObjSym *t = find_sym(st, target, mc_strlen(target));
+    if (!t || !t->is_defined || t->sec != st->cur) return 0;
+    int64_t cur = (int64_t)st->cur->data.len;
+    int64_t disp = (int64_t)t->value - (cur + 2); // rel8 from next instruction
+    if (disp < -128 || disp > 127) return 0;
+    bin_put_u8(&st->cur->data, (unsigned int)short_opc);
+    bin_put_u8(&st->cur->data, (unsigned int)(disp & 0xff));
+    return 1;
+}
+
 static void emit_rex(Str *s, int w, int r, int x, int b, int force) {
     unsigned char rex = 0x40;
     if (w) rex |= 0x08;
@@ -627,6 +592,55 @@ static void emit_sib(Str *s, int scale, int index, int base) {
     else die("internal: bad scale");
     unsigned char b = (unsigned char)(((ss & 3) << 6) | ((index & 7) << 3) | (base & 7));
     bin_put_u8(s, b);
+}
+
+static int parse_int64(const char *p, const char *end, long long *out) {
+    if (!p || !out) return 0;
+    p = skip_ws(p, end);
+    end = rskip_ws(p, end);
+    if (p >= end) return 0;
+
+    int neg = 0;
+    if (*p == '+' || *p == '-') {
+        neg = (*p == '-');
+        p++;
+        if (p >= end) return 0;
+    }
+
+    int base = 10;
+    if ((end - p) >= 2 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        base = 16;
+        p += 2;
+    }
+
+    unsigned long long v = 0;
+    int any = 0;
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        int d = -1;
+        if (c >= '0' && c <= '9') d = (int)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') d = 10 + (int)(c - 'a');
+        else if (base == 16 && c >= 'A' && c <= 'F') d = 10 + (int)(c - 'A');
+        else break;
+        if (d >= base) break;
+        any = 1;
+        v = v * (unsigned long long)base + (unsigned long long)d;
+        p++;
+    }
+    if (!any) return 0;
+
+    if (neg) {
+        if (v > 0x8000000000000000ULL) return 0;
+        if (v == 0x8000000000000000ULL) {
+            *out = (-9223372036854775807LL - 1LL);
+        } else {
+            *out = (long long)(-(long long)v);
+        }
+    } else {
+        if (v > 0x7fffffffffffffffULL) return 0;
+        *out = (long long)v;
+    }
+    return 1;
 }
 
 static void encode_modrm_rm(Str *s, int reg_field, const Mem *m, int w, int op_is_byte, int *out_rex_r, int *out_rex_x, int *out_rex_b, int *out_force_rex) {
@@ -1824,6 +1838,7 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
                 return;
             }
             if (a.kind != OP_SYM || a.indirect) die("asm: jmp expects label");
+            if (try_emit_short_jmp(st, a.sym)) return;
             // e9 disp32
             bin_put_u8(&st->cur->data, 0xE9);
             mc_usize disp_off = st->cur->data.len;
@@ -1864,6 +1879,21 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 
             if (jcc >= 0) {
                 if (a.kind != OP_SYM) die("asm: jcc expects label");
+                unsigned int short_opc = 0;
+                if (!mc_strcmp(mnem, "je") || !mc_strcmp(mnem, "jz")) short_opc = 0x74;
+                else if (!mc_strcmp(mnem, "jne") || !mc_strcmp(mnem, "jnz")) short_opc = 0x75;
+                else if (!mc_strcmp(mnem, "jb")) short_opc = 0x72;
+                else if (!mc_strcmp(mnem, "jae")) short_opc = 0x73;
+                else if (!mc_strcmp(mnem, "jbe")) short_opc = 0x76;
+                else if (!mc_strcmp(mnem, "ja")) short_opc = 0x77;
+                else if (!mc_strcmp(mnem, "jp") || !mc_strcmp(mnem, "jpe")) short_opc = 0x7A;
+                else if (!mc_strcmp(mnem, "jnp") || !mc_strcmp(mnem, "jpo")) short_opc = 0x7B;
+                else if (!mc_strcmp(mnem, "jl")) short_opc = 0x7C;
+                else if (!mc_strcmp(mnem, "jge")) short_opc = 0x7D;
+                else if (!mc_strcmp(mnem, "jle")) short_opc = 0x7E;
+                else if (!mc_strcmp(mnem, "jg")) short_opc = 0x7F;
+
+                if (short_opc && try_emit_short_jcc(st, a.sym, short_opc)) return;
                 bin_put_u8(&st->cur->data, 0x0F);
                 bin_put_u8(&st->cur->data, (unsigned int)jcc);
                 mc_usize disp_off = st->cur->data.len;

@@ -332,16 +332,7 @@ static int stmt_sum_expr(const Stmt *s, ExprSumFn efn, void *ectx) {
     }
 }
 
-static int expr_is_syscall_builtin(const Expr *e);
 static int stmt_is_void_cast_discard(const Stmt *s);
-
-static int expr_pred_contains_nonsyscall_call(const Expr *e, void *ctx) {
-    (void)ctx;
-    if (!e) return 0;
-    if (e->kind == EXPR_CALL && !expr_is_syscall_builtin(e)) return 1;
-    if (e->kind == EXPR_SRET_CALL) return 1;
-    return 0;
-}
 
 static int expr_pred_uses_frame_pointer(const Expr *e, void *ctx) {
     (void)ctx;
@@ -439,15 +430,6 @@ static int stmt_var_used_outside_void_discard(const Stmt *s, int off) {
         default:
             return 0;
     }
-}
-
-static int expr_is_syscall_builtin(const Expr *e) {
-    if (!e || e->kind != EXPR_CALL) return 0;
-    if (e->callee[0] == 0) return 0;
-    if ((mc_strncmp(e->callee, "mc_syscall", 10) != 0) && (mc_strncmp(e->callee, "sb_syscall", 10) != 0)) return 0;
-    if (e->callee[10] < '0' || e->callee[10] > '6') return 0;
-    if (e->callee[11] != 0) return 0;
-    return 1;
 }
 
 static int expr_is_simple_arg(const Expr *e);
@@ -1173,8 +1155,19 @@ static int expr_is_comparison(const Expr *e) {
     }
 }
 
-static int stmt_contains_nonsyscall_call(const Stmt *s) {
-    return stmt_any(s, NULL, NULL, expr_pred_contains_nonsyscall_call, NULL);
+static int expr_is_byte_lvalue_addrable(const Expr *e) {
+    if (!e) return 0;
+    if (e->lval_size != 1) return 0;
+    switch (e->kind) {
+        case EXPR_VAR:
+        case EXPR_GLOBAL:
+        case EXPR_DEREF:
+        case EXPR_INDEX:
+        case EXPR_MEMBER:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static int stmt_uses_frame_pointer(const Stmt *s) {
@@ -1199,9 +1192,9 @@ static int fn_can_be_frameless(const Function *fn) {
         if (off == 0) continue;
         if (stmt_var_used_outside_void_discard(fn->body, off)) return 0;
     }
-    // Frameless functions start with rsp misaligned by 8 bytes (SysV). That's OK
-    // only if we don't emit CALL instructions (we still allow syscall builtins).
-    if (stmt_contains_nonsyscall_call(fn->body)) return 0;
+    // Frameless functions start with rsp misaligned by 8 bytes at function entry
+    // (SysV). This is OK as long as each call site adds the required dynamic pad
+    // before CALL; cg_call/cg_sret_call handle that.
     if (stmt_uses_frame_pointer(fn->body)) return 0;
     return 1;
 }
@@ -1452,6 +1445,26 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
             return e->lval_size ? e->lval_size : 8;
         }
 
+        // Fast path for non-constant index when both sides are simple.
+        // Avoid stack traffic by materializing base/index directly in regs.
+        if (cg_expr_to_reg_simple_arg_try(cg, e->lhs, "%rcx", "%ecx") &&
+            cg_expr_to_reg_simple_arg_try(cg, e->rhs, "%rax", "%eax")) {
+            // The index operand is an integer that participates in pointer arithmetic.
+            if (e->rhs && e->rhs->ptr == 0 && !e->rhs->is_unsigned &&
+                e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
+                str_appendf(&cg->out, "  cdqe\n");
+            }
+            if (scale == 1) {
+                str_appendf(&cg->out, "  add %%rcx, %%rax\n");
+            } else if (scale == 2 || scale == 4 || scale == 8) {
+                str_appendf_i64(&cg->out, "  lea (%%rcx,%%rax,%d), %%rax\n", scale);
+            } else {
+                str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", scale);
+                str_appendf(&cg->out, "  add %%rcx, %%rax\n");
+            }
+            return e->lval_size ? e->lval_size : 8;
+        }
+
         // General case: push/pop for non-constant index
         cg_expr(cg, e->lhs);
         str_appendf(&cg->out, "  push %%rax\n");
@@ -1465,10 +1478,14 @@ static int cg_lval_addr(CG *cg, const Expr *e) {
             e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT) {
             str_appendf(&cg->out, "  cdqe\n");
         }
-        if (scale != 1) {
+        if (scale == 1) {
+            str_appendf(&cg->out, "  add %%rcx, %%rax\n");
+        } else if (scale == 2 || scale == 4 || scale == 8) {
+            str_appendf_i64(&cg->out, "  lea (%%rcx,%%rax,%d), %%rax\n", scale);
+        } else {
             str_appendf_i64(&cg->out, "  imul $%d, %%rax\n", scale);
+            str_appendf(&cg->out, "  add %%rcx, %%rax\n");
         }
-        str_appendf(&cg->out, "  add %%rcx, %%rax\n");
         return e->lval_size ? e->lval_size : 8;
     }
     if (e->kind == EXPR_MEMBER) {
@@ -1649,7 +1666,7 @@ static void cg_call(CG *cg, const Expr *e) {
         }
 
         // Keep stack 16B-aligned at call site.
-        int pad = (stack_bytes & 15) ? 8 : 0;
+        int pad = ((stack_bytes + (cg->frameless ? 8 : 0)) & 15) ? 8 : 0;
         if (pad) {
             str_appendf(&cg->out, "  sub $8, %%rsp\n");
         }
@@ -1812,7 +1829,7 @@ static void cg_call(CG *cg, const Expr *e) {
     }
 
     // Keep stack 16B-aligned at call site.
-    int pad = (stack_bytes & 15) ? 8 : 0;
+    int pad = ((stack_bytes + (cg->frameless ? 8 : 0)) & 15) ? 8 : 0;
     if (pad) {
         str_appendf(&cg->out, "  sub $8, %%rsp\n");
     }
@@ -1942,7 +1959,7 @@ static void cg_sret_call(CG *cg, const Expr *e) {
         }
     }
 
-    int pad = (stack_bytes & 15) ? 8 : 0;
+    int pad = ((stack_bytes + (cg->frameless ? 8 : 0)) & 15) ? 8 : 0;
     if (pad) {
         str_appendf(&cg->out, "  sub $8, %%rsp\n");
     }
@@ -3704,11 +3721,11 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
         if (e->rhs && (e->rhs->ptr > 0 || e->rhs->is_unsigned)) use_unsigned = 1;
 
         int lhs_i32 = (e->lhs && e->lhs->ptr == 0 && e->lhs->base != BT_LONG &&
-                       e->lhs->base != BT_FLOAT && e->lhs->base != BT_STRUCT &&
-                       e->lhs->lval_size == 4);
+                   e->lhs->base != BT_FLOAT && e->lhs->base != BT_STRUCT &&
+                   e->lhs->lval_size > 0 && e->lhs->lval_size <= 4);
         int rhs_i32 = (e->rhs && e->rhs->ptr == 0 && e->rhs->base != BT_LONG &&
-                       e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT &&
-                       e->rhs->lval_size == 4);
+                   e->rhs->base != BT_FLOAT && e->rhs->base != BT_STRUCT &&
+                   e->rhs->lval_size > 0 && e->rhs->lval_size <= 4);
         int cmp_i32 = lhs_i32 && rhs_i32;
         int lhs_i32_signed = lhs_i32 && e->lhs && !e->lhs->is_unsigned;
         int rhs_i32_signed = rhs_i32 && e->rhs && !e->rhs->is_unsigned;
@@ -3720,6 +3737,21 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false) {
             long long imm = e->rhs->num;
             int use32 = lhs_i32;
             int use64 = !use32 && lhs_is64;
+
+            if ((e->kind == EXPR_EQ || e->kind == EXPR_NE) &&
+                imm >= 0 && imm <= 255 &&
+                expr_is_byte_lvalue_addrable(e->lhs)) {
+                (void)cg_lval_addr(cg, e->lhs);
+                str_appendf_i64(&cg->out, "  cmpb $%lld, (%%rax)\n", imm);
+                const char *jcc = "je";
+                if (jump_on_false) {
+                    jcc = (e->kind == EXPR_EQ) ? "jne" : "je";
+                } else {
+                    jcc = (e->kind == EXPR_EQ) ? "je" : "jne";
+                }
+                str_appendf_si(&cg->out, "  %s .L%d\n", jcc, (long long)label);
+                return 1;
+            }
 
             // Common zero-compare branch peepholes.
             // For signed compares, `test` gives SF/ZF with OF=0, enabling js/jns/jle/jg.
@@ -4483,6 +4515,46 @@ static void cg_stmt_list(CG *cg, const Stmt *first, int ret_label, const SwitchC
     }
 }
 
+static int cg_emit_discarded_incdec(CG *cg, const Expr *e) {
+    if (!cg || !e) return 0;
+    if (!(e->kind == EXPR_PREINC || e->kind == EXPR_POSTINC ||
+          e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC)) {
+        return 0;
+    }
+    if (!e->lhs) return 0;
+
+    int sz = e->lhs->lval_size ? e->lhs->lval_size : e->lval_size;
+    if (!(sz == 1 || sz == 2 || sz == 4 || sz == 8)) {
+        return 0;
+    }
+
+    int delta = (e->post_delta > 0) ? e->post_delta : 1;
+    if (e->kind == EXPR_PREDEC || e->kind == EXPR_POSTDEC) delta = -delta;
+
+    (void)cg_lval_addr(cg, e->lhs);
+
+    if (delta == 1) {
+        if (sz == 1) str_appendf(&cg->out, "  incb (%%rax)\n");
+        else if (sz == 2) str_appendf(&cg->out, "  incw (%%rax)\n");
+        else if (sz == 4) str_appendf(&cg->out, "  incl (%%rax)\n");
+        else str_appendf(&cg->out, "  incq (%%rax)\n");
+        return 1;
+    }
+    if (delta == -1) {
+        if (sz == 1) str_appendf(&cg->out, "  decb (%%rax)\n");
+        else if (sz == 2) str_appendf(&cg->out, "  decw (%%rax)\n");
+        else if (sz == 4) str_appendf(&cg->out, "  decl (%%rax)\n");
+        else str_appendf(&cg->out, "  decq (%%rax)\n");
+        return 1;
+    }
+
+    if (sz == 1) str_appendf_i64(&cg->out, "  addb $%lld, (%%rax)\n", (long long)delta);
+    else if (sz == 2) str_appendf_i64(&cg->out, "  addw $%lld, (%%rax)\n", (long long)delta);
+    else if (sz == 4) str_appendf_i64(&cg->out, "  addl $%lld, (%%rax)\n", (long long)delta);
+    else str_appendf_i64(&cg->out, "  addq $%lld, (%%rax)\n", (long long)delta);
+    return 1;
+}
+
 static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
     if (!s) return;
     switch (s->kind) {
@@ -4609,6 +4681,9 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
             if (s->expr && s->expr->kind == EXPR_CAST &&
                 s->expr->base == BT_VOID && s->expr->ptr == 0 &&
                 s->expr->lhs && s->expr->lhs->kind == EXPR_VAR) {
+                return;
+            }
+            if (cg_emit_discarded_incdec(cg, s->expr)) {
                 return;
             }
             if (s->expr) cg_expr(cg, s->expr);

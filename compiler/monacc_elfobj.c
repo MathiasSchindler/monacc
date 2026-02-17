@@ -1212,6 +1212,77 @@ static void encode_binop_imm(Str *s, const char *mnem, long long imm, const Reg 
     emit_imm32(s, imm);
 }
 
+static void encode_binop_imm_rm(Str *s, const char *mnem, long long imm, const Operand *dst, int width) {
+    if (!dst) die("asm: imm binop dst");
+    if (!(dst->kind == OP_REG || dst->kind == OP_MEM)) die("asm: imm binop dst kind");
+    if (!(width == 8 || width == 16 || width == 32 || width == 64)) die("asm: imm binop width");
+
+    unsigned int subop = 0;
+    if (!mc_strcmp(mnem, "add")) subop = 0;
+    else if (!mc_strcmp(mnem, "or")) subop = 1;
+    else if (!mc_strcmp(mnem, "and")) subop = 4;
+    else if (!mc_strcmp(mnem, "sub")) subop = 5;
+    else if (!mc_strcmp(mnem, "xor")) subop = 6;
+    else if (!mc_strcmp(mnem, "cmp")) subop = 7;
+    else die("asm: imm binop");
+
+    int w = (width == 64);
+    int op16 = (width == 16);
+    int op8 = (width == 8);
+
+    int rex_r = 0, rex_x = 0, rex_b = 0;
+    int force_rex = 0;
+    if (dst->kind == OP_REG) {
+        rex_b = (dst->reg.reg >> 3) & 1;
+        if (op8) force_rex = dst->reg.needs_rex_byte;
+    } else {
+        if (!dst->mem.riprel) {
+            int base = dst->mem.has_base ? dst->mem.base : 5;
+            int index = dst->mem.has_index ? dst->mem.index : 4;
+            rex_x = (index >> 3) & 1;
+            rex_b = (base >> 3) & 1;
+        }
+    }
+
+    if (op16) bin_put_u8(s, 0x66);
+
+    if (op8) {
+        emit_rex(s, 0, rex_r, rex_x, rex_b, force_rex);
+        bin_put_u8(s, 0x80);
+        if (dst->kind == OP_REG) {
+            emit_modrm(s, 3, (int)subop, dst->reg.reg & 7);
+        } else {
+            int rr = 0, rx = 0, rb = 0, fr = force_rex;
+            encode_modrm_rm(s, (int)subop, &dst->mem, 0, 1, &rr, &rx, &rb, &fr);
+        }
+        bin_put_u8(s, (unsigned char)(imm & 0xff));
+        return;
+    }
+
+    int use_imm8 = (imm >= -128 && imm <= 127);
+    emit_rex(s, w, rex_r, rex_x, rex_b, force_rex);
+    if (use_imm8) {
+        bin_put_u8(s, 0x83);
+        if (dst->kind == OP_REG) {
+            emit_modrm(s, 3, (int)subop, dst->reg.reg & 7);
+        } else {
+            int rr = 0, rx = 0, rb = 0, fr = force_rex;
+            encode_modrm_rm(s, (int)subop, &dst->mem, w, 0, &rr, &rx, &rb, &fr);
+        }
+        bin_put_u8(s, (unsigned char)(imm & 0xff));
+        return;
+    }
+
+    bin_put_u8(s, 0x81);
+    if (dst->kind == OP_REG) {
+        emit_modrm(s, 3, (int)subop, dst->reg.reg & 7);
+    } else {
+        int rr = 0, rx = 0, rb = 0, fr = force_rex;
+        encode_modrm_rm(s, (int)subop, &dst->mem, w, 0, &rr, &rx, &rb, &fr);
+    }
+    emit_imm32(s, imm);
+}
+
 static void encode_binop_rm_reg(Str *s, const char *mnem, const Operand *src, const Reg *dst) {
     if (!src || src->kind != OP_MEM) die("asm: binop rm src kind");
     if (dst->width != 64 && dst->width != 32) die("asm: binop rm dst width");
@@ -1260,6 +1331,45 @@ static void encode_binop_rm_reg(Str *s, const char *mnem, const Operand *src, co
     (void)rr;
     (void)rx;
     (void)rb;
+}
+
+static void encode_binop_reg_rm(Str *s, const char *mnem, const Reg *src, const Operand *dst) {
+    if (!src || !dst) die("asm: binop mr args");
+    if (dst->kind != OP_MEM) die("asm: binop mr dst kind");
+    if (src->width != 8 && src->width != 16 && src->width != 32 && src->width != 64) die("asm: binop mr src width");
+
+    int w = (src->width == 64);
+    int op16 = (src->width == 16);
+    int op8 = (src->width == 8);
+
+    unsigned int opc = 0;
+    if (!mc_strcmp(mnem, "add")) opc = op8 ? 0x00 : 0x01;
+    else if (!mc_strcmp(mnem, "sub")) opc = op8 ? 0x28 : 0x29;
+    else if (!mc_strcmp(mnem, "and")) opc = op8 ? 0x20 : 0x21;
+    else if (!mc_strcmp(mnem, "or")) opc = op8 ? 0x08 : 0x09;
+    else if (!mc_strcmp(mnem, "xor")) opc = op8 ? 0x30 : 0x31;
+    else if (!mc_strcmp(mnem, "cmp")) opc = op8 ? 0x38 : 0x39;
+    else if (!mc_strcmp(mnem, "test")) opc = op8 ? 0x84 : 0x85;
+    else die("asm: unknown binop mr");
+
+    int rex_r = (src->reg >> 3) & 1;
+    int rex_x = 0;
+    int rex_b = 0;
+    int force_rex = 0;
+    if (!dst->mem.riprel) {
+        int base = dst->mem.has_base ? dst->mem.base : 5;
+        int index = dst->mem.has_index ? dst->mem.index : 4;
+        rex_x = (index >> 3) & 1;
+        rex_b = (base >> 3) & 1;
+    }
+    if (op8 && src->needs_rex_byte) force_rex = 1;
+
+    if (op16) bin_put_u8(s, 0x66);
+    emit_rex(s, w, rex_r, rex_x, rex_b, force_rex);
+    bin_put_u8(s, (unsigned int)opc);
+
+    int rr = 0, rx = 0, rb = 0, fr = force_rex;
+    encode_modrm_rm(s, src->reg, &dst->mem, w, op8, &rr, &rx, &rb, &fr);
 }
 
 static void encode_shift_cl(Str *s, const char *mnem, const Reg *dst) {
@@ -1318,6 +1428,44 @@ static void encode_incdec(Str *s, const char *mnem, const Reg *dst) {
     emit_rex(s, w, 0, 0, rex_b, 0);
     bin_put_u8(s, 0xFF);
     emit_modrm(s, 3, (int)subop, dst->reg & 7);
+}
+
+static void encode_incdec_rm(Str *s, const char *mnem, const Operand *dst, int width) {
+    if (!dst) die("asm: inc/dec dst");
+    if (!(dst->kind == OP_REG || dst->kind == OP_MEM)) die("asm: inc/dec dst kind");
+    if (!(width == 8 || width == 16 || width == 32 || width == 64)) die("asm: inc/dec width");
+
+    unsigned int subop = 0;
+    if (!mc_strcmp(mnem, "inc")) subop = 0;
+    else if (!mc_strcmp(mnem, "dec")) subop = 1;
+    else die("asm: inc/dec");
+
+    int w = (width == 64);
+    int op16 = (width == 16);
+    int op8 = (width == 8);
+    int rex_r = 0, rex_x = 0, rex_b = 0;
+    int force_rex = 0;
+
+    if (dst->kind == OP_REG) {
+        rex_b = (dst->reg.reg >> 3) & 1;
+        if (op8) force_rex = dst->reg.needs_rex_byte;
+    } else if (!dst->mem.riprel) {
+        int base = dst->mem.has_base ? dst->mem.base : 5;
+        int index = dst->mem.has_index ? dst->mem.index : 4;
+        rex_x = (index >> 3) & 1;
+        rex_b = (base >> 3) & 1;
+    }
+
+    if (op16) bin_put_u8(s, 0x66);
+    emit_rex(s, w, rex_r, rex_x, rex_b, force_rex);
+    bin_put_u8(s, op8 ? 0xFE : 0xFF);
+
+    if (dst->kind == OP_REG) {
+        emit_modrm(s, 3, (int)subop, dst->reg.reg & 7);
+    } else {
+        int rr = 0, rx = 0, rb = 0, fr = force_rex;
+        encode_modrm_rm(s, (int)subop, &dst->mem, w, op8, &rr, &rx, &rb, &fr);
+    }
 }
 
 static void encode_div(Str *s, int is_signed, const Reg *src) {
@@ -1729,6 +1877,8 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     mc_memcpy(mnem, m0, mn);
     mnem[mn] = 0;
 
+    int forced_width = 0;
+
     // Accept common AT&T size-suffixed mnemonics used by inline asm (e.g. `andq`,
     // `movq`, `retq`). monacc's own codegen generally emits unsuffixed mnemonics,
     // but the `core/mc_start.c` inline asm uses `andq`.
@@ -1740,8 +1890,13 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             if (!mc_strcmp(mnem, "mov") || !mc_strcmp(mnem, "add") || !mc_strcmp(mnem, "sub") ||
                 !mc_strcmp(mnem, "and") || !mc_strcmp(mnem, "or") || !mc_strcmp(mnem, "xor") ||
                 !mc_strcmp(mnem, "cmp") || !mc_strcmp(mnem, "test") || !mc_strcmp(mnem, "lea") ||
+                !mc_strcmp(mnem, "inc") || !mc_strcmp(mnem, "dec") ||
                 !mc_strcmp(mnem, "push") || !mc_strcmp(mnem, "pop") || !mc_strcmp(mnem, "call") ||
                 !mc_strcmp(mnem, "ret") || !mc_strcmp(mnem, "jmp")) {
+                if (suf == 'b') forced_width = 8;
+                else if (suf == 'w') forced_width = 16;
+                else if (suf == 'l') forced_width = 32;
+                else if (suf == 'q') forced_width = 64;
                 // keep stripped
             } else {
                 // restore if it's not a known suffix form
@@ -1812,8 +1967,21 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             return;
         }
         if (!mc_strcmp(mnem, "inc") || !mc_strcmp(mnem, "dec")) {
-            if (a.kind != OP_REG) die("asm: inc/dec expects reg");
-            encode_incdec(&st->cur->data, mnem, &a.reg);
+            if (a.kind == OP_REG) {
+                encode_incdec(&st->cur->data, mnem, &a.reg);
+                return;
+            }
+            if (a.kind == OP_MEM) {
+                if (!forced_width) die("asm: inc/dec mem requires size suffix");
+                encode_incdec_rm(&st->cur->data, mnem, &a, forced_width);
+                if (a.mem.riprel && a.mem.sym) {
+                    mc_usize disp_off = st->cur->data.len - 4;
+                    ObjSym *sym = get_or_add_sym(st, a.mem.sym, mc_strlen(a.mem.sym));
+                    sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)a.mem.disp - 4);
+                }
+                return;
+            }
+            die("asm: inc/dec expects reg or mem");
             return;
         }
         if (!mc_strcmp(mnem, "neg") || !mc_strcmp(mnem, "not")) {
@@ -2023,7 +2191,19 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     if (!mc_strcmp(mnem, "add") || !mc_strcmp(mnem, "sub") || !mc_strcmp(mnem, "and") || !mc_strcmp(mnem, "or") ||
         !mc_strcmp(mnem, "xor") || !mc_strcmp(mnem, "cmp") || !mc_strcmp(mnem, "test")) {
         if (a.kind == OP_IMM && b.kind == OP_REG) {
+            if (forced_width && b.reg.width != forced_width) die("asm: imm/reg width mismatch");
             encode_binop_imm(&st->cur->data, mnem, a.imm, &b.reg);
+            return;
+        }
+        if (a.kind == OP_IMM && b.kind == OP_MEM) {
+            if (!forced_width) die("asm: imm/mem requires size suffix");
+            if (!mc_strcmp(mnem, "test")) die("asm: test imm,mem unsupported");
+            encode_binop_imm_rm(&st->cur->data, mnem, a.imm, &b, forced_width);
+            if (b.mem.riprel && b.mem.sym) {
+                mc_usize disp_off = st->cur->data.len - 4;
+                ObjSym *sym = get_or_add_sym(st, b.mem.sym, mc_strlen(b.mem.sym));
+                sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)b.mem.disp - 4);
+            }
             return;
         }
         if (a.kind == OP_MEM && b.kind == OP_REG) {
@@ -2035,7 +2215,18 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             }
             return;
         }
+        if (a.kind == OP_REG && b.kind == OP_MEM) {
+            if (forced_width && a.reg.width != forced_width) die("asm: reg/mem width mismatch");
+            encode_binop_reg_rm(&st->cur->data, mnem, &a.reg, &b);
+            if (b.mem.riprel && b.mem.sym) {
+                mc_usize disp_off = st->cur->data.len - 4;
+                ObjSym *sym = get_or_add_sym(st, b.mem.sym, mc_strlen(b.mem.sym));
+                sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PC32, (int64_t)b.mem.disp - 4);
+            }
+            return;
+        }
         if (a.kind == OP_REG && b.kind == OP_REG) {
+            if (forced_width && (a.reg.width != forced_width || b.reg.width != forced_width)) die("asm: reg/reg width mismatch");
             encode_binop_rr(&st->cur->data, mnem, &a.reg, &b.reg);
             return;
         }

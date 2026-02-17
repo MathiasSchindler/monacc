@@ -18,11 +18,18 @@ MC_NORETURN void mc_exit(mc_i32 code) {
 	__builtin_unreachable();
 	#endif
 	#else
+	#if MC_OS_EMSCRIPTEN
+	(void)mc_sys_exit_group(code);
+	(void)mc_sys_exit(code);
+	for (;;) {
+	}
+	#else
 	(void)mc_syscall1(MC_SYS_exit_group, (mc_i64)code);
 	(void)mc_syscall1(MC_SYS_exit, (mc_i64)code);
 	for (;;) {
 		__asm__ volatile("hlt");
 	}
+	#endif
 	#endif
 }
 

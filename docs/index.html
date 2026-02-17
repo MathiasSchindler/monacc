@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>monacc wasm shell</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        background: #0e1117;
+        color: #e6edf3;
+      }
+      body {
+        margin: 0;
+        padding: 32px;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 8px;
+      }
+      p {
+        color: #9aa4b2;
+      }
+      .panel {
+        margin-top: 24px;
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      button {
+        background: #238636;
+        color: white;
+        border: none;
+        padding: 8px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:disabled {
+        background: #3a3f47;
+        cursor: not-allowed;
+      }
+      input {
+        flex: 1;
+        min-width: 240px;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #e6edf3;
+        padding: 8px 12px;
+      }
+      pre {
+        margin-top: 16px;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 16px;
+        min-height: 320px;
+        overflow: auto;
+        font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .note {
+        margin-top: 12px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>monacc wasm shell</h1>
+      <p>Build the WASM artifacts with <code>scripts/emscripten-build.sh</code>, then load this page.</p>
+
+      <div class="panel">
+        <div class="controls">
+          <button id="start-btn">Start shell</button>
+          <input id="stdin" type="text" placeholder="Type a command and press Enter" />
+        </div>
+        <pre id="terminal">waiting for wasm…</pre>
+        <div class="note">Shell entrypoint defaults to <code>docs/wasm/bin/sh.js</code>.</div>
+      </div>
+    </div>
+
+    <script>
+      const term = document.getElementById('terminal');
+      const startBtn = document.getElementById('start-btn');
+      const input = document.getElementById('stdin');
+
+      const inputQueue = [];
+
+      function pushInput(line) {
+        for (let i = 0; i < line.length; i++) {
+          inputQueue.push(line.charCodeAt(i));
+        }
+        inputQueue.push(10);
+      }
+
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          const value = input.value;
+          input.value = '';
+          pushInput(value);
+        }
+      });
+
+      function appendLine(text) {
+        term.textContent += text + '\n';
+        term.scrollTop = term.scrollHeight;
+      }
+
+      function startShell() {
+        startBtn.disabled = true;
+        term.textContent = '';
+
+        window.Module = {
+          print: (text) => appendLine(text),
+          printErr: (text) => appendLine(text),
+          stdin: () => (inputQueue.length ? inputQueue.shift() : null),
+          onAbort: (msg) => appendLine('abort: ' + msg),
+        };
+
+        const script = document.createElement('script');
+        script.src = './wasm/bin/sh.js';
+        script.onload = () => appendLine('[wasm] shell loaded');
+        script.onerror = () => appendLine('[wasm] failed to load sh.js');
+        document.body.appendChild(script);
+      }
+
+      startBtn.addEventListener('click', startShell);
+    </script>
+  </body>
+</html>

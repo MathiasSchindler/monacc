@@ -59,6 +59,7 @@ run_one static-local-recursion tests/compiler/bugs/static-local-recursion.c
 run_one global-strptr-init tests/compiler/bugs/global-strptr-init.c
 run_one extern-array-link tests/compiler/bugs/extern-array-use.c tests/compiler/bugs/extern-array-def.c
 run_one extern-array-values tests/compiler/bugs/extern-array-values.c tests/compiler/bugs/extern-array-def.c
+run_one asm-test-imm-mem-and-directives tests/compiler/bugs/asm-test-imm-mem-and-directives.c
 
 if [[ $fail -eq 0 ]]; then
   echo "monaccbugs: OK ($ok tests)"

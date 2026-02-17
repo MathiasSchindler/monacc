@@ -47,6 +47,72 @@ static int cg_cond_branch(CG *cg, const Expr *e, int label, int jump_on_false);
 static void cg_normalize_scalar_result(CG *cg, const Expr *e);
 static int cg_try_emit_inlined_static_body_call(CG *cg, const Expr *e);
 
+static int parse_local_label_line(const char *p, const char *end, int *out_id, mc_usize *out_len) {
+    if (!p || !end || p >= end) return 0;
+    if ((mc_usize)(end - p) < 5) return 0;
+    if (p[0] != '.' || p[1] != 'L') return 0;
+    mc_usize i = 2;
+    int id = 0;
+    int nd = 0;
+    while (p + i < end && p[i] >= '0' && p[i] <= '9') {
+        id = id * 10 + (p[i] - '0');
+        i++;
+        nd++;
+    }
+    if (nd == 0) return 0;
+    if (p + i >= end || p[i] != ':') return 0;
+    i++;
+    if (p + i >= end || p[i] != '\n') return 0;
+    i++;
+    if (out_id) *out_id = id;
+    if (out_len) *out_len = i;
+    return 1;
+}
+
+static int parse_local_jmp_line(const char *p, const char *end, int *out_id, mc_usize *out_len) {
+    if (!p || !end || p >= end) return 0;
+    if ((mc_usize)(end - p) < 10) return 0;
+    if (!(p[0] == ' ' && p[1] == ' ' && p[2] == 'j' && p[3] == 'm' && p[4] == 'p' && p[5] == ' ' && p[6] == '.' && p[7] == 'L')) return 0;
+    mc_usize i = 8;
+    int id = 0;
+    int nd = 0;
+    while (p + i < end && p[i] >= '0' && p[i] <= '9') {
+        id = id * 10 + (p[i] - '0');
+        i++;
+        nd++;
+    }
+    if (nd == 0) return 0;
+    if (p + i >= end || p[i] != '\n') return 0;
+    i++;
+    if (out_id) *out_id = id;
+    if (out_len) *out_len = i;
+    return 1;
+}
+
+static void cg_drop_fallthrough_jumps(Str *out, mc_usize start_off) {
+    if (!out || !out->buf || start_off >= out->len) return;
+    mc_usize i = start_off;
+    while (i < out->len) {
+        int j_id = -1;
+        mc_usize j_len = 0;
+        if (!parse_local_jmp_line(out->buf + i, out->buf + out->len, &j_id, &j_len)) {
+            while (i < out->len && out->buf[i] != '\n') i++;
+            if (i < out->len) i++;
+            continue;
+        }
+        int l_id = -1;
+        if (parse_local_label_line(out->buf + i + j_len, out->buf + out->len, &l_id, NULL) && l_id == j_id) {
+            mc_usize tail_off = i + j_len;
+            mc_usize tail_len = out->len - tail_off;
+            mc_memmove(out->buf + i, out->buf + tail_off, tail_len);
+            out->len -= j_len;
+            out->buf[out->len] = 0;
+            continue;
+        }
+        i += j_len;
+    }
+}
+
 static const char *reg8_from_reg32(const char *reg32) {
     if (!reg32) return NULL;
     if (mc_strcmp(reg32, "%eax") == 0) return "%al";
@@ -608,6 +674,46 @@ static int expr_is_simple_arg(const Expr *e) {
         if (e->base == BT_STRUCT && e->ptr == 0 && e->lval_size > 8) return 1;
         if (e->lval_size == 1 || e->lval_size == 2 || e->lval_size == 4 || e->lval_size == 8) return 1;
         return 0;
+    }
+    return 0;
+}
+
+// Tail-jumping after tearing down the current frame is unsafe when an argument
+// value points into that frame (e.g. &local, local-array decay, local compound).
+// Keep tail-call lowering conservative by rejecting such cases.
+static int expr_uses_local_frame_addr(const Expr *e) {
+    if (!e) return 0;
+    if (e->kind == EXPR_CAST || e->kind == EXPR_POS) return expr_uses_local_frame_addr(e->lhs);
+
+    if (e->kind == EXPR_VAR) {
+        if (e->lval_size == 0) return 1;
+        if (e->base == BT_STRUCT && e->ptr == 0 && e->lval_size > 8) return 1;
+        return 0;
+    }
+    if (e->kind == EXPR_COMPOUND) return 1;
+    if (e->kind == EXPR_ADDR) {
+        const Expr *lhs = e->lhs;
+        while (lhs && (lhs->kind == EXPR_CAST || lhs->kind == EXPR_POS)) lhs = lhs->lhs;
+        if (!lhs) return 1;
+        if (lhs->kind == EXPR_GLOBAL || lhs->kind == EXPR_FNADDR || lhs->kind == EXPR_STR) return 0;
+        if (lhs->kind == EXPR_DEREF) return expr_uses_local_frame_addr(lhs->lhs);
+        if (lhs->kind == EXPR_MEMBER && lhs->member_is_arrow) return expr_uses_local_frame_addr(lhs->lhs);
+        if (lhs->kind == EXPR_INDEX && lhs->lhs) {
+            const Expr *base = lhs->lhs;
+            while (base && (base->kind == EXPR_CAST || base->kind == EXPR_POS)) base = base->lhs;
+            if (base && base->kind == EXPR_GLOBAL) return 0;
+        }
+        return 1;
+    }
+    if ((e->kind == EXPR_ADD || e->kind == EXPR_SUB) && e->ptr_scale > 0) {
+        const Expr *ptr_e = NULL;
+        if (e->kind == EXPR_ADD) {
+            if (e->ptr_index_side == 1) ptr_e = e->lhs;
+            else if (e->ptr_index_side == 2) ptr_e = e->rhs;
+        } else if (e->ptr_index_side == 1) {
+            ptr_e = e->lhs;
+        }
+        return expr_uses_local_frame_addr(ptr_e);
     }
     return 0;
 }
@@ -5035,6 +5141,73 @@ static int cg_emit_discarded_incdec(CG *cg, const Expr *e) {
     return 1;
 }
 
+// Conservative x86_64 SysV tail-call lowering for `return callee(...);`.
+// Only handles direct calls with register-only integer/pointer arguments where
+// return-type post-processing is unnecessary.
+static int cg_try_tailcall_return(CG *cg, const Stmt *s) {
+    if (!cg || !s || !s->expr) return 0;
+    const Expr *e = s->expr;
+    if (e->kind != EXPR_CALL) return 0;
+    if (e->callee[0] == 0) return 0;
+
+    // Keep this conservative: only exact return-type matches need no fixups.
+    if (cg->ret_base != e->base || cg->ret_ptr != e->ptr) return 0;
+    if (cg->ret_base == BT_STRUCT || e->base == BT_STRUCT) return 0;
+    if (e->nargs > 6) return 0;
+
+    // Restrict to integer/pointer register args with simple lowering.
+    for (int i = 0; i < e->nargs; i++) {
+        const Expr *a = e->args[i];
+        if (!a) return 0;
+        if (a->base == BT_STRUCT && a->ptr == 0) return 0;
+        if (a->base == BT_FLOAT && a->ptr == 0) return 0;
+        if (!expr_is_simple_arg(a)) return 0;
+        if (expr_uses_local_frame_addr(a)) return 0;
+    }
+
+    static const char *areg[6] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    static const char *areg32[6] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
+
+    const Function *callee_sig = NULL;
+    if (cg->prg) {
+        callee_sig = program_find_fn(cg->prg, e->callee, mc_strlen(e->callee));
+    }
+    // Keep static-inline/inlineable return-calls on the normal call path so
+    // existing inline lowering runs instead of emitting an external tail-jump.
+    if (callee_sig && callee_sig->is_static && callee_sig->is_inline) return 0;
+
+    for (int i = 0; i < e->nargs; i++) {
+        const Expr *a = e->args[i];
+        (void)cg_expr_to_reg_simple_arg(cg, a, areg[i], areg32[i]);
+
+        // Match normal call lowering's sign-extension for 32->64 signed args.
+        if (a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+            a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
+            int want64 = 1;
+            if (callee_sig && i < callee_sig->nparams) {
+                want64 = (callee_sig->param_sizes[i] == 8);
+            }
+            if (want64) {
+                long long lit = 0;
+                int lit_i32 = expr_try_get_simple_int_lit(a, &lit) &&
+                              (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
+                if (!lit_i32) {
+                    str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[i], areg[i]);
+                }
+            }
+        }
+    }
+
+    // SysV varargs ABI: %al holds number of used XMM regs.
+    str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+    if (!cg->frameless) {
+        str_appendf(&cg->out, "  leave\n");
+    }
+    str_appendf_s(&cg->out, "  lea %s(%%rip), %%r11\n", e->callee);
+    str_appendf(&cg->out, "  jmp *%%r11\n");
+    return 1;
+}
+
 static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
     if (!s) return;
     switch (s->kind) {
@@ -5067,6 +5240,9 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
                 str_appendf_i64(&cg->out, "  mov %d(%%rbp), %%rax\n", cg->sret_offset);
                 str_appendf_i64(&cg->out, "  jmp .Lret%d\n", ret_label);
             } else {
+                if (cg_try_tailcall_return(cg, s)) {
+                    return;
+                }
                 cg_expr(cg, s->expr);
 
                 // Ensure the return value in %rax matches the function's return type width.
@@ -5313,7 +5489,11 @@ static void cg_stmt(CG *cg, const Stmt *s, int ret_label, const SwitchCtx *sw) {
 
             // Dispatch: compare against each case and jump to its label.
             for (int i = 0; i < ctx.ncases; i++) {
-                str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", ctx.case_values[i]);
+                if (ctx.case_values[i] == 0) {
+                    str_appendf(&cg->out, "  test %%rax, %%rax\n");
+                } else {
+                    str_appendf_i64(&cg->out, "  cmp $%lld, %%rax\n", ctx.case_values[i]);
+                }
                 str_appendf_i64(&cg->out, "  je .L%d\n", ctx.case_labels[i]);
             }
             if (ctx.default_node) {
@@ -5555,6 +5735,7 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
         cg.ret_struct_id = fn->ret_struct_id;
         cg.ret_size = fn->ret_size;
         cg.sret_offset = fn->sret_offset;
+        mc_usize fn_start = cg.out.len;
 
         // Put each function in its own text subsection so --gc-sections can drop unused helpers.
         // This is especially important for sysbox/src/sb.c where each tool only uses a subset.
@@ -5641,6 +5822,7 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
         } else if (can_fallthrough) {
             str_appendf(&cg.out, "  ret\n\n");
         }
+        cg_drop_fallthrough_jumps(&cg.out, fn_start);
     }
 
     *out = cg.out;
@@ -8626,4 +8808,3 @@ static void emit_aarch64_darwin_hosted(mc_compiler *ctx, const Program *prg, Str
         }
     }
 }
-

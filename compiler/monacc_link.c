@@ -37,6 +37,8 @@
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
 #define R_X86_64_64 1
+#define R_X86_64_32 10
+#define R_X86_64_16 12
 
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
@@ -195,6 +197,8 @@ typedef struct {
     mc_u64 *sec_vaddr;   // indexed by shndx
     mc_u64 *sec_fileoff; // indexed by shndx (0 for NOBITS)
     unsigned char *sec_keep; // indexed by shndx (GC reachability)
+    int *sec_fold_obj; // canonical section owner object index
+    mc_u16 *sec_fold_shndx; // canonical section index
 } InputObj;
 
 typedef struct {
@@ -270,6 +274,76 @@ static mc_u64 sym_addr_in_obj(const InputObj *in, mc_u32 symi) {
     return in->sec_vaddr[shndx] + s->st_value;
 }
 
+static const char *sec_name_in_obj(const InputObj *in, mc_u16 si) {
+    if (!in || si >= in->eh->e_shnum) return "";
+    const Elf64_Shdr *sh = &in->shdrs[si];
+    if (sh->sh_name >= (mc_u32)in->shstr_sz) return "";
+    return in->shstrtab + sh->sh_name;
+}
+
+static int sec_has_rela_target(const InputObj *in, mc_u16 si) {
+    if (!in) return 0;
+    for (mc_u16 rsi = 0; rsi < in->eh->e_shnum; rsi++) {
+        const Elf64_Shdr *rsh = &in->shdrs[rsi];
+        if (rsh->sh_type != SHT_RELA) continue;
+        if (rsh->sh_size == 0) continue;
+        if (rsh->sh_info == si) return 1;
+    }
+    return 0;
+}
+
+static int sec_has_only_local_label_defs(const InputObj *in, mc_u16 si) {
+    if (!in) return 0;
+    for (mc_u32 symi = 0; symi < (mc_u32)in->symtab_n; symi++) {
+        const Elf64_Sym *s = &in->symtab[symi];
+        if (s->st_shndx != si) continue;
+        if (sym_bind(s) != STB_LOCAL) return 0;
+        const char *nm = sym_name(in, symi);
+        if (nm && *nm && !starts_with_lit(nm, ".L")) return 0;
+    }
+    return 1;
+}
+
+static int sec_data_identical(const InputObj *a, mc_u16 asi, const InputObj *b, mc_u16 bsi) {
+    const Elf64_Shdr *ash = &a->shdrs[asi];
+    const Elf64_Shdr *bsh = &b->shdrs[bsi];
+    if (ash->sh_size != bsh->sh_size) return 0;
+    if (ash->sh_flags != bsh->sh_flags) return 0;
+    if (ash->sh_addralign != bsh->sh_addralign) return 0;
+    if (ash->sh_type != bsh->sh_type) return 0;
+    if (ash->sh_size == 0) return 1;
+    const void *ap = checked_slice(a->file, a->file_len, ash->sh_offset, ash->sh_size, "section data");
+    const void *bp = checked_slice(b->file, b->file_len, bsh->sh_offset, bsh->sh_size, "section data");
+    return mc_memcmp(ap, bp, (mc_usize)ash->sh_size) == 0;
+}
+
+static int sec_can_icf_text(const InputObj *in, mc_u16 si) {
+    const Elf64_Shdr *sh = &in->shdrs[si];
+    const char *nm = sec_name_in_obj(in, si);
+    if ((sh->sh_flags & SHF_ALLOC) == 0) return 0;
+    if ((sh->sh_flags & SHF_EXECINSTR) == 0) return 0;
+    if (sh->sh_type != SHT_PROGBITS) return 0;
+    if (sh->sh_size == 0 || sh->sh_size > 32) return 0;
+    if (!starts_with_lit(nm, ".text.")) return 0;
+    if (sec_has_rela_target(in, si)) return 0;
+    if (!sec_has_only_local_label_defs(in, si)) return 0;
+    return 1;
+}
+
+static int sec_can_dedup_rodata(const InputObj *in, mc_u16 si) {
+    const Elf64_Shdr *sh = &in->shdrs[si];
+    const char *nm = sec_name_in_obj(in, si);
+    if ((sh->sh_flags & SHF_ALLOC) == 0) return 0;
+    if (sh->sh_flags & SHF_WRITE) return 0;
+    if (sh->sh_flags & SHF_EXECINSTR) return 0;
+    if (sh->sh_type != SHT_PROGBITS) return 0;
+    if (sh->sh_size == 0) return 0;
+    if (!(starts_with_lit(nm, ".rodata") || starts_with_lit(nm, ".str") || starts_with_lit(nm, ".blob"))) return 0;
+    if (sec_has_rela_target(in, si)) return 0;
+    if (!sec_has_only_local_label_defs(in, si)) return 0;
+    return 1;
+}
+
 static void input_obj_parse(InputObj *in, const char *obj_path) {
     mc_memset(in, 0, sizeof(*in));
     in->path = obj_path;
@@ -338,6 +412,8 @@ static void input_obj_free(InputObj *in) {
     if (in->sec_vaddr) monacc_free(in->sec_vaddr);
     if (in->sec_fileoff) monacc_free(in->sec_fileoff);
     if (in->sec_keep) monacc_free(in->sec_keep);
+    if (in->sec_fold_obj) monacc_free(in->sec_fold_obj);
+    if (in->sec_fold_shndx) monacc_free(in->sec_fold_shndx);
     if (in->file) monacc_free(in->file);
     mc_memset(in, 0, sizeof(*in));
 }
@@ -362,7 +438,13 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
         ins[i].sec_vaddr = (mc_u64 *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(mc_u64));
         ins[i].sec_fileoff = (mc_u64 *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(mc_u64));
         ins[i].sec_keep = (unsigned char *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, 1);
-        if (!ins[i].sec_vaddr || !ins[i].sec_fileoff || !ins[i].sec_keep) die("oom");
+        ins[i].sec_fold_obj = (int *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(int));
+        ins[i].sec_fold_shndx = (mc_u16 *)monacc_calloc((mc_usize)ins[i].eh->e_shnum, sizeof(mc_u16));
+        if (!ins[i].sec_vaddr || !ins[i].sec_fileoff || !ins[i].sec_keep || !ins[i].sec_fold_obj || !ins[i].sec_fold_shndx) die("oom");
+        for (mc_u16 si = 0; si < ins[i].eh->e_shnum; si++) {
+            ins[i].sec_fold_obj[si] = i;
+            ins[i].sec_fold_shndx[si] = si;
+        }
     }
 
     // Build global symbol table from definitions.
@@ -511,6 +593,39 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
 
         monacc_free(work_oi);
         monacc_free(work_si);
+    }
+
+    // Conservative linker-side size optimizations:
+    //  - tiny .text.* ICF when section bytes and metadata are identical
+    //  - rodata/string/blob dedup for identical relocation-free sections
+    // Folded sections are turned into zero-sized sections so layout/copy naturally
+    // skips them, then symbol/relocation address lookups are remapped afterward.
+    for (int oi = 0; oi < nobj_paths; oi++) {
+        InputObj *in = &ins[oi];
+        for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
+            Elf64_Shdr *sh = &in->shdrs[si];
+            if (!in->sec_keep[si]) continue;
+            if (in->sec_fold_obj[si] != oi || in->sec_fold_shndx[si] != si) continue;
+            if (!sec_can_icf_text(in, si) && !sec_can_dedup_rodata(in, si)) continue;
+            mc_u64 orig_size = sh->sh_size;
+            for (int oj = oi; oj < nobj_paths; oj++) {
+                InputObj *jn = &ins[oj];
+                mc_u16 sj0 = (oj == oi) ? (mc_u16)(si + 1) : 0;
+                for (mc_u16 sj = sj0; sj < jn->eh->e_shnum; sj++) {
+                    Elf64_Shdr *jsh = &jn->shdrs[sj];
+                    if (!jn->sec_keep[sj]) continue;
+                    if (jn->sec_fold_obj[sj] != oj || jn->sec_fold_shndx[sj] != sj) continue;
+                    int icf = sec_can_icf_text(jn, sj) && sec_can_icf_text(in, si);
+                    int ro = sec_can_dedup_rodata(jn, sj) && sec_can_dedup_rodata(in, si);
+                    if (!icf && !ro) continue;
+                    if (!sec_data_identical(in, si, jn, sj)) continue;
+                    jn->sec_fold_obj[sj] = oi;
+                    jn->sec_fold_shndx[sj] = si;
+                    jsh->sh_size = 0;
+                }
+            }
+            sh->sh_size = orig_size;
+        }
     }
 
     // Step 5: layout program segments. With use_nmagic, keep a single PT_LOAD
@@ -703,6 +818,20 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
     // rounding the output file up to the RW p_offset. A zero-sized p_filesz
     // PT_LOAD does not need a meaningful p_offset.
     rw_filesz = has_rw ? (rw_file_end - rw_file_start) : 0;
+    for (int oi = 0; oi < nobj_paths; oi++) {
+        InputObj *in = &ins[oi];
+        for (mc_u16 si = 0; si < in->eh->e_shnum; si++) {
+            if (!in->sec_keep[si]) continue;
+            int ao = in->sec_fold_obj[si];
+            mc_u16 as = in->sec_fold_shndx[si];
+            if (ao == oi && as == si) continue;
+            if (ao < 0 || ao >= nobj_paths) die("link-internal: bad folded section object index");
+            InputObj *can = &ins[ao];
+            if (as >= can->eh->e_shnum) die("link-internal: bad folded section index");
+            in->sec_vaddr[si] = can->sec_vaddr[as];
+            in->sec_fileoff[si] = can->sec_fileoff[as];
+        }
+    }
     mc_u64 seg_file_end = (has_rw && rw_filesz != 0) ? rw_file_end : rx_file_end;
     // Note: for RX-only outputs, the memory image is just RX.
     unsigned char *out = (unsigned char *)monacc_calloc((mc_usize)seg_file_end, 1);
@@ -770,9 +899,10 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                 mc_u64 out_off = in->sec_fileoff[tgt] + rels[i].r_offset;
 
                 mc_u64 rsz = 0;
-                if (rtype == R_X86_64_PC32 || rtype == R_X86_64_PLT32) rsz = 4;
+                if (rtype == R_X86_64_PC32 || rtype == R_X86_64_PLT32 || rtype == R_X86_64_32) rsz = 4;
                 else if (rtype == R_X86_64_64) rsz = 8;
-                else die("link-internal: unsupported relocation type");
+                else if (rtype == R_X86_64_16) rsz = 2;
+                else die("link-internal: unsupported relocation type %u", (unsigned)rtype);
 
                 if (rels[i].r_offset + rsz > tsh->sh_size) die("link-internal: relocation overflows target section");
                 if (out_off + rsz > seg_file_end) die("link-internal: relocation overflows output image");
@@ -836,6 +966,15 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
                 } else if (rtype == R_X86_64_64) {
                     mc_u64 v = (mc_u64)((mc_i64)S + (mc_i64)rels[i].r_addend);
                     put_u64_le(out + (mc_usize)out_off, v);
+                } else if (rtype == R_X86_64_32) {
+                    mc_i64 v = (mc_i64)S + (mc_i64)rels[i].r_addend;
+                    if (v < 0 || v > 0xffffffffLL) die("link-internal: 32-bit relocation overflow");
+                    put_u32_le(out + (mc_usize)out_off, (mc_u32)v);
+                } else if (rtype == R_X86_64_16) {
+                    mc_i64 v = (mc_i64)S + (mc_i64)rels[i].r_addend;
+                    if (v < 0 || v > 0xffffLL) die("link-internal: 16-bit relocation overflow");
+                    out[(mc_usize)out_off + 0] = (unsigned char)((mc_u64)v & 0xffu);
+                    out[(mc_usize)out_off + 1] = (unsigned char)(((mc_u64)v >> 8) & 0xffu);
                 }
             }
         }

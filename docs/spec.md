@@ -42,6 +42,8 @@ Both components share a common design philosophy: syscall-only, minimal dependen
 - **Data model**: LP64 (`long` is 64-bit)
 - **Output**: AT&T x86_64 assembly; by default assembled internally into an ELF64 relocatable (`--emit-obj`) and linked by monacc’s internal linker (`--link-internal`)
    - Fallbacks exist for bring-up/debugging: external `as` (`EMITOBJ=0`) and external `ld` (`LINKINT=0`).
+   - Internal assembler includes a size pass that relaxes eligible **forward** same-section `jmp`/`jcc` fixups from near form to short form when the final displacement fits 8-bit range.
+   - Internal linker includes conservative size folding: tiny `.text.*` ICF (up to 32 bytes) and identical relocation-free `.rodata*`/`.str*`/`.blob*` dedup.
 - **Runtime model**: freestanding binaries (syscall-only)
 
 ### Compiler Pipeline

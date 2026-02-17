@@ -49,6 +49,46 @@ if [ "$rc" -ne 42 ]; then
   exit 1
 fi
 
+cat > build/test/linkint_forward_relax.c <<'EOF'
+long got_jmp;
+long got_jcc;
+int main(void) {
+  __asm__ volatile(
+      ".Ljmp_start:\n"
+      "jmp .Ljmp_after\n"
+      ".Ljmp_after:\n"
+      "leaq .Ljmp_after(%rip), %rax\n"
+      "leaq .Ljmp_start(%rip), %rcx\n"
+      "subq %rcx, %rax\n"
+      "movq %rax, got_jmp(%rip)\n"
+      "xorl %eax, %eax\n"
+      ".Ljcc_start:\n"
+      "je .Ljcc_after\n"
+      ".Ljcc_after:\n"
+      "leaq .Ljcc_after(%rip), %rax\n"
+      "leaq .Ljcc_start(%rip), %rcx\n"
+      "subq %rcx, %rax\n"
+      "movq %rax, got_jcc(%rip)\n"
+      :
+      :
+      : "rax", "rcx", "cc", "memory");
+  return (got_jmp == 2 && got_jcc == 2) ? 42 : 0;
+}
+EOF
+
+out="build/test/linkint-forward-relax"
+./bin/monacc --emit-obj --link-internal build/test/linkint_forward_relax.c -o "$out" >/dev/null 2>&1
+
+set +e
+"$out" >/dev/null 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 42 ]; then
+  echo "link-internal-smoke: FAIL (forward-relax: exit $rc, expected 42)"
+  exit 1
+fi
+
 cat > build/test/linkint_a.c <<'EOF'
 int b(void);
 int main(void) {
@@ -75,7 +115,7 @@ if [ "$rc" -ne 42 ]; then
   exit 1
 fi
 
-echo "link-internal-smoke: OK (${#subset[@]} examples + cdqe + multi)"
+echo "link-internal-smoke: OK (${#subset[@]} examples + cdqe + forward-relax + multi)"
 
 # Step 6 smoke: default output is stripped; --keep-shdr keeps section headers.
 dbg_out="build/test/linkint-keep-shdr"
@@ -137,6 +177,57 @@ sz=$(stat -c%s "$bss_out" 2>/dev/null || echo 0)
 # even when p_filesz==0.
 if [ "$sz" -ge 8192 ]; then
   echo "link-internal-smoke: FAIL (bssonly: output too large: $sz bytes)"
+  exit 1
+fi
+
+# Step 9 smoke: conservative ICF + rodata dedup should shrink many identical
+# local .text.* and .rodata.* sections while preserving behavior.
+cat > build/test/linkint_icf_rodata.c <<'EOF'
+#define BLOB "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+static int f1(void) { return 1; }
+static int f2(void) { return 1; }
+static int f3(void) { return 1; }
+static int f4(void) { return 1; }
+static int f5(void) { return 1; }
+static int f6(void) { return 1; }
+static int f7(void) { return 1; }
+static int f8(void) { return 1; }
+static int f9(void) { return 1; }
+static int f10(void) { return 1; }
+static int f11(void) { return 1; }
+static int f12(void) { return 1; }
+static int f13(void) { return 1; }
+static int f14(void) { return 1; }
+static int f15(void) { return 1; }
+static int f16(void) { return 1; }
+
+int main(void) {
+  int v = 0;
+  v += f1() + f2() + f3() + f4() + f5() + f6() + f7() + f8();
+  v += f9() + f10() + f11() + f12() + f13() + f14() + f15() + f16();
+  v += BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0];
+  v += BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0] + BLOB[0];
+  return (v == 1056) ? 42 : 0;
+}
+EOF
+
+icf_out="build/test/linkint-icf-rodata"
+./bin/monacc --emit-obj --link-internal build/test/linkint_icf_rodata.c -o "$icf_out" >/dev/null 2>&1
+
+set +e
+"$icf_out" >/dev/null 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 42 ]; then
+  echo "link-internal-smoke: FAIL (icf-rodata: exit $rc, expected 42)"
+  exit 1
+fi
+
+sz=$(stat -c%s "$icf_out")
+if [ "$sz" -ge 9000 ]; then
+  echo "link-internal-smoke: FAIL (icf-rodata: output too large: $sz bytes)"
   exit 1
 fi
 

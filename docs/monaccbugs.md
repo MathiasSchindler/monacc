@@ -274,6 +274,7 @@ Additional coverage: `extern-array-values` checks that the bytes are correct at 
 **Status**: mostly complete.
 - `__builtin_unreachable()` is implemented (`builtin-unreachable`).
 - Operand modifiers `%b/%w/%k/%q` are implemented (`asm-modifiers`).
+- Internal assembler supports `test $imm, r/m` and constant-data directives `.word`/`.long` (`asm-test-imm-mem-and-directives`).
 
 ---
 
@@ -327,5 +328,6 @@ As each bug is fixed, its corresponding test should start passing and will then 
 - `static-local-recursion.c`
 - `builtin-unreachable.c`
 - `asm-modifiers.c`
+- `asm-test-imm-mem-and-directives.c`
 
 If you want, I can also wire these into the existing test runner once you tell me where you prefer compiler-regression tests to live (under `tests/` vs `examples/`).

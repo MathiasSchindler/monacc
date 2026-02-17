@@ -45,6 +45,8 @@
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
 #define R_X86_64_64 1
+#define R_X86_64_32 10
+#define R_X86_64_16 12
 
 typedef struct {
     unsigned char e_ident[EI_NIDENT];
@@ -398,6 +400,86 @@ static void add_fixup(AsmState *st, ObjSection *sec, mc_usize disp_off, const ch
     f->cc = cc;
 }
 
+static void sec_delete_bytes(ObjSection *sec, mc_usize off, mc_usize n) {
+    if (!sec || n == 0) return;
+    if (off + n > sec->data.len) die("internal: delete out of range");
+    for (mc_usize i = off; i + n < sec->data.len; i++) {
+        sec->data.buf[i] = sec->data.buf[i + n];
+    }
+    sec->data.len -= n;
+}
+
+static void adjust_offsets_after_delete(AsmState *st, ObjSection *sec, mc_usize at_or_after, mc_usize delta) {
+    for (int i = 0; i < st->nsyms; i++) {
+        ObjSym *s = &st->syms[i];
+        if (s->is_defined && s->sec == sec && s->value >= at_or_after) s->value -= delta;
+    }
+    for (int i = 0; i < st->nfix; i++) {
+        Fixup *f = &st->fix[i];
+        if (f->sec == sec && f->disp_off >= at_or_after) f->disp_off -= delta;
+    }
+    for (int i = 0; i < sec->nrela; i++) {
+        if (sec->rela[i].r_offset >= at_or_after) sec->rela[i].r_offset -= delta;
+    }
+}
+
+static void remove_fixup_at(AsmState *st, int idx) {
+    monacc_free(st->fix[idx].target);
+    for (int i = idx + 1; i < st->nfix; i++) st->fix[i - 1] = st->fix[i];
+    st->nfix--;
+}
+
+static int try_relax_forward_fixup(AsmState *st, int idx, ObjSym *t) {
+    Fixup *f = &st->fix[idx];
+    ObjSection *sec = f->sec;
+    if (!t || !t->is_defined || t->sec != sec) return 0;
+    mc_usize branch_off = 0;
+    mc_usize near_len = 0;
+    unsigned char short_opc = 0;
+    unsigned char *buf = (unsigned char *)sec->data.buf;
+    if (f->is_jcc) {
+        if (f->disp_off < 2 || f->disp_off + 4 > sec->data.len) return 0;
+        if (buf[f->disp_off - 2] != 0x0F) return 0;
+        if (buf[f->disp_off - 1] < 0x80 || buf[f->disp_off - 1] > 0x8F) return 0;
+        branch_off = f->disp_off - 2;
+        near_len = 6;
+        short_opc = (unsigned char)(buf[f->disp_off - 1] - 0x10);
+    } else {
+        if (f->disp_off < 1 || f->disp_off + 4 > sec->data.len) return 0;
+        if (buf[f->disp_off - 1] != 0xE9) return 0;
+        branch_off = f->disp_off - 1;
+        near_len = 5;
+        short_opc = 0xEB;
+    }
+
+    if (t->value <= branch_off) return 0;
+    mc_usize rm_off = branch_off + 2;
+    mc_usize delta = near_len - 2;
+    int64_t S = (int64_t)t->value;
+    if (S >= (int64_t)(branch_off + near_len)) S -= (int64_t)delta;
+    int64_t disp8 = S - (int64_t)(branch_off + 2);
+    if (disp8 < -128 || disp8 > 127) return 0;
+
+    buf[branch_off] = short_opc;
+    buf[branch_off + 1] = (unsigned char)(disp8 & 0xff);
+    sec_delete_bytes(sec, rm_off, delta);
+    adjust_offsets_after_delete(st, sec, rm_off + delta, delta);
+    remove_fixup_at(st, idx);
+    return 1;
+}
+
+static void sort_fixups_desc_by_disp(AsmState *st) {
+    for (int i = 0; i + 1 < st->nfix; i++) {
+        for (int j = i + 1; j < st->nfix; j++) {
+            if (st->fix[j].disp_off > st->fix[i].disp_off) {
+                Fixup t = st->fix[i];
+                st->fix[i] = st->fix[j];
+                st->fix[j] = t;
+            }
+        }
+    }
+}
+
 // ===== Operand parsing (registers/memory) =====
 
 typedef struct {
@@ -545,28 +627,6 @@ static int parse_reg_name(const char *p, const char *end, Reg *out) {
     if (reg_name_match(p, n, "rip", -1, 64, 0, out)) return 1;
 
     return 0;
-}
-
-static int try_emit_short_jmp(AsmState *st, const char *target) {
-    ObjSym *t = find_sym(st, target, mc_strlen(target));
-    if (!t || !t->is_defined || t->sec != st->cur) return 0;
-    int64_t cur = (int64_t)st->cur->data.len;
-    int64_t disp = (int64_t)t->value - (cur + 2); // rel8 from next instruction
-    if (disp < -128 || disp > 127) return 0;
-    bin_put_u8(&st->cur->data, 0xEB); // short jmp rel8
-    bin_put_u8(&st->cur->data, (unsigned int)(disp & 0xff));
-    return 1;
-}
-
-static int try_emit_short_jcc(AsmState *st, const char *target, unsigned int short_opc) {
-    ObjSym *t = find_sym(st, target, mc_strlen(target));
-    if (!t || !t->is_defined || t->sec != st->cur) return 0;
-    int64_t cur = (int64_t)st->cur->data.len;
-    int64_t disp = (int64_t)t->value - (cur + 2); // rel8 from next instruction
-    if (disp < -128 || disp > 127) return 0;
-    bin_put_u8(&st->cur->data, (unsigned int)short_opc);
-    bin_put_u8(&st->cur->data, (unsigned int)(disp & 0xff));
-    return 1;
 }
 
 static void emit_rex(Str *s, int w, int r, int x, int b, int force) {
@@ -908,6 +968,12 @@ static void encode_jmp_reg(Str *s, const Reg *r) {
 
 static void emit_imm32(Str *s, long long imm) {
     bin_put_u32_le(s, (uint32_t)imm);
+}
+
+static void emit_imm16(Str *s, long long imm) {
+    unsigned int v = (unsigned int)imm;
+    bin_put_u8(s, v & 0xffu);
+    bin_put_u8(s, (v >> 8) & 0xffu);
 }
 
 static void emit_imm64(Str *s, long long imm) {
@@ -1281,6 +1347,41 @@ static void encode_binop_imm_rm(Str *s, const char *mnem, long long imm, const O
         encode_modrm_rm(s, (int)subop, &dst->mem, w, 0, &rr, &rx, &rb, &fr);
     }
     emit_imm32(s, imm);
+}
+
+static void encode_test_imm_rm(Str *s, long long imm, const Operand *dst, int width) {
+    if (!dst) die("asm: test dst");
+    if (!(dst->kind == OP_REG || dst->kind == OP_MEM)) die("asm: test dst kind");
+    if (!(width == 8 || width == 16 || width == 32 || width == 64)) die("asm: test width");
+
+    int w = (width == 64);
+    int op16 = (width == 16);
+    int op8 = (width == 8);
+
+    int rex_r = 0, rex_x = 0, rex_b = 0;
+    int force_rex = 0;
+    if (dst->kind == OP_REG) {
+        rex_b = (dst->reg.reg >> 3) & 1;
+        if (op8) force_rex = dst->reg.needs_rex_byte;
+    } else if (!dst->mem.riprel) {
+        int base = dst->mem.has_base ? dst->mem.base : 5;
+        int index = dst->mem.has_index ? dst->mem.index : 4;
+        rex_x = (index >> 3) & 1;
+        rex_b = (base >> 3) & 1;
+    }
+
+    if (op16) bin_put_u8(s, 0x66);
+    emit_rex(s, w, rex_r, rex_x, rex_b, force_rex);
+    bin_put_u8(s, op8 ? 0xF6 : 0xF7);
+    if (dst->kind == OP_REG) {
+        emit_modrm(s, 3, 0, dst->reg.reg & 7);
+    } else {
+        int rr = 0, rx = 0, rb = 0, fr = force_rex;
+        encode_modrm_rm(s, 0, &dst->mem, w, op8, &rr, &rx, &rb, &fr);
+    }
+    if (op8) bin_put_u8(s, (unsigned int)(imm & 0xff));
+    else if (op16) emit_imm16(s, imm);
+    else emit_imm32(s, imm);
 }
 
 static void encode_binop_rm_reg(Str *s, const char *mnem, const Operand *src, const Reg *dst) {
@@ -1774,6 +1875,38 @@ static void parse_quad_directive(AsmState *st, const char *p, const char *end) {
     for (int i = 0; i < 8; i++) bin_put_u8(&st->cur->data, 0);
 }
 
+static int parse_symbol_addend(const char *p, const char *end,
+                               const char **out_nm, const char **out_nm_end,
+                               int64_t *out_addend) {
+    p = skip_ws(p, end);
+    end = rskip_ws(p, end);
+    if (p >= end) return 0;
+    if (*p == '-' || *p == '+' || (*p >= '0' && *p <= '9')) return 0;
+    const char *nm = p;
+
+    const char *q = p;
+    while (q < end && !is_space(*q) && *q != '+' && *q != '-') q++;
+    const char *nm_end = rskip_ws(p, q);
+    if (p >= nm_end) return 0;
+
+    int64_t addend = 0;
+    p = skip_ws(q, end);
+    if (p < end) {
+        if (*p != '+' && *p != '-') return 0;
+        int neg = (*p == '-');
+        p++;
+        p = skip_ws(p, end);
+        long long av = 0;
+        if (!parse_int64(p, end, &av)) return 0;
+        addend = (int64_t)(neg ? -av : av);
+    }
+
+    *out_nm = nm;
+    *out_nm_end = nm_end;
+    *out_addend = addend;
+    return 1;
+}
+
 static void parse_align_directive(AsmState *st, const char *p, const char *end) {
     if (!st->cur) die("asm: .align outside section");
     p += mc_strlen(".align");
@@ -1795,6 +1928,62 @@ static void parse_zero_directive(AsmState *st, const char *p, const char *end) {
     long long n = 0;
     if (!parse_int64(p, end, &n) || n < 0) die("asm: bad .zero");
     sec_put_zeros_maybe_nobits(st->cur, (uint64_t)n);
+}
+
+static void parse_word_directive(AsmState *st, const char *p, const char *end) {
+    if (!st->cur) die("asm: .word outside section");
+    if (st->cur->sh_type == SHT_NOBITS) die("asm: .word in @nobits section");
+    p += mc_strlen(".word");
+    for (;;) {
+        p = skip_ws(p, end);
+        if (p >= end) break;
+        const char *q = p;
+        while (q < end && *q != ',') q++;
+        long long v = 0;
+        if (parse_int64(p, q, &v)) {
+            if (v < -32768LL || v > 65535LL) die("asm: .word out of range");
+            emit_imm16(&st->cur->data, v);
+        } else {
+            const char *nm = NULL;
+            const char *nm_end = NULL;
+            int64_t addend = 0;
+            if (!parse_symbol_addend(p, q, &nm, &nm_end, &addend)) die("asm: bad .word value");
+            ObjSym *s = get_or_add_sym(st, nm, span_len(nm, nm_end));
+            uint64_t off = (uint64_t)st->cur->data.len;
+            sec_add_rela(st->cur, off, s->name, R_X86_64_16, addend);
+            emit_imm16(&st->cur->data, 0);
+        }
+        p = q;
+        if (p < end && *p == ',') p++;
+    }
+}
+
+static void parse_long_directive(AsmState *st, const char *p, const char *end) {
+    if (!st->cur) die("asm: .long outside section");
+    if (st->cur->sh_type == SHT_NOBITS) die("asm: .long in @nobits section");
+    p += mc_strlen(".long");
+    for (;;) {
+        p = skip_ws(p, end);
+        if (p >= end) break;
+        const char *q = p;
+        while (q < end && *q != ',') q++;
+        long long v = 0;
+        if (parse_int64(p, q, &v)) {
+            if (v < -(1LL << 31) || v > 0xffffffffLL) die("asm: .long out of range");
+            emit_imm32(&st->cur->data, v);
+        } else {
+            const char *nm = NULL;
+            const char *nm_end = NULL;
+            int64_t addend = 0;
+            if (!parse_symbol_addend(p, q, &nm, &nm_end, &addend)) die("asm: bad .long value");
+            ObjSym *s = get_or_add_sym(st, nm, span_len(nm, nm_end));
+            uint64_t off = (uint64_t)st->cur->data.len;
+            sec_add_rela(st->cur, off, s->name, R_X86_64_32, addend);
+            emit_imm32(&st->cur->data, 0);
+        }
+        p = q;
+        if (p < end && *p == ',') p++;
+    }
 }
 
 static void parse_operands_top(const char *p, const char *end,
@@ -2006,7 +2195,6 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
                 return;
             }
             if (a.kind != OP_SYM || a.indirect) die("asm: jmp expects label");
-            if (try_emit_short_jmp(st, a.sym)) return;
             // e9 disp32
             bin_put_u8(&st->cur->data, 0xE9);
             mc_usize disp_off = st->cur->data.len;
@@ -2047,21 +2235,6 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 
             if (jcc >= 0) {
                 if (a.kind != OP_SYM) die("asm: jcc expects label");
-                unsigned int short_opc = 0;
-                if (!mc_strcmp(mnem, "je") || !mc_strcmp(mnem, "jz")) short_opc = 0x74;
-                else if (!mc_strcmp(mnem, "jne") || !mc_strcmp(mnem, "jnz")) short_opc = 0x75;
-                else if (!mc_strcmp(mnem, "jb")) short_opc = 0x72;
-                else if (!mc_strcmp(mnem, "jae")) short_opc = 0x73;
-                else if (!mc_strcmp(mnem, "jbe")) short_opc = 0x76;
-                else if (!mc_strcmp(mnem, "ja")) short_opc = 0x77;
-                else if (!mc_strcmp(mnem, "jp") || !mc_strcmp(mnem, "jpe")) short_opc = 0x7A;
-                else if (!mc_strcmp(mnem, "jnp") || !mc_strcmp(mnem, "jpo")) short_opc = 0x7B;
-                else if (!mc_strcmp(mnem, "jl")) short_opc = 0x7C;
-                else if (!mc_strcmp(mnem, "jge")) short_opc = 0x7D;
-                else if (!mc_strcmp(mnem, "jle")) short_opc = 0x7E;
-                else if (!mc_strcmp(mnem, "jg")) short_opc = 0x7F;
-
-                if (short_opc && try_emit_short_jcc(st, a.sym, short_opc)) return;
                 bin_put_u8(&st->cur->data, 0x0F);
                 bin_put_u8(&st->cur->data, (unsigned int)jcc);
                 mc_usize disp_off = st->cur->data.len;
@@ -2192,13 +2365,14 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
         !mc_strcmp(mnem, "xor") || !mc_strcmp(mnem, "cmp") || !mc_strcmp(mnem, "test")) {
         if (a.kind == OP_IMM && b.kind == OP_REG) {
             if (forced_width && b.reg.width != forced_width) die("asm: imm/reg width mismatch");
-            encode_binop_imm(&st->cur->data, mnem, a.imm, &b.reg);
+            if (!mc_strcmp(mnem, "test")) encode_test_imm_rm(&st->cur->data, a.imm, &b, forced_width ? forced_width : b.reg.width);
+            else encode_binop_imm(&st->cur->data, mnem, a.imm, &b.reg);
             return;
         }
         if (a.kind == OP_IMM && b.kind == OP_MEM) {
             if (!forced_width) die("asm: imm/mem requires size suffix");
-            if (!mc_strcmp(mnem, "test")) die("asm: test imm,mem unsupported");
-            encode_binop_imm_rm(&st->cur->data, mnem, a.imm, &b, forced_width);
+            if (!mc_strcmp(mnem, "test")) encode_test_imm_rm(&st->cur->data, a.imm, &b, forced_width);
+            else encode_binop_imm_rm(&st->cur->data, mnem, a.imm, &b, forced_width);
             if (b.mem.riprel && b.mem.sym) {
                 mc_usize disp_off = st->cur->data.len - 4;
                 ObjSym *sym = get_or_add_sym(st, b.mem.sym, mc_strlen(b.mem.sym));
@@ -2345,6 +2519,13 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 }
 
 static void resolve_fixups(AsmState *st) {
+    sort_fixups_desc_by_disp(st);
+    for (int i = 0; i < st->nfix;) {
+        Fixup *f = &st->fix[i];
+        ObjSym *t = find_sym(st, f->target, mc_strlen(f->target));
+        if (try_relax_forward_fixup(st, i, t)) continue;
+        i++;
+    }
     for (int i = 0; i < st->nfix; i++) {
         Fixup *f = &st->fix[i];
         ObjSym *t = find_sym(st, f->target, mc_strlen(f->target));
@@ -2744,6 +2925,14 @@ void assemble_x86_64_elfobj(mc_compiler *ctx, const char *asm_buf, mc_usize asm_
             }
             if (starts_with(a, b, ".byte")) {
                 parse_byte_directive(&st, a, b);
+                continue;
+            }
+            if (starts_with(a, b, ".word")) {
+                parse_word_directive(&st, a, b);
+                continue;
+            }
+            if (starts_with(a, b, ".long")) {
+                parse_long_directive(&st, a, b);
                 continue;
             }
             if (starts_with(a, b, ".quad")) {

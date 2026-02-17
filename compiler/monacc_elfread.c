@@ -34,6 +34,7 @@
 #define R_X86_64_PLT32 4
 #define R_X86_64_32 10
 #define R_X86_64_32S 11
+#define R_X86_64_16 12
 
 typedef struct {
     unsigned char e_ident[EI_NIDENT];
@@ -122,6 +123,7 @@ static const char *reloc_type_name(mc_u32 t) {
     case R_X86_64_PLT32: return "R_X86_64_PLT32";
     case R_X86_64_32: return "R_X86_64_32";
     case R_X86_64_32S: return "R_X86_64_32S";
+    case R_X86_64_16: return "R_X86_64_16";
     default: return "R_X86_64_?";
     }
 }

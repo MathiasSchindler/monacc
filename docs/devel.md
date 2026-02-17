@@ -108,6 +108,9 @@ Notes:
 - That list is the “common core set” typically linked into tools.
 - If your tool doesn’t use crypto/TLS/math, you *may* omit those `.c` files mainly to reduce compile time and avoid accidental dependencies.
   - In general, monacc emits per-function/per-string sections and links with a `--gc-sections`-equivalent, so **truly unreferenced** code usually does not end up in the final static binary.
+  - Additional linker-side size passes are intentionally conservative:
+    - tiny-text ICF only for `.text.*` `SHT_PROGBITS` sections that are alloc+exec, relocation-free, local-label-only, and <=32 bytes.
+    - read-only dedup only for relocation-free `.rodata*`/`.str*`/`.blob*` `SHT_PROGBITS` sections (alloc, non-write, non-exec, local-label-only) with identical bytes/flags/alignment/type.
   - Caveat: if you reference a symbol in a module, you may pull in more of that module’s reachable code/data.
 
 ### 4.2 Forcing external assembler/linker (debug/bring-up)
@@ -125,6 +128,7 @@ Debug tip:
 
 - If you see a parse error at a line number far beyond the source file length, it may refer to the *preprocessed* output.
   Use `--dump-pp /tmp/foo.pp` to inspect what `monacc` is actually compiling.
+- Internal assembler branch relaxation is forward-only (same-section local-label fixups), so backward branches remain in near form unless emitted short initially.
 
 ### 4.3 Sanity-check that the output is truly standalone
 

@@ -127,6 +127,70 @@ Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams
     return c;
 }
 
+static Stmt *stmt_clone_list_with_subst(const Stmt *s, const int *param_offsets, int nparams, Expr **args);
+
+Stmt *stmt_clone_with_subst(const Stmt *s, const int *param_offsets, int nparams, Expr **args) {
+    if (!s) return NULL;
+
+    Stmt *c = new_stmt(s->kind);
+    *c = *s;
+    c->next = NULL;
+
+    c->block_first = stmt_clone_list_with_subst(s->block_first, param_offsets, nparams, args);
+
+    c->expr = expr_clone_with_subst(s->expr, param_offsets, nparams, args);
+    c->decl_init = expr_clone_with_subst(s->decl_init, param_offsets, nparams, args);
+
+    c->if_cond = expr_clone_with_subst(s->if_cond, param_offsets, nparams, args);
+    c->if_then = stmt_clone_with_subst(s->if_then, param_offsets, nparams, args);
+    c->if_else = stmt_clone_with_subst(s->if_else, param_offsets, nparams, args);
+
+    c->while_cond = expr_clone_with_subst(s->while_cond, param_offsets, nparams, args);
+    c->while_body = stmt_clone_with_subst(s->while_body, param_offsets, nparams, args);
+
+    c->for_init = stmt_clone_with_subst(s->for_init, param_offsets, nparams, args);
+    c->for_cond = expr_clone_with_subst(s->for_cond, param_offsets, nparams, args);
+    c->for_inc = expr_clone_with_subst(s->for_inc, param_offsets, nparams, args);
+    c->for_body = stmt_clone_with_subst(s->for_body, param_offsets, nparams, args);
+
+    c->switch_expr = expr_clone_with_subst(s->switch_expr, param_offsets, nparams, args);
+    c->switch_body = stmt_clone_with_subst(s->switch_body, param_offsets, nparams, args);
+
+    c->label_stmt = stmt_clone_with_subst(s->label_stmt, param_offsets, nparams, args);
+
+    if (s->asm_outputs && s->asm_noutputs > 0) {
+        c->asm_outputs = (AsmOperand *)monacc_calloc((mc_usize)s->asm_noutputs, sizeof(AsmOperand));
+        if (!c->asm_outputs) die("oom");
+        for (int i = 0; i < s->asm_noutputs; i++) {
+            c->asm_outputs[i] = s->asm_outputs[i];
+            c->asm_outputs[i].expr = expr_clone_with_subst(s->asm_outputs[i].expr, param_offsets, nparams, args);
+        }
+    }
+
+    if (s->asm_inputs && s->asm_ninputs > 0) {
+        c->asm_inputs = (AsmOperand *)monacc_calloc((mc_usize)s->asm_ninputs, sizeof(AsmOperand));
+        if (!c->asm_inputs) die("oom");
+        for (int i = 0; i < s->asm_ninputs; i++) {
+            c->asm_inputs[i] = s->asm_inputs[i];
+            c->asm_inputs[i].expr = expr_clone_with_subst(s->asm_inputs[i].expr, param_offsets, nparams, args);
+        }
+    }
+
+    return c;
+}
+
+static Stmt *stmt_clone_list_with_subst(const Stmt *s, const int *param_offsets, int nparams, Expr **args) {
+    Stmt *head = NULL;
+    Stmt *tail = NULL;
+    for (const Stmt *cur = s; cur; cur = cur->next) {
+        Stmt *cl = stmt_clone_with_subst(cur, param_offsets, nparams, args);
+        if (!head) head = cl;
+        else tail->next = cl;
+        tail = cl;
+    }
+    return head;
+}
+
 Stmt *new_stmt(StmtKind k) {
     Stmt *s = (Stmt *)monacc_calloc(1, sizeof(*s));
     if (!s) die("oom");

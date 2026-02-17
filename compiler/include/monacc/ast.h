@@ -354,6 +354,7 @@ void ast_dump(mc_compiler *ctx, const Program *prg, const char *path);
 // AST/program helpers used across modules
 Expr *new_expr(ExprKind k);
 Expr *expr_clone_with_subst(const Expr *e, const int *param_offsets, int nparams, Expr **args);
+Stmt *stmt_clone_with_subst(const Stmt *s, const int *param_offsets, int nparams, Expr **args);
 Stmt *new_stmt(StmtKind k);
 const Local *local_find(const Locals *ls, const char *nm, mc_usize nm_len);
 int local_add(Locals *ls, const char *nm, mc_usize nm_len, BaseType base, int ptr, int struct_id, int is_unsigned, int lval_size, int alloc_size,

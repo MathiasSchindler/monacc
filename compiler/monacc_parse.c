@@ -2892,15 +2892,17 @@ typedef struct {
     mc_usize name_len;
 } ParamTmp;
 
-static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
+static ParamTmp *parse_param_list(Parser *p, int *out_nparams, int *out_has_varargs) {
     // Parse parameters (subset) and return a heap array of ParamTmp.
     // Grammar (subset): type-spec ident? (, type-spec ident?)*
     if (out_nparams) *out_nparams = 0;
+    if (out_has_varargs) *out_has_varargs = 0;
     if (tok_is(p, TOK_RPAREN)) return NULL;
 
     // Variadic-only: f(...)
     if (tok_is(p, TOK_ELLIPSIS)) {
         parser_next(p);
+        if (out_has_varargs) *out_has_varargs = 1;
         return NULL;
     }
 
@@ -2911,6 +2913,7 @@ static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
         if (tok_is(p, TOK_ELLIPSIS)) {
             // Variadic marker must appear at the end.
             parser_next(p);
+            if (out_has_varargs) *out_has_varargs = 1;
             if (!tok_is(p, TOK_RPAREN)) {
                 die("%s:%d:%d: '...' must be last parameter", p->lx.path, p->tok.line, p->tok.col);
             }
@@ -2962,6 +2965,7 @@ static ParamTmp *parse_param_list(Parser *p, int *out_nparams) {
             // Trailing variadic marker: f(T a, ...)
             if (tok_is(p, TOK_ELLIPSIS)) {
                 parser_next(p);
+                if (out_has_varargs) *out_has_varargs = 1;
                 if (!tok_is(p, TOK_RPAREN)) {
                     die("%s:%d:%d: '...' must be last parameter", p->lx.path, p->tok.line, p->tok.col);
                 }
@@ -3167,7 +3171,7 @@ static void parse_struct_def(Parser *p, int struct_id) {
 }
 
 static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, int ret_struct_id, int ret_is_unsigned,
-                                   const char *nm, mc_usize nm_len, const ParamTmp *params, int nparams) {
+                                   const char *nm, mc_usize nm_len, const ParamTmp *params, int nparams, int has_varargs) {
     Function fn;
     mc_memset(&fn, 0, sizeof(fn));
     if (nm_len == 0 || nm_len >= sizeof(fn.name)) {
@@ -3185,6 +3189,7 @@ static Function parse_function_body(Parser *p, BaseType ret_base, int ret_ptr, i
     fn.sret_offset = 0;
 
     fn.nparams = 0;
+    fn.has_varargs = has_varargs;
     for (int i = 0; i < 6; i++) {
         fn.param_offsets[i] = 0;
         fn.param_sizes[i] = 0;
@@ -3409,7 +3414,8 @@ void parse_program(Parser *p, Program *out) {
         // function prototype/definition
         if (consume(p, TOK_LPAREN)) {
             int nparams = 0;
-            ParamTmp *params = parse_param_list(p, &nparams);
+            int has_varargs = 0;
+            ParamTmp *params = parse_param_list(p, &nparams, &has_varargs);
             expect(p, TOK_RPAREN, "')'");
             skip_gcc_attrs(p);
             if (consume(p, TOK_SEMI)) {
@@ -3423,6 +3429,7 @@ void parse_program(Parser *p, Program *out) {
                 proto.is_static = saw_static;
                 proto.is_inline = saw_inline;
                 proto.has_body = 0;
+                proto.has_varargs = has_varargs;
                 proto.ret_base = base;
                 proto.ret_ptr = ptr;
                 proto.ret_struct_id = sid;
@@ -3434,7 +3441,7 @@ void parse_program(Parser *p, Program *out) {
                 monacc_free(params);
                 continue;
             }
-            Function fn = parse_function_body(p, base, ptr, sid, is_unsigned, nm, nm_len, params, nparams);
+            Function fn = parse_function_body(p, base, ptr, sid, is_unsigned, nm, nm_len, params, nparams, has_varargs);
             fn.is_static = saw_static;
             fn.is_inline = saw_inline;
             monacc_free(params);
@@ -3654,4 +3661,3 @@ void write_file(const char *path, const char *data, mc_usize len) {
     xwrite_all(fd, data, len);
     xclose_checked(fd, "close", path);
 }
-

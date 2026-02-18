@@ -323,7 +323,7 @@ static int sec_can_icf_text(const InputObj *in, mc_u16 si) {
     if ((sh->sh_flags & SHF_ALLOC) == 0) return 0;
     if ((sh->sh_flags & SHF_EXECINSTR) == 0) return 0;
     if (sh->sh_type != SHT_PROGBITS) return 0;
-    if (sh->sh_size == 0 || sh->sh_size > 32) return 0;
+    if (sh->sh_size == 0 || sh->sh_size > 64) return 0;
     if (!starts_with_lit(nm, ".text.")) return 0;
     if (sec_has_rela_target(in, si)) return 0;
     if (!sec_has_only_local_label_defs(in, si)) return 0;

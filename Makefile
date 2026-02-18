@@ -28,6 +28,7 @@
 #   SELFTEST_MONACCBUGS=0    Disable regression tests
 #   SELFTEST_BINSHELL=0      Disable bin/sh execution tests
 #   SELFTEST_REPO_GUARDS=0   Disable repository guardrail checks
+#   MATRIX_SIZE_ONLY=1        With MULTI=1 test: run only matrix build + size reports
 
 CC ?= cc
 MONACC := bin/monacc
@@ -134,7 +135,9 @@ CORE_MIN_SRC := \
 	core/mc_snprint.c \
 	core/mc_libc_compat.c \
 	core/mc_start_env.c \
-	core/mc_io.c \
+	core/mc_io.c
+
+CORE_REGEX_SRC := \
 	core/mc_regex.c
 
 CORE_CRYPTO_SRC := \
@@ -155,14 +158,14 @@ CORE_TLS_SRC := \
 CORE_MATH_SRC := \
 	core/mc_mathf.c
 
-CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC) $(CORE_MATH_SRC)
+CORE_COMMON_SRC := $(CORE_MIN_SRC) $(CORE_REGEX_SRC) $(CORE_CRYPTO_SRC) $(CORE_TLS_SRC) $(CORE_MATH_SRC)
 
 # Hosted-only core sources (not built into MONACC tools)
 CORE_HOSTED_SRC := \
 	core/mc_start.c
 
 
-CORE_TOOL_SRC := $(CORE_COMMON_SRC)
+CORE_TOOL_SRC_BASE := $(CORE_MIN_SRC)
 CORE_COMPILER_SRC := $(CORE_MIN_SRC) $(CORE_HOSTED_SRC)
 
 COMPILER_SRC := \
@@ -194,6 +197,22 @@ TOOL_BINS_INTERNAL := $(addprefix bin/internal/,$(TOOL_NAMES))
 
 # Tools with extra translation units (submodules)
 MASTO_SRCS := tools/masto.c $(wildcard tools/masto/*.c)
+
+# Per-tool core source augmentation to speed full rebuilds.
+TOOLS_NEED_CRYPTO := aes128 browse gcm128 hkdf masto sha256 tls13 wtf x25519
+TOOLS_NEED_TLS := browse masto tls13 wtf
+TOOLS_NEED_MATH := ckpt2bin gpt2 matrixstat
+TOOLS_NEED_REGEX := grep sed
+
+TOOL_EXTRA_CRYPTO_TARGETS := $(addprefix bin/,$(TOOLS_NEED_CRYPTO)) $(addprefix bin/ld/,$(TOOLS_NEED_CRYPTO)) $(addprefix bin/internal/,$(TOOLS_NEED_CRYPTO))
+TOOL_EXTRA_TLS_TARGETS := $(addprefix bin/,$(TOOLS_NEED_TLS)) $(addprefix bin/ld/,$(TOOLS_NEED_TLS)) $(addprefix bin/internal/,$(TOOLS_NEED_TLS))
+TOOL_EXTRA_MATH_TARGETS := $(addprefix bin/,$(TOOLS_NEED_MATH)) $(addprefix bin/ld/,$(TOOLS_NEED_MATH)) $(addprefix bin/internal/,$(TOOLS_NEED_MATH))
+TOOL_EXTRA_REGEX_TARGETS := $(addprefix bin/,$(TOOLS_NEED_REGEX)) $(addprefix bin/ld/,$(TOOLS_NEED_REGEX)) $(addprefix bin/internal/,$(TOOLS_NEED_REGEX))
+
+$(TOOL_EXTRA_CRYPTO_TARGETS): EXTRA_CORE += $(CORE_CRYPTO_SRC)
+$(TOOL_EXTRA_TLS_TARGETS): EXTRA_CORE += $(CORE_TLS_SRC)
+$(TOOL_EXTRA_MATH_TARGETS): EXTRA_CORE += $(CORE_MATH_SRC)
+$(TOOL_EXTRA_REGEX_TARGETS): EXTRA_CORE += $(CORE_REGEX_SRC)
 
 # Examples to test (must return exit code 42)
 EXAMPLES := hello loop pp ptr charlit strlit sizeof struct proto typedef \
@@ -230,8 +249,6 @@ INITRAMFS_INIT ?= init
 .PHONY: initramfs initramfs-cpio initramfs-root
 
 all: $(MONACC) $(TOOL_BINS) bin/realpath bin/[
-	@echo ""
-	@echo "Build complete: bin/monacc + $(words $(TOOL_BINS)) tools + aliases"
 
 # === Self-hosting support (used by test target) ===
 
@@ -327,41 +344,44 @@ bin/internal:
 
 # masto is split into tools/masto.c + tools/masto/*.c
 # Ensure the first file is tools/masto.c so monacc emits _start correctly.
-bin/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin
+bin/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC_BASE) $(MONACC) | bin
 	@echo "  masto"
-	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
-bin/ld/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin/ld
+bin/ld/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC_BASE) $(MONACC) | bin/ld
 	@echo "  ld/masto"
-	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
-bin/internal/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC) $(MONACC) | bin/internal
+bin/internal/masto: $(MASTO_SRCS) $(CORE_TOOL_SRC_BASE) $(MONACC) | bin/internal
 	@echo "  internal/masto"
-	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core tools/masto.c $(filter-out tools/masto.c,$(MASTO_SRCS)) $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
-bin/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin
+bin/%: tools/%.c $(CORE_TOOL_SRC_BASE) $(MONACC) | bin
 	@echo "  $*"
-	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) $(MONACC_LD_FLAG) -I core $< $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
 # External-ld linked toolset (kept separate for comparison)
-bin/ld/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/ld
+bin/ld/%: tools/%.c $(CORE_TOOL_SRC_BASE) $(MONACC) | bin/ld
 	@echo "  ld/$*"
-	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --ld ld -I core $< $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
 # Internal-linker toolset
-bin/internal/%: tools/%.c $(CORE_TOOL_SRC) $(MONACC) | bin/internal
+bin/internal/%: tools/%.c $(CORE_TOOL_SRC_BASE) $(MONACC) | bin/internal
 	@echo "  internal/$*"
-	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core $< $(CORE_TOOL_SRC) -o $@
+	@$(MONACC) $(MONACC_AS_FLAG) --link-internal -I core $< $(CORE_TOOL_SRC_BASE) $(EXTRA_CORE) -o $@
 
-# Print a header before building tools
-$(TOOL_BINS): | tool-header
-.PHONY: tool-header
-tool-header: $(MONACC)
+# Print a header once before building tools (avoid .PHONY work on no-op builds).
+TOOL_HEADER_STAMP := bin/.tool-header-$(LINKINT).stamp
+
+$(TOOL_BINS): | $(TOOL_HEADER_STAMP)
+
+$(TOOL_HEADER_STAMP): $(MONACC) | bin
 	@if [ "$(LINKINT)" = "1" ]; then \
 		echo "==> Building tools with monacc (internal linker)"; \
 	else \
 		echo "==> Building tools with monacc (external ld)"; \
 	fi
+	@touch $@
 
 $(TOOL_BINS_LD): | tool-header-ld
 $(TOOL_BINS_INTERNAL): | tool-header-internal
@@ -417,6 +437,27 @@ test:
 		echo "  - monacc native: $(HOST_BIN)/matrix-bin/*-mc"; \
 	fi
 	@echo "All tests passed (macOS native smoke OK)"
+
+else
+
+ifeq ($(MATRIX_SIZE_ONLY),1)
+
+test: all
+	@echo ""
+	@if [ "$(MULTI)" != "1" ]; then \
+		echo "error: MATRIX_SIZE_ONLY=1 requires MULTI=1"; \
+		exit 1; \
+	fi
+	@echo "==> MATRIX_SIZE_ONLY=1: matrix size pipeline only"
+	@echo "==> Matrix: build (override with MATRIX_TCS=\"monacc gcc-15 clang-21\")"
+	@$(HOST_SH) tests/matrix/build-matrix.sh
+	@echo ""
+	@echo "==> Matrix: size report (TSV)"
+	@mkdir -p build/matrix
+	@$(HOST_SH) tests/matrix/size-report.sh > build/matrix/report.tsv
+	@echo "Wrote build/matrix/report.tsv"
+	@$(HOST_SH) tests/matrix/tsv-to-html.sh --out build/matrix/report.html
+	@echo "Matrix size pipeline complete"
 
 else
 
@@ -537,6 +578,8 @@ test: all
 		echo "Some tests failed (examples: $$fail failed, phase1: exit $$phase1_rc, tools: exit $$tool_rc, elfread: exit $$elfread_rc, link-internal: exit $$linkint_rc, emit-obj: exit $$emitobj_rc, mathf: exit $$mathf_rc, stage2: exit $$stage2_rc, stage3: exit $$stage3_rc, monaccbugs: exit $$monaccbugs_rc, bin/sh: exit $$binsh_rc, repo-guards: exit $$repo_guard_rc, matrix: exit $$matrix_rc)"; \
 		exit 1; \
 	fi
+
+endif
 
 endif
 
@@ -1064,4 +1107,3 @@ darwin-net-smoke: darwin-tools
 		$(HOST_BIN)/wtf -W 5000 Google >/dev/null; \
 	fi
 	@echo "Net smoke complete"
-

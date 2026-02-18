@@ -204,8 +204,10 @@ typedef struct {
     ObjSection *sec;
     mc_usize disp_off; // offset of the rel32/disp32 field within sec->data
     char *target;
+    ObjSym *target_sym;
     int is_jcc;
     int cc; // 0=je/jz, 1=jne
+    int is_short;
 } Fixup;
 
 typedef struct {
@@ -396,8 +398,10 @@ static void add_fixup(AsmState *st, ObjSection *sec, mc_usize disp_off, const ch
     f->sec = sec;
     f->disp_off = disp_off;
     f->target = xstrdup_n(target, target_len);
+    f->target_sym = NULL;
     f->is_jcc = is_jcc;
     f->cc = cc;
+    f->is_short = 0;
 }
 
 static void sec_delete_bytes(ObjSection *sec, mc_usize off, mc_usize n) {
@@ -423,15 +427,10 @@ static void adjust_offsets_after_delete(AsmState *st, ObjSection *sec, mc_usize 
     }
 }
 
-static void remove_fixup_at(AsmState *st, int idx) {
-    monacc_free(st->fix[idx].target);
-    for (int i = idx + 1; i < st->nfix; i++) st->fix[i - 1] = st->fix[i];
-    st->nfix--;
-}
-
-static int try_relax_forward_fixup(AsmState *st, int idx, ObjSym *t) {
+static int try_relax_local_fixup(AsmState *st, int idx, ObjSym *t) {
     Fixup *f = &st->fix[idx];
     ObjSection *sec = f->sec;
+    if (f->is_short) return 0;
     if (!t || !t->is_defined || t->sec != sec) return 0;
     mc_usize branch_off = 0;
     mc_usize near_len = 0;
@@ -452,7 +451,6 @@ static int try_relax_forward_fixup(AsmState *st, int idx, ObjSym *t) {
         short_opc = 0xEB;
     }
 
-    if (t->value <= branch_off) return 0;
     mc_usize rm_off = branch_off + 2;
     mc_usize delta = near_len - 2;
     int64_t S = (int64_t)t->value;
@@ -464,20 +462,39 @@ static int try_relax_forward_fixup(AsmState *st, int idx, ObjSym *t) {
     buf[branch_off + 1] = (unsigned char)(disp8 & 0xff);
     sec_delete_bytes(sec, rm_off, delta);
     adjust_offsets_after_delete(st, sec, rm_off + delta, delta);
-    remove_fixup_at(st, idx);
+    f->disp_off = branch_off + 1;
+    f->is_short = 1;
     return 1;
 }
 
-static void sort_fixups_desc_by_disp(AsmState *st) {
-    for (int i = 0; i + 1 < st->nfix; i++) {
-        for (int j = i + 1; j < st->nfix; j++) {
-            if (st->fix[j].disp_off > st->fix[i].disp_off) {
-                Fixup t = st->fix[i];
-                st->fix[i] = st->fix[j];
-                st->fix[j] = t;
-            }
+static void sort_fixups_desc_by_disp_range(Fixup *a, int lo, int hi) {
+    if (lo >= hi) return;
+    mc_usize pivot = a[(lo + hi) / 2].disp_off;
+    int i = lo;
+    int j = hi;
+    while (i <= j) {
+        while (a[i].disp_off > pivot) i++;
+        while (a[j].disp_off < pivot) j--;
+        if (i <= j) {
+            Fixup t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+            i++;
+            j--;
         }
     }
+    if (lo < j) sort_fixups_desc_by_disp_range(a, lo, j);
+    if (i < hi) sort_fixups_desc_by_disp_range(a, i, hi);
+}
+
+static void sort_fixups_desc_by_disp(AsmState *st) {
+    if (st->nfix < 2) return;
+    sort_fixups_desc_by_disp_range(st->fix, 0, st->nfix - 1);
+}
+
+static ObjSym *fixup_target_sym(AsmState *st, Fixup *f) {
+    if (!f->target_sym) f->target_sym = find_sym(st, f->target, mc_strlen(f->target));
+    return f->target_sym;
 }
 
 // ===== Operand parsing (registers/memory) =====
@@ -2519,24 +2536,37 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
 }
 
 static void resolve_fixups(AsmState *st) {
+    int changed = 1;
     sort_fixups_desc_by_disp(st);
-    for (int i = 0; i < st->nfix;) {
-        Fixup *f = &st->fix[i];
-        ObjSym *t = find_sym(st, f->target, mc_strlen(f->target));
-        if (try_relax_forward_fixup(st, i, t)) continue;
-        i++;
+    while (changed) {
+        changed = 0;
+        for (int i = 0; i < st->nfix;) {
+            Fixup *f = &st->fix[i];
+            ObjSym *t = fixup_target_sym(st, f);
+            if (try_relax_local_fixup(st, i, t)) {
+                changed = 1;
+                continue;
+            }
+            i++;
+        }
     }
     for (int i = 0; i < st->nfix; i++) {
         Fixup *f = &st->fix[i];
-        ObjSym *t = find_sym(st, f->target, mc_strlen(f->target));
+        ObjSym *t = fixup_target_sym(st, f);
         if (!t || !t->is_defined || t->sec != f->sec) {
             die("asm: unresolved local label");
         }
         int64_t P = (int64_t)f->disp_off;
         int64_t S = (int64_t)t->value;
-        int64_t disp = S - (P + 4);
-        if (disp < -(1LL << 31) || disp > ((1LL << 31) - 1)) die("asm: branch out of range");
-        bin_patch_u32_le(&f->sec->data, f->disp_off, (uint32_t)(int32_t)disp);
+        if (f->is_short) {
+            int64_t disp = S - (P + 1);
+            if (disp < -128 || disp > 127) die("asm: branch out of range");
+            f->sec->data.buf[f->disp_off] = (char)(unsigned char)(disp & 0xff);
+        } else {
+            int64_t disp = S - (P + 4);
+            if (disp < -(1LL << 31) || disp > ((1LL << 31) - 1)) die("asm: branch out of range");
+            bin_patch_u32_le(&f->sec->data, f->disp_off, (uint32_t)(int32_t)disp);
+        }
     }
 }
 

@@ -399,6 +399,7 @@ static int stmt_sum_expr(const Stmt *s, ExprSumFn efn, void *ectx) {
 }
 
 static int stmt_is_void_cast_discard(const Stmt *s);
+static int fn_is_trivial_return(const Function *fn, long long *ret_val);
 
 static int expr_pred_uses_frame_pointer(const Expr *e, void *ctx) {
     (void)ctx;
@@ -1377,7 +1378,12 @@ static int fn_can_be_frameless(const Function *fn) {
     // Frameless functions start with rsp misaligned by 8 bytes at function entry
     // (SysV). This is OK as long as each call site adds the required dynamic pad
     // before CALL; cg_call/cg_sret_call handle that.
-    if (stmt_uses_frame_pointer(fn->body)) return 0;
+    if (stmt_uses_frame_pointer(fn->body)) {
+        long long ignored = 0;
+        // Keep tiny wrappers like "(void)argc; return 0;" frameless: the discard
+        // statement itself is codegen-elided and does not require stack storage.
+        if (!fn_is_trivial_return(fn, &ignored)) return 0;
+    }
     return 1;
 }
 
@@ -2121,11 +2127,15 @@ static void cg_call(CG *cg, const Expr *e) {
         }
     }
 
-    // SysV varargs ABI: %al holds the number of used XMM regs.
-    if (xmm_used == 0) {
-        str_appendf(&cg->out, "  xor %%eax, %%eax\n");
-    } else {
-        str_appendf_i64(&cg->out, "  mov $%d, %%eax\n", (long long)xmm_used);
+    // SysV varargs ABI: %al is only required for variadic callees.
+    int need_al = 1;
+    if (callee_sig && !callee_sig->has_varargs) need_al = 0;
+    if (need_al) {
+        if (xmm_used == 0) {
+            str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+        } else {
+            str_appendf_i64(&cg->out, "  mov $%d, %%eax\n", (long long)xmm_used);
+        }
     }
     str_appendf_s(&cg->out, "  call %s\n", e->callee);
 
@@ -5198,8 +5208,10 @@ static int cg_try_tailcall_return(CG *cg, const Stmt *s) {
         }
     }
 
-    // SysV varargs ABI: %al holds number of used XMM regs.
-    str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+    // SysV varargs ABI: %al is only required for variadic callees.
+    if (!callee_sig || callee_sig->has_varargs) {
+        str_appendf(&cg->out, "  xor %%eax, %%eax\n");
+    }
     if (!cg->frameless) {
         str_appendf(&cg->out, "  leave\n");
     }

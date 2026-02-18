@@ -25,17 +25,17 @@ if ./bin/test "$?" = 0; then ./bin/true >/dev/null; else
 	exit 1
 fi
 
-# Stage 2 (fully internal).
+# Stage 2.
 ./bin/echo "selfcontained-build: stage2"
-"$BUILD_DIR/monacc-self" -DSELFHOST -I core -I compiler compiler/mc_compiler.c compiler/monacc_main.c compiler/monacc_front.c compiler/monacc_fmt.c compiler/monacc_elfread.c compiler/monacc_link.c compiler/monacc_elfobj.c compiler/monacc_sys.c compiler/monacc_ast.c compiler/monacc_parse.c compiler/monacc_sema.c compiler/monacc_str.c compiler/monacc_codegen.c compiler/monacc_pp.c compiler/parse/ppexpr.c core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c -o "$BUILD_DIR/monacc-self2"
+"$BUILD_DIR/monacc-self" --ld ld -DSELFHOST -I core -I compiler compiler/mc_compiler.c compiler/monacc_main.c compiler/monacc_front.c compiler/monacc_fmt.c compiler/monacc_elfread.c compiler/monacc_link.c compiler/monacc_elfobj.c compiler/monacc_sys.c compiler/monacc_ast.c compiler/monacc_parse.c compiler/monacc_sema.c compiler/monacc_str.c compiler/monacc_codegen.c compiler/monacc_pp.c compiler/parse/ppexpr.c core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c -o "$BUILD_DIR/monacc-self2"
 if ./bin/test "$?" = 0; then ./bin/true >/dev/null; else
 	./bin/echo "selfcontained-build: FAIL: build stage2"
 	exit 1
 fi
 
-# Stage 3 (fully internal).
+# Stage 3.
 ./bin/echo "selfcontained-build: stage3"
-"$BUILD_DIR/monacc-self2" -DSELFHOST -I core -I compiler compiler/mc_compiler.c compiler/monacc_main.c compiler/monacc_front.c compiler/monacc_fmt.c compiler/monacc_elfread.c compiler/monacc_link.c compiler/monacc_elfobj.c compiler/monacc_sys.c compiler/monacc_ast.c compiler/monacc_parse.c compiler/monacc_sema.c compiler/monacc_str.c compiler/monacc_codegen.c compiler/monacc_pp.c compiler/parse/ppexpr.c core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c -o "$BUILD_DIR/monacc-self3"
+"$BUILD_DIR/monacc-self2" --ld ld -DSELFHOST -I core -I compiler compiler/mc_compiler.c compiler/monacc_main.c compiler/monacc_front.c compiler/monacc_fmt.c compiler/monacc_elfread.c compiler/monacc_link.c compiler/monacc_elfobj.c compiler/monacc_sys.c compiler/monacc_ast.c compiler/monacc_parse.c compiler/monacc_sema.c compiler/monacc_str.c compiler/monacc_codegen.c compiler/monacc_pp.c compiler/parse/ppexpr.c core/mc_str.c core/mc_fmt.c core/mc_snprint.c core/mc_libc_compat.c core/mc_start_env.c core/mc_io.c core/mc_regex.c -o "$BUILD_DIR/monacc-self3"
 if ./bin/test "$?" = 0; then ./bin/true >/dev/null; else
 	./bin/echo "selfcontained-build: FAIL: build stage3"
 	exit 1

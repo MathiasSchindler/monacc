@@ -246,6 +246,7 @@ typedef struct {
 
     int stack_size;
     int nparams;
+    int has_varargs;
     int param_offsets[6];
     int param_sizes[6];
 

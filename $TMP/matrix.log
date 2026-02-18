@@ -1,0 +1,12 @@
+
+==> MATRIX_SIZE_ONLY=1: matrix size pipeline only
+==> Matrix: build (override with MATRIX_TCS="monacc gcc-15 clang-21")
+matrix: building tc=monacc -> bin/monacc_ (jobs=12)
+matrix: building tc=gcc-15 -> bin/gcc_15_ (jobs=12)
+matrix: building tc=clang-21 -> bin/clang_21_ (jobs=12)
+matrix: build report: build/matrix/build.tsv
+
+==> Matrix: size report (TSV)
+Wrote build/matrix/report.tsv
+Wrote build/matrix/report.html
+Matrix size pipeline complete

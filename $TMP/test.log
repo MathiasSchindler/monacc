@@ -1,0 +1,165 @@
+
+==> Testing examples
+  ok: hello
+  ok: loop
+  ok: pp
+  ok: ptr
+  ok: charlit
+  ok: strlit
+  ok: sizeof
+  ok: struct
+  ok: proto
+  ok: typedef
+  ok: typedef_multi
+  ok: enum
+  ok: enum_constexpr
+  ok: struct_array
+  ok: fnptr_member
+  ok: ternary
+  ok: cast
+  ok: cast_void
+  ok: logical
+  ok: bitwise_or_xor
+  ok: hex_macro
+  ok: call7
+  ok: struct_copy
+  ok: array_constexpr
+  ok: prefix_incdec
+  ok: compound_literal
+  ok: postinc_member_array
+  ok: sret_cond
+  ok: unsigned_divmod_pow2
+  ok: const_index
+  ok: sizeof_array
+  ok: packed_struct
+  ok: compound_literal_assign_global
+  ok: extern_incomplete_array
+  ok: static_local_array
+  ok: static_local_init
+  ok: global_array_store
+  ok: addr_deref_syscall
+  ok: asm_syscall
+  ok: float_arith
+  ok: float_div
+  ok: float_cmp
+  ok: float_neg
+  ok: float_lits
+  ok: float_call_ret
+  ok: float_call_mixed
+  ok: float_call_many
+  ok: float_cast_callargs
+
+==> Testing: Phase 1 smoke tests
+phase1-smoke: compiling trivial program...
+phase1-smoke: running trivial program...
+phase1-smoke: compiling simple program...
+phase1-smoke: running simple program...
+phase1-smoke: testing self-hosted compiler...
+phase1-smoke: self-hosted compiler OK
+phase1-smoke: ALL TESTS PASSED
+
+==> Testing tools
+cpio: cpio: unsafe path: errno=0x16
+OK (integration=19 checks, recipes=41 checks, tmp=/tmp/sysbox-tests-282573)
+
+==> Testing: ELF ET_REL reader
+elfobj-dump: OK
+
+==> Testing: --link-internal
+link-internal-smoke: OK (3 examples + cdqe + forward-relax + multi)
+
+==> Testing: mc_mathf + tensor helpers
+selftest-mathf: OK (mc_mathf_test)
+selftest-mathf: OK (mc_tensor_f32_test)
+selftest-mathf: SKIP (set GPT2_V3_Q8_MODEL to run v3 padding check)
+
+==> Testing: --emit-obj
+selftest-emitobj: compile: FAIL (exit: 1)
+selftest-emitobj: first error: compiler/monacc_codegen.c:1947:36: expected identifier
+selftest-emitobj: logs: build/selftest-emitobj/monacc-self.err
+
+==> Testing: stage-2 (monacc-self -> monacc-self2)
+selftest-stage2: build: FAIL (exit: 2)
+selftest-stage2: first error: compiler/monacc_codegen.c:1947:36: expected identifier
+selftest-stage2: logs: build/selftest-stage2/stage2.err
+
+==> Testing: stage-3 (monacc-self2 -> monacc-self3)
+selftest-stage3: build: FAIL (exit: 2)
+selftest-stage3: first error: compiler/monacc_codegen.c:1947:36: expected identifier
+selftest-stage3: logs: build/selftest-stage3/stage3.err
+
+==> Regression: compiler bugfix suite (docs/monaccbugs.md)
+  [build] sizeof-array
+  [run ] sizeof-array
+  ok: sizeof-array
+  [build] packed-offsetof
+  [run ] packed-offsetof
+  ok: packed-offsetof
+  [build] packed-size
+  [run ] packed-size
+  ok: packed-size
+  [build] builtin-unreachable
+  [run ] builtin-unreachable
+  ok: builtin-unreachable
+  [build] asm-modifiers
+  [run ] asm-modifiers
+  ok: asm-modifiers
+  [build] compound-literal-assign
+  [run ] compound-literal-assign
+  ok: compound-literal-assign
+  [build] static-local-storage
+  [run ] static-local-storage
+  ok: static-local-storage
+  [build] static-local-recursion
+  [run ] static-local-recursion
+  ok: static-local-recursion
+  [build] global-strptr-init
+  [run ] global-strptr-init
+  ok: global-strptr-init
+  [build] extern-array-link
+  [run ] extern-array-link
+  ok: extern-array-link
+  [build] extern-array-values
+  [run ] extern-array-values
+  ok: extern-array-values
+  [build] asm-test-imm-mem-and-directives
+  [run ] asm-test-imm-mem-and-directives
+  ok: asm-test-imm-mem-and-directives
+monaccbugs: OK (12 tests)
+
+==> Testing: bin/sh execution
+./bin/cmp: /tmp/monacc-binsh-tools-$$/empty /tmp/monacc-binsh-tools-$$/out_dup differ: byte 1
+hi
+./bin/cmp: /tmp/monacc-binsh-tools-$$/empty /tmp/monacc-binsh-tools-$$/out_bg_pid differ: byte 1
+OK (smoke=ok, integration=0 checks, recipes=0 checks, tmp=/tmp/sysbox-tests-$$)
+selfcontained-build: stage1
+compiler/monacc_codegen.c:1947:36: expected identifier
+selfcontained-build: FAIL: build stage1
+
+==> Testing: repository guardrails
+monacc function overlap report (C)
+Criteria: name collisions, identical bodies, similar token sequences.
+Scanned 4 functions.
+
+Name collisions across files
+----------------------------
+  duplicate: ./tests/repo/overlap-fixtures/alpha.c, ./tests/repo/overlap-fixtures/beta.c
+  suggestion: consolidate shared helpers or rename for clarity.
+
+Exact body matches
+------------------
+  hash 0x6ffbb62203ef5a02 shared by 2 functions:
+    - duplicate (./tests/repo/overlap-fixtures/alpha.c:1)
+    - duplicate (./tests/repo/overlap-fixtures/beta.c:1)
+  hash 0xae386134ff0dfee9 shared by 2 functions:
+    - accumulate_a (./tests/repo/overlap-fixtures/alpha.c:5)
+    - accumulate_b (./tests/repo/overlap-fixtures/beta.c:5)
+    suggestion: move shared logic into core/ or a common module.
+
+Similar bodies
+--------------
+  (none)
+  suggestion: review similar pairs for potential refactors or shared utilities.
+
+Some tests failed (examples: 0 failed, phase1: exit 0, tools: exit 0, elfread: exit 0, link-internal: exit 0, emit-obj: exit 1, mathf: exit 0, stage2: exit 0, stage3: exit 0, monaccbugs: exit 0, bin/sh: exit 1, repo-guards: exit 0, matrix: exit 0)
+make: *** [Makefile:470: test] Fehler 1

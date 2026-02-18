@@ -181,6 +181,8 @@ COMPILER_SRC := \
 	compiler/monacc_sema.c \
 	compiler/monacc_str.c \
 	compiler/monacc_codegen.c \
+	compiler/back/x64/emit.c \
+	compiler/back/x64/fixup.c \
 	compiler/monacc_pp.c \
 	compiler/parse/ppexpr.c \
 	compiler/monacc_main.c \

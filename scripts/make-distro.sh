@@ -172,6 +172,8 @@ COMPILER_SRC := \
 	compiler/monacc_parse.c \
 	compiler/monacc_str.c \
 	compiler/monacc_codegen.c \
+	compiler/back/x64/emit.c \
+	compiler/back/x64/fixup.c \
 	compiler/monacc_pp.c \
 	compiler/monacc_main.c \
 	$(CORE_COMPILER_SRC)

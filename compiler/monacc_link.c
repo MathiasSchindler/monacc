@@ -703,6 +703,7 @@ void link_internal_exec_objs(const char **obj_paths, int nobj_paths, const char 
             const Elf64_Shdr *sh = &in->shdrs[si];
             if ((sh->sh_flags & SHF_ALLOC) == 0) continue;
             if (!in->sec_keep[si]) continue;
+            if (sh->sh_size == 0) continue;
             if (sh->sh_flags & SHF_WRITE) {
                 want_rw = 1;
                 break;

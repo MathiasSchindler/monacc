@@ -18,6 +18,44 @@ This is *remarkably good* for a self-hosting compiler. The analysis below identi
 
 ---
 
+## 2026-02 Codegen Size Refactor Update
+
+Implemented in `compiler/monacc_codegen.c`:
+
+- Shared AArch64 direct-call emission into one helper (`a64_emit_call_expr`) used by both 64-bit and 32-bit evaluators.
+- Added tiny shared emit helpers for repeated register moves/unary ops (`a64_emit_mov_reg`, `a64_emit_unary_same_reg`).
+- Factored repeated x86 truthiness branch emission in `cg_cond_branch` into `cg_emit_test_rax_branch`.
+- Added shared AArch64 lvalue load helpers for `EXPR_DEREF` / `EXPR_INDEX` / `EXPR_MEMBER` in both x/w evaluators (`a64_load_lval_from_addr_to_x`, `a64_load_lval_from_addr_to_w`).
+- Added shared AArch64 assignment-store helpers by LHS kind (`a64_store_w_to_lhs`, `a64_store_x_to_lhs`) to remove repeated var/index/global/deref/member store paths.
+- Added shared AArch64 compare/bitop selector helpers (`a64_cmp_cc_from_kind`, `a64_cmp_use_unsigned`, `a64_bitop_mnemonic`) and reused them in both x/w evaluators.
+- Added shared call-aware operand-order helpers for binary x/w lowering (`a64_eval_binop_operands_x`, `a64_eval_binop_operands_w`) and wired repeated bitop/shift/arith paths to them.
+
+Why this matters:
+
+- Removes duplicated code paths in the largest backend file without changing ABI or semantics.
+- Reduces maintenance surface for future size work (one call ABI path instead of two copies).
+- Makes additional deduplication easier (especially in AArch64 `EXPR_*` lowering).
+- Keeps AArch64 load/store lowering behavior centralized, lowering future regression risk.
+
+Validation run after refactor:
+
+- `make -j 12 bin/monacc` ✅
+- `bash tests/compiler/phase1-smoke.sh` ✅
+- `make -s test -j 12` ✅
+- Hosted x25519 checks (`--memtest`, `--i64-index-test`) ✅ with Linux-safe host linker flags.
+
+Validation rerun after second dedup pass:
+
+- `make -j 12 bin/monacc` ✅
+- `bash tests/compiler/phase1-smoke.sh` ✅
+- `make -s test -j 12` ✅
+
+Linux note for hosted tasks:
+
+- Some hosted `bin-host/*` task presets use Darwin-style `-dead_strip`; on Linux use `HOST_TOOLS_LDFLAGS='-Wl,--gc-sections'`.
+
+---
+
 ## Part 1: Low-Hanging Fruit (Easy Wins)
 
 ### 1.1 Frame Pointer Prologues — **HIGH IMPACT**

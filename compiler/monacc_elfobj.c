@@ -195,7 +195,6 @@ typedef struct { ObjSection *sec; uint32_t name_off; } SecName;
 typedef struct { ObjSym *sym; uint32_t idx; } SymIndex;
 typedef struct {
     ObjSection *for_sec;
-    uint32_t name_off;
     Str data;
     uint32_t sec_index;
 } RelaSec;
@@ -2116,6 +2115,20 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
     const char *op_c = NULL, *op_ce = NULL;
     parse_operands_top(p, end, &op_a, &op_ae, &op_b, &op_be, &op_c, &op_ce);
 
+    if (!mc_strcmp(mnem, "enter")) {
+        if (!op_a || !op_b || op_c) die("asm: enter expects two immediates");
+        Operand a = parse_operand(st, op_a, op_ae);
+        Operand b = parse_operand(st, op_b, op_be);
+        if (a.kind != OP_IMM || b.kind != OP_IMM) die("asm: enter expects immediates");
+        if (a.imm < 0 || a.imm > 65535) die("asm: enter frame size out of range");
+        if (b.imm < 0 || b.imm > 255) die("asm: enter nesting level out of range");
+        bin_put_u8(&st->cur->data, 0xC8);
+        bin_put_u8(&st->cur->data, (unsigned int)(a.imm & 0xff));
+        bin_put_u8(&st->cur->data, (unsigned int)((a.imm >> 8) & 0xff));
+        bin_put_u8(&st->cur->data, (unsigned int)b.imm);
+        return;
+    }
+
     if (!mc_strcmp(mnem, "syscall")) {
         bin_put_u8(&st->cur->data, 0x0F);
         bin_put_u8(&st->cur->data, 0x05);
@@ -2216,7 +2229,12 @@ static void assemble_insn(AsmState *st, const char *p, const char *end) {
             bin_put_u8(&st->cur->data, 0xE9);
             mc_usize disp_off = st->cur->data.len;
             bin_put_u32_le(&st->cur->data, 0);
-            add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 0, 0);
+            if (a.sym[0] == '.' && a.sym[1] == 'L') {
+                add_fixup(st, st->cur, disp_off, a.sym, mc_strlen(a.sym), 0, 0);
+            } else {
+                ObjSym *sym = get_or_add_sym(st, a.sym, mc_strlen(a.sym));
+                sec_add_rela(st->cur, (uint64_t)disp_off, sym->name, R_X86_64_PLT32, -4);
+            }
             return;
         }
         if (!mc_strcmp(mnem, "call")) {
@@ -2617,11 +2635,32 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     Str strtab = {0};
     bin_put_u8(&strtab, 0);
 
+    // Keep only symbols that are externally visible or required by relocations.
+    unsigned char *sym_keep = (unsigned char *)monacc_calloc((mc_usize)st->nsyms, 1);
+    if (!sym_keep) die("oom");
+    for (int i = 0; i < st->nsyms; i++) {
+        if (st->syms[i].is_global) sym_keep[i] = 1;
+    }
+    for (int i = 0; i < st->nsecs; i++) {
+        ObjSection *sec = st->secs[i];
+        for (int ri = 0; ri < sec->nrela; ri++) {
+            int found = 0;
+            for (int si = 0; si < st->nsyms; si++) {
+                if (mc_strcmp(st->syms[si].name, sec->rela[ri].sym_name) == 0) {
+                    sym_keep[si] = 1;
+                    found = 1;
+                }
+            }
+            if (!found) die("internal: missing symbol for relocation");
+        }
+    }
+
     // Symbol table: null + locals + globals
     // Determine local vs global ordering.
     int nlocals = 0;
     int nglobals = 0;
     for (int i = 0; i < st->nsyms; i++) {
+        if (!sym_keep[i]) continue;
         if (st->syms[i].is_global) nglobals++;
         else nlocals++;
     }
@@ -2637,6 +2676,7 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     int out_i = 1;
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < st->nsyms; i++) {
+            if (!sym_keep[i]) continue;
             ObjSym *s = &st->syms[i];
             if ((pass == 0) != (!s->is_global)) continue;
 
@@ -2680,14 +2720,6 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
         RelaSec *rs = &rela_secs[nrela_secs++];
         mc_memset(rs, 0, sizeof(*rs));
         rs->for_sec = sec;
-
-        // Name: .rela + secname
-        Str nm = {0};
-        bin_put(&nm, ".rela", 5);
-        bin_put(&nm, sec->name, mc_strlen(sec->name));
-        bin_put_u8(&nm, 0);
-        rs->name_off = add_strtab(&shstr, nm.buf);
-        monacc_free(nm.buf);
 
         // Payload: Elf64_Rela entries
         for (int ri = 0; ri < sec->nrela; ri++) {
@@ -2835,7 +2867,7 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
 
         Elf64_Shdr sh;
         mc_memset(&sh, 0, sizeof(sh));
-        sh.sh_name = rs->name_off;
+        sh.sh_name = 0; // relocation section names are optional in ET_REL
         sh.sh_type = SHT_RELA;
         sh.sh_flags = 0;
         sh.sh_offset = (uint64_t)file.len;
@@ -2865,6 +2897,7 @@ static void assemble_write_obj(AsmState *st, const char *out_o_path) {
     // cleanup
     monacc_free(sec_names);
     monacc_free(sym_index);
+    monacc_free(sym_keep);
     monacc_free(symtab);
     monacc_free(rela_secs);
     monacc_free(shdrs);

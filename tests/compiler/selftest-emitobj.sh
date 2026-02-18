@@ -40,6 +40,8 @@ src=(
   compiler/monacc_sema.c
   compiler/monacc_link.c
   compiler/monacc_codegen.c
+  compiler/back/x64/emit.c
+  compiler/back/x64/fixup.c
   compiler/monacc_pp.c
   compiler/parse/ppexpr.c
   compiler/monacc_elfobj.c

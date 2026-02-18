@@ -36,6 +36,8 @@ src=(
   compiler/monacc_ast.c
   compiler/monacc_parse.c
   compiler/monacc_codegen.c
+  compiler/back/x64/emit.c
+  compiler/back/x64/fixup.c
   compiler/monacc_pp.c
   compiler/monacc_main.c
 

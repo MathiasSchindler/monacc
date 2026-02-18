@@ -89,10 +89,153 @@ static int parse_local_jmp_line(const char *p, const char *end, int *out_id, mc_
     return 1;
 }
 
+static int parse_self_mov_line(const char *p, const char *end, mc_usize *out_len) {
+    if (!p || !end || p >= end) return 0;
+    if ((mc_usize)(end - p) < 14) return 0;
+    if (!(p[0] == ' ' && p[1] == ' ' && p[2] == 'm' && p[3] == 'o' && p[4] == 'v' && p[5] == ' ' && p[6] == '%')) return 0;
+    mc_usize i = 7;
+    while (p + i < end && ((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= '0' && p[i] <= '9'))) i++;
+    if (p + i + 3 >= end || p[i] != ',' || p[i + 1] != ' ' || p[i + 2] != '%') return 0;
+    mc_usize src_start = 6;
+    mc_usize src_len = i - src_start;
+    mc_usize dst_start = i + 2;
+    i += 3;
+    while (p + i < end && ((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= '0' && p[i] <= '9'))) i++;
+    if (p + i >= end || p[i] != '\n') return 0;
+    mc_usize dst_len = i - dst_start;
+    i++;
+    if (src_len == 0 || dst_len == 0 || src_len != dst_len) return 0;
+    if (mc_memcmp(p + src_start, p + dst_start, src_len) != 0) return 0;
+    if (out_len) *out_len = i;
+    return 1;
+}
+
+static int parse_local_jcc_line(const char *p, const char *end, char *out_jcc, mc_usize out_jcc_cap, int *out_id, mc_usize *out_len) {
+    if (!p || !end || p >= end || !out_jcc || out_jcc_cap == 0) return 0;
+    if ((mc_usize)(end - p) < 10) return 0;
+    if (!(p[0] == ' ' && p[1] == ' ' && p[2] == 'j')) return 0;
+    mc_usize i = 2;
+    mc_usize jcc_len = 0;
+    while (p + i < end && ((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= 'A' && p[i] <= 'Z'))) {
+        i++;
+        jcc_len++;
+    }
+    if (jcc_len < 2 || jcc_len >= out_jcc_cap) return 0;
+    if (jcc_len == 3 && p[2] == 'j' && p[3] == 'm' && p[4] == 'p') return 0;
+    if (p + i >= end || p[i] != ' ') return 0;
+    i++;
+    if (p + i + 1 >= end || p[i] != '.' || p[i + 1] != 'L') return 0;
+    i += 2;
+    int id = 0;
+    int nd = 0;
+    while (p + i < end && p[i] >= '0' && p[i] <= '9') {
+        id = id * 10 + (p[i] - '0');
+        i++;
+        nd++;
+    }
+    if (nd == 0) return 0;
+    if (p + i >= end || p[i] != '\n') return 0;
+    i++;
+    mc_memcpy(out_jcc, p + 2, jcc_len);
+    out_jcc[jcc_len] = 0;
+    if (out_id) *out_id = id;
+    if (out_len) *out_len = i;
+    return 1;
+}
+
+static const char *invert_jcc(const char *jcc) {
+    if (!jcc) return NULL;
+    if (mc_strcmp(jcc, "je") == 0) return "jne";
+    if (mc_strcmp(jcc, "jne") == 0) return "je";
+    if (mc_strcmp(jcc, "jz") == 0) return "jnz";
+    if (mc_strcmp(jcc, "jnz") == 0) return "jz";
+    if (mc_strcmp(jcc, "jl") == 0) return "jge";
+    if (mc_strcmp(jcc, "jge") == 0) return "jl";
+    if (mc_strcmp(jcc, "jle") == 0) return "jg";
+    if (mc_strcmp(jcc, "jg") == 0) return "jle";
+    if (mc_strcmp(jcc, "jb") == 0) return "jae";
+    if (mc_strcmp(jcc, "jae") == 0) return "jb";
+    if (mc_strcmp(jcc, "jbe") == 0) return "ja";
+    if (mc_strcmp(jcc, "ja") == 0) return "jbe";
+    if (mc_strcmp(jcc, "js") == 0) return "jns";
+    if (mc_strcmp(jcc, "jns") == 0) return "js";
+    if (mc_strcmp(jcc, "jo") == 0) return "jno";
+    if (mc_strcmp(jcc, "jno") == 0) return "jo";
+    if (mc_strcmp(jcc, "jp") == 0) return "jnp";
+    if (mc_strcmp(jcc, "jnp") == 0) return "jp";
+    if (mc_strcmp(jcc, "jc") == 0) return "jnc";
+    if (mc_strcmp(jcc, "jnc") == 0) return "jc";
+    return NULL;
+}
+
 static void cg_drop_fallthrough_jumps(Str *out, mc_usize start_off) {
     if (!out || !out->buf || start_off >= out->len) return;
     mc_usize i = start_off;
     while (i < out->len) {
+        mc_usize mov_len = 0;
+        if (parse_self_mov_line(out->buf + i, out->buf + out->len, &mov_len)) {
+            mc_usize tail_off = i + mov_len;
+            mc_usize tail_len = out->len - tail_off;
+            mc_memmove(out->buf + i, out->buf + tail_off, tail_len);
+            out->len -= mov_len;
+            out->buf[out->len] = 0;
+            continue;
+        }
+
+        char jcc[8];
+        int c_id = -1;
+        mc_usize c_len = 0;
+        if (parse_local_jcc_line(out->buf + i, out->buf + out->len, jcc, sizeof(jcc), &c_id, &c_len)) {
+            int next_id = -1;
+            if (parse_local_label_line(out->buf + i + c_len, out->buf + out->len, &next_id, NULL) && next_id == c_id) {
+                mc_usize tail_off = i + c_len;
+                mc_usize tail_len = out->len - tail_off;
+                mc_memmove(out->buf + i, out->buf + tail_off, tail_len);
+                out->len -= c_len;
+                out->buf[out->len] = 0;
+                continue;
+            }
+            int jmp_id = -1;
+            mc_usize jmp_len = 0;
+            int l_id = -1;
+            const char *inv = invert_jcc(jcc);
+            if (inv &&
+                parse_local_jmp_line(out->buf + i + c_len, out->buf + out->len, &jmp_id, &jmp_len) &&
+                parse_local_label_line(out->buf + i + c_len + jmp_len, out->buf + out->len, &l_id, NULL) &&
+                l_id == c_id) {
+                char pre[24];
+                mc_usize pn = 0;
+                pre[pn++] = ' ';
+                pre[pn++] = ' ';
+                mc_usize inv_len = mc_strlen(inv);
+                if (pn + inv_len + 3 >= sizeof(pre)) {
+                    i += c_len;
+                    continue;
+                }
+                mc_memcpy(pre + pn, inv, inv_len);
+                pn += inv_len;
+                pre[pn++] = ' ';
+                pre[pn++] = '.';
+                pre[pn++] = 'L';
+                pre[pn] = 0;
+
+                char repl[64];
+                int rn = mc_snprint_cstr_i64_cstr(repl, sizeof(repl), pre, (mc_i64)jmp_id, "\n");
+                if (rn > 0 && (mc_usize)rn < sizeof(repl)) {
+                    mc_usize repl_len = (mc_usize)rn;
+                    mc_usize old_len = c_len + jmp_len;
+                    mc_usize tail_off = i + old_len;
+                    mc_usize tail_len = out->len - tail_off;
+                    mc_memmove(out->buf + i + repl_len, out->buf + tail_off, tail_len);
+                    mc_memcpy(out->buf + i, repl, repl_len);
+                    out->len = out->len - old_len + repl_len;
+                    out->buf[out->len] = 0;
+                    i += repl_len;
+                    continue;
+                }
+            }
+        }
+
         int j_id = -1;
         mc_usize j_len = 0;
         if (!parse_local_jmp_line(out->buf + i, out->buf + out->len, &j_id, &j_len)) {
@@ -770,6 +913,14 @@ static int cg_expr_to_reg(CG *cg, const Expr *e, const char *reg64, const char *
 static void emit_load_disp_reg(CG *cg, int disp, const char *base, int size, int is_unsigned, const char *reg64, const char *reg32);
 static void emit_load_rip_reg(CG *cg, const char *sym, int size, int is_unsigned, const char *reg64, const char *reg32);
 
+static void cg_emit_sext32_to64(CG *cg, const char *reg64, const char *reg32) {
+    if (!mc_strcmp(reg64, "%rax") && !mc_strcmp(reg32, "%eax")) {
+        str_appendf(&cg->out, "  cdqe\n");
+        return;
+    }
+    str_appendf_ss(&cg->out, "  movslq %s, %s\n", reg32, reg64);
+}
+
 static void cg_emit_int_imm_to_reg(CG *cg, long long imm, const char *reg64, const char *reg32) {
     if (imm == 0) {
         str_appendf_ss(&cg->out, "  xor %s, %s\n", reg32, reg32);
@@ -844,7 +995,7 @@ static int cg_expr_to_reg_simple_arg(CG *cg, const Expr *e, const char *reg64, c
                 int lit_i32 = expr_try_get_simple_int_lit(e->lhs, &lit) &&
                               (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
                 if (!lit_i32) {
-                    str_appendf_ss(&cg->out, "  movslq %s, %s\n", reg32, reg64);
+                    cg_emit_sext32_to64(cg, reg64, reg32);
                 }
             }
         }
@@ -1889,12 +2040,9 @@ static void cg_call(CG *cg, const Expr *e) {
         // Push stack args right-to-left.
         for (int i = e->nargs - 1; i >= 0; i--) {
             if (ai[i].kind != CALLARG_STACK_SCALAR) continue;
-            cg_expr(cg, e->args[i]);
             const Expr *a = e->args[i];
-            if (ai[i].is_float) {
-                // Ensure upper bits are clear for 32-bit payload.
-                str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-            } else if (a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
+            cg_expr(cg, a);
+            if (!ai[i].is_float && a && a->ptr == 0 && a->lval_size == 4 && !a->is_unsigned &&
                        a->base != BT_LONG && a->base != BT_FLOAT && a->base != BT_STRUCT) {
                 long long lit = 0;
                 int lit_i32 = expr_try_get_simple_int_lit(a, &lit) &&
@@ -2055,11 +2203,9 @@ static void cg_call(CG *cg, const Expr *e) {
     // Push/copy stack args right-to-left.
     for (int i = e->nargs - 1; i >= 0; i--) {
         if (ai[i].kind == CALLARG_STACK_SCALAR) {
-            cg_expr(cg, e->args[i]);
             const Expr *a = e->args[i];
-            if (ai[i].is_float) {
-                str_appendf(&cg->out, "  mov %%eax, %%eax\n");
-            } else if (need_sext[i]) {
+            cg_expr(cg, a);
+            if (!ai[i].is_float && need_sext[i]) {
                 long long lit = 0;
                 int lit_i32 = a && expr_try_get_simple_int_lit(a, &lit) &&
                               (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
@@ -2097,7 +2243,7 @@ static void cg_call(CG *cg, const Expr *e) {
                     int lit_i32 = a && expr_try_get_simple_int_lit(a, &lit) &&
                                   (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
                     if (!lit_i32) {
-                        str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+                        cg_emit_sext32_to64(cg, areg[ai[i].reg], areg32[ai[i].reg]);
                     }
                 }
             } else {
@@ -2118,7 +2264,7 @@ static void cg_call(CG *cg, const Expr *e) {
                 int lit_i32 = a && expr_try_get_simple_int_lit(a, &lit) &&
                               (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
                 if (!lit_i32) {
-                    str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[ai[i].reg], areg[ai[i].reg]);
+                    cg_emit_sext32_to64(cg, areg[ai[i].reg], areg32[ai[i].reg]);
                 }
             }
         } else {
@@ -3188,7 +3334,7 @@ static void cg_expr(CG *cg, const Expr *e) {
                                             str_appendf_i64(&cg->out, "%d(%%rbp)\n", idx_off);
                                         }
                                         if (!idxe->lhs->is_unsigned) {
-                                            str_appendf(&cg->out, "  movslq %%eax, %%rax\n");
+                                            cg_emit_sext32_to64(cg, "%rax", "%eax");
                                         }
                                     }
 
@@ -5202,7 +5348,7 @@ static int cg_try_tailcall_return(CG *cg, const Stmt *s) {
                 int lit_i32 = expr_try_get_simple_int_lit(a, &lit) &&
                               (lit >= -0x80000000LL && lit <= 0x7fffffffLL);
                 if (!lit_i32) {
-                    str_appendf_ss(&cg->out, "  movslq %s, %s\n", areg32[i], areg[i]);
+                    cg_emit_sext32_to64(cg, areg[i], areg32[i]);
                 }
             }
         }
@@ -5215,8 +5361,7 @@ static int cg_try_tailcall_return(CG *cg, const Stmt *s) {
     if (!cg->frameless) {
         str_appendf(&cg->out, "  leave\n");
     }
-    str_appendf_s(&cg->out, "  lea %s(%%rip), %%r11\n", e->callee);
-    str_appendf(&cg->out, "  jmp *%%r11\n");
+    str_appendf_s(&cg->out, "  jmp %s\n", e->callee);
     return 1;
 }
 
@@ -5757,9 +5902,13 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
         }
         str_appendf_s(&cg.out, "%s:\n", fn->name);
         if (!cg.frameless) {
-            str_appendf(&cg.out, "  push %%rbp\n  mov %%rsp, %%rbp\n");
-            if (fn->stack_size > 0) {
-                str_appendf_i64(&cg.out, "  sub $%d, %%rsp\n", fn->stack_size);
+            if (fn->stack_size > 0 && fn->stack_size <= 65535) {
+                str_appendf_i64(&cg.out, "  enter $%d, $0\n", fn->stack_size);
+            } else {
+                str_appendf(&cg.out, "  push %%rbp\n  mov %%rsp, %%rbp\n");
+                if (fn->stack_size > 0) {
+                    str_appendf_i64(&cg.out, "  sub $%d, %%rsp\n", fn->stack_size);
+                }
             }
         }
 
@@ -5807,6 +5956,10 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
         cg.inline_epilogue = (!cg.frameless && return_count == 1 && !can_fallthrough);
         int need_ret_label = (!cg.frameless && !cg.inline_epilogue) || (cg.ret_ptr == 0 && cg.ret_base == BT_STRUCT);
         int ret_label = need_ret_label ? new_label(&cg) : -1;
+        char ret_ref[64];
+        int ret_ref_len = 0;
+        char ret_jmp[64];
+        int ret_jmp_len = 0;
         cg_stmt(&cg, fn->body, ret_label, NULL);
         // Only emit a default return value if control can fall through
         // to the end of the function body.
@@ -5816,23 +5969,36 @@ static void emit_x86_64_sysv_freestanding_with_start(mc_compiler *ctx, const Pro
                 str_appendf(&cg.out, "  xor %%eax, %%eax\n");
             }
         }
+        int ret_label_referenced = 0;
         if (need_ret_label) {
+            ret_ref_len = mc_snprint_cstr_i64_cstr(ret_ref, sizeof(ret_ref), ".Lret", (mc_i64)ret_label, "\n");
+            ret_jmp_len = mc_snprint_cstr_i64_cstr(ret_jmp, sizeof(ret_jmp), "  jmp .L", (mc_i64)ret_label, "\n");
+            if (ret_ref_len > 0 && (mc_usize)ret_ref_len < sizeof(ret_ref) && cg.out.len >= (mc_usize)ret_ref_len) {
+                for (mc_usize p = fn_start; p + (mc_usize)ret_ref_len <= cg.out.len; p++) {
+                    if (mc_memcmp(cg.out.buf + p, ret_ref, (mc_usize)ret_ref_len) == 0) {
+                        ret_label_referenced = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        if (need_ret_label && ret_label_referenced) {
             // If the last emitted instruction is an unconditional jump to this
             // return label, drop it and let control fall through.
-            {
-                char tmp[64];
-                int n = mc_snprint_cstr_i64_cstr(tmp, sizeof(tmp), "  jmp .L", (mc_i64)ret_label, "\n");
-                if (n > 0 && (mc_usize)n < sizeof(tmp) && cg.out.len >= (mc_usize)n) {
-                    if (mc_memcmp(cg.out.buf + (cg.out.len - (mc_usize)n), tmp, (mc_usize)n) == 0) {
-                        cg.out.len -= (mc_usize)n;
-                        if (cg.out.buf) cg.out.buf[cg.out.len] = 0;
-                    }
+            if (ret_jmp_len > 0 && (mc_usize)ret_jmp_len < sizeof(ret_jmp) && cg.out.len >= (mc_usize)ret_jmp_len) {
+                if (mc_memcmp(cg.out.buf + (cg.out.len - (mc_usize)ret_jmp_len), ret_jmp, (mc_usize)ret_jmp_len) == 0) {
+                    cg.out.len -= (mc_usize)ret_jmp_len;
+                    if (cg.out.buf) cg.out.buf[cg.out.len] = 0;
                 }
             }
             str_appendf_i64(&cg.out, ".Lret%d:\n", ret_label);
             str_appendf(&cg.out, "  leave\n  ret\n\n");
         } else if (can_fallthrough) {
-            str_appendf(&cg.out, "  ret\n\n");
+            if (cg.frameless) {
+                str_appendf(&cg.out, "  ret\n\n");
+            } else {
+                str_appendf(&cg.out, "  leave\n  ret\n\n");
+            }
         }
         cg_drop_fallthrough_jumps(&cg.out, fn_start);
     }
